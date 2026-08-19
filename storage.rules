@@ -1,0 +1,10 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // 로그인(팀 공용 계정)한 사람만 합본 파일을 올리고 받을 수 있음.
+    // Firebase 콘솔 > Storage > 규칙 탭에 이 내용을 그대로 붙여넣고 게시하세요.
+    match /{allPaths=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

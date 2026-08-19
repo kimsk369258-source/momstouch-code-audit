@@ -300,6 +300,9 @@ import {
 import {
   getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {
+  getStorage, ref, uploadBytes, getDownloadURL,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
 
 // ==========================================================================
 // ⚙️ 설정 — 여기 두 값만 채우면 됩니다 (파일 상단 주석 참고)
@@ -316,13 +319,17 @@ const TEAM_EMAIL = "kimsk369258@gmail.com"; // Firebase Authentication에 등록
 
 const isConfigured = FIREBASE_CONFIG.apiKey && !FIREBASE_CONFIG.apiKey.startsWith('YOUR_');
 
-let app, auth, db;
+let app, auth, db, storage;
 if (isConfigured) {
   app = initializeApp(FIREBASE_CONFIG);
   auth = getAuth(app);
   db = getFirestore(app);
+  storage = getStorage(app);
   setPersistence(auth, browserLocalPersistence).catch(() => {});
 }
+
+// 날짜별 합본(분류된 전체 행) 파일이 저장되는 Storage 경로
+function exportStorageRef(date) { return ref(storage, `exports/${date}.xlsx`); }
 
 // ==========================================================================
 // State
@@ -550,6 +557,8 @@ setupDropZone('masterDropZone', 'masterFileInput', async (file) => {
 // ==========================================================================
 // DAILY (일별 대조) — 여러 개의 원본 파일을 그대로 업로드하면
 // 자동으로 합치고(POS 엑셀 합치기 로직) 분류한 뒤 기준표와 대조합니다.
+// 합쳐진 전체 행(분류 포함)은 Firebase Storage에도 저장되어, 나중에
+// 분류 규칙이나 기준표가 바뀌어도 원본 파일 없이 재분류·재다운로드할 수 있습니다.
 // ==========================================================================
 function toNum(v) { if (v==='' || v===null || v===undefined) return 0; const n = Number(v); return isNaN(n) ? 0 : n; }
 
@@ -558,23 +567,35 @@ function isSlicePizzaName(name) {
   return name.includes('조각피자') || name.includes('해피') || name.includes('피자(조각)');
 }
 
+// ── 사이즈구분 + 보정값 ──
+function sizeInfo(productName) {
+  const name = productName || '';
+  if (/한마리/.test(name)) return { size: '한마리', factor: 2 };
+  if (/반마리/.test(name)) return { size: '반마리', factor: 1 };
+  if (/MAX/i.test(name)) return { size: 'Max', factor: 2 };
+  if (/순살/.test(name) && /R\s*(\(|$)/.test(name.trim())) return { size: 'R', factor: 1 };
+  return { size: '', factor: 1 };
+}
+
 // ── 분류 로직 (POS 엑셀 합치기 툴과 동일한 규칙) ──
-// 반환값: '버거' | '피자' | '치킨' | '비프' | '' (미분류)
-function classifyCat(majorName, midName, productName) {
+// 반환값: { cat: '버거'|'피자'|'치킨'|'비프'|'', detail: string }
+function classifyRow(majorName, midName, productName) {
   const name = productName || '';
   const major = majorName || '';
   const mid = midName || '';
 
-  if (major === '버거' && mid === '비프패티') return '비프';
-  if (major === '버거' && mid === '싸이패티') return '버거';
-  if (major === '버거' && mid === '가슴살패티') return '버거';
-  if (major === '버거' && (mid === '복합패티' || mid === '불고기패티' || mid === '새우패티')) return '버거';
+  if (major === '버거' && mid === '비프패티') return { cat: '비프', detail: '' };
+  if (major === '버거' && mid === '싸이패티') return { cat: '버거', detail: '싸이패티' };
+  if (major === '버거' && mid === '가슴살패티') return { cat: '버거', detail: '가슴살패티' };
+  if (major === '버거' && (mid === '복합패티' || mid === '불고기패티' || mid === '새우패티')) return { cat: '버거', detail: '복합패티' };
   // 피자 대분류 전체 또는 피치세트 중분류(맘스세트 하위 포함)는 항상 피자로 강제 분류
-  if (major === '피자' || mid === '피치세트') return '피자';
-  if (mid === '뼈치킨') return '치킨';
-  if (mid === '순살치킨') return '치킨';
-  if (isSlicePizzaName(name)) return '피자';
-  return '';
+  if (major === '피자' || mid === '피치세트') return { cat: '피자', detail: isSlicePizzaName(name) ? '조각피자' : '' };
+  // 치킨 대분류 전체 (뼈치킨/순살치킨뿐 아니라 떡강정/통다리/윙 등 모든 하위분류 포함)
+  if (major === '치킨') return { cat: '치킨', detail: mid };
+  // 이벤트/프로모션성 버거 묶음 코드 (대분류명이 '맘스터치'로 찍히는 코드)
+  if (major === '맘스터치' && mid === '버거') return { cat: '버거', detail: '' };
+  if (isSlicePizzaName(name)) return { cat: '피자', detail: '조각피자' };
+  return { cat: '', detail: '' };
 }
 
 function resolveRawCols(header) {
@@ -590,11 +611,18 @@ function resolveRawCols(header) {
   };
 }
 
-// 여러 개의 원본 파일을 읽어서: ① 숨은 합계행 제외 ② 자동 분류 ③ 매출일자별로 그룹화
+// 여러 개의 원본 파일을 읽어서: ① 숨은 합계행 제외 ② 자동 분류 ③ 매출일자별로 그룹화.
+// 매출일자별로 "분류 포함 전체 행" 도 함께 만들어 currentMergedRowsByDate 에 보관한다
+// (다운로드용 — Firebase Storage 업로드 및 즉시 다운로드에 사용).
+let currentMergedHeader = null; // 원본 컬럼 + [분류, 세부구분, 사이즈구분, 보정값]
+let currentMergedRowsByDate = {}; // { date: [row, row, ...] }
+
 async function processRawDailyFiles(fileList) {
-  const extracted = []; // 모든 파일의 모든 실거래 행 (정규화된 형태)
+  const byDate = {};          // date -> [{집계용 item}]
+  const rowsByDate = {};      // date -> [원본행+분류4열]
   const fileNames = [];
   let totalRemovedSummary = 0;
+  let outputHeader = null;
 
   for (const file of fileList) {
     const json = await readWorkbook(file);
@@ -602,6 +630,7 @@ async function processRawDailyFiles(fileList) {
     fileNames.push(file.name);
 
     const header = json[0].map(String);
+    if (!outputHeader) outputHeader = [...header, '분류', '세부구분', '사이즈구분', '보정값'];
     const cols = resolveRawCols(header);
     if (cols.date < 0 || cols.minorCode < 0) {
       throw new Error(`"${file.name}" 파일에서 "매출일자" 또는 "소분류코드" 컬럼을 찾을 수 없습니다. 일별상품매출현황(매장별) 원본 파일이 맞는지 확인해주세요.`);
@@ -616,31 +645,34 @@ async function processRawDailyFiles(fileList) {
       const majorName = cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '';
       const midName = cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '';
       const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '') : '';
+      const { cat, detail } = classifyRow(majorName, midName, productName);
+      const { size, factor } = sizeInfo(productName);
+      const dk = dateKeyOf(dv);
 
-      extracted.push({
-        date: dateKeyOf(dv),
+      if (!byDate[dk]) byDate[dk] = [];
+      byDate[dk].push({
         minorCode: normCode(r[cols.minorCode]),
         minorName: cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '',
         majorName, midName,
         revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
-        cat: classifyCat(majorName, midName, productName),
+        cat,
       });
+
+      if (!rowsByDate[dk]) rowsByDate[dk] = [];
+      rowsByDate[dk].push([...r, cat, detail, size, factor]);
     });
   }
-
-  // 매출일자별로 그룹화
-  const byDate = {};
-  extracted.forEach(item => {
-    if (!byDate[item.date]) byDate[item.date] = [];
-    byDate[item.date].push(item);
-  });
 
   const reports = {};
   Object.keys(byDate).forEach(dk => {
     reports[dk] = buildDateReport(dk, byDate[dk]);
   });
 
-  return { reports, fileNames, totalRemovedSummary, totalRows: extracted.length };
+  currentMergedHeader = outputHeader;
+  currentMergedRowsByDate = rowsByDate;
+
+  const totalRows = Object.values(byDate).reduce((s, arr) => s + arr.length, 0);
+  return { reports, fileNames, totalRemovedSummary, totalRows };
 }
 
 function buildDateReport(date, itemsForDate) {
@@ -729,6 +761,32 @@ function buildDateReport(date, itemsForDate) {
   };
 }
 
+// ── 다운로드용 워크북 만들기 ──
+function buildExportBlob(header, rows) {
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+  const colWidths = header.map((h, ci) => {
+    let max = String(h).length;
+    for (let ri = 0; ri < Math.min(rows.length, 100); ri++) {
+      const v = ci < rows[ri].length ? String(rows[ri][ci]) : '';
+      if (v.length > max) max = v.length;
+    }
+    return { wch: Math.min(max + 2, 30) };
+  });
+  ws['!cols'] = colWidths;
+  XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+  const arrayBuf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  return new Blob([arrayBuf], { type: 'application/octet-stream' });
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
 async function handleDailyFiles(fileList) {
   const statusEl = document.getElementById('dailyUploadStatus');
   if (masterRowCount === 0) {
@@ -773,8 +831,11 @@ function dayCardHTML(report, showSaveBtn) {
     : `<span class="pill pill-bad">⚠ 이상 ${report.anomalies.length}건</span>`;
 
   const saveBtn = showSaveBtn
-    ? `<button class="btn btn-primary btn-sm" onclick="saveDayReport('${report.date}')">이 날짜 결과 저장</button>`
-    : `<button class="btn btn-danger btn-sm" onclick="deleteDayReport('${report.date}')">이력 삭제</button>`;
+    ? `<button class="btn btn-ghost btn-sm" onclick="downloadMergedFile('${report.date}')">📥 다운로드</button>
+       <button class="btn btn-primary btn-sm" onclick="saveDayReport('${report.date}')">이 날짜 결과 저장</button>`
+    : `<button class="btn btn-ghost btn-sm" onclick="downloadMergedFile('${report.date}')">📥 다운로드</button>
+       <button class="btn btn-ghost btn-sm" onclick="reclassifyAndRedownload('${report.date}')">🔄 재분류 후 다운로드</button>
+       <button class="btn btn-danger btn-sm" onclick="deleteDayReport('${report.date}')">이력 삭제</button>`;
 
   const anomalyRows = report.anomalies.map(a => anomalyRowHTML(a, report.date)).join('');
 
@@ -786,7 +847,7 @@ function dayCardHTML(report, showSaveBtn) {
         ${statusPill}
         <span class="day-meta">${fmtNum(report.totalRows)}행 · 코드 ${report.uniqueCodes}종 · 매출 합계(옵션 구성행 포함, 참고용) ${fmtNum(report.totalRevenue)}원</span>
       </div>
-      <div onclick="event.stopPropagation()">${saveBtn}</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;" onclick="event.stopPropagation()">${saveBtn}</div>
     </div>
     <div class="day-body" id="${id}">
       <div class="stat-grid">
@@ -900,8 +961,97 @@ async function saveDayReport(date) {
     return;
   }
 
-  alert(`${date} 대조 결과를 저장했습니다. '③ 이력' 탭에서 확인할 수 있습니다.`);
+  // 합본(분류 포함 전체 행) 파일도 Storage에 올려서, 다른 세션에서도 다운로드/재분류할 수 있게 한다.
+  let exportNote = '';
+  if (currentMergedHeader && currentMergedRowsByDate[date]) {
+    try {
+      const blob = buildExportBlob(currentMergedHeader, currentMergedRowsByDate[date]);
+      await uploadBytes(exportStorageRef(date), blob);
+    } catch (err) {
+      console.error('export upload failed', date, err);
+      exportNote = '\n(단, 다운로드용 합본 파일 저장에는 실패했습니다 — 대조 결과 자체는 정상 저장되었습니다.)';
+    }
+  }
+
+  alert(`${date} 대조 결과를 저장했습니다. '③ 이력' 탭에서 확인할 수 있습니다.${exportNote}`);
   await loadDailyIndex();
+}
+
+// 방금 처리한(아직 세션에 남아있는) 병합 데이터가 있으면 바로 다운로드,
+// 없으면(이력 탭에서 과거 날짜를 열었을 때) Storage에 저장된 합본 파일을 받아온다.
+async function downloadMergedFile(date) {
+  if (currentMergedHeader && currentMergedRowsByDate[date]) {
+    const blob = buildExportBlob(currentMergedHeader, currentMergedRowsByDate[date]);
+    triggerDownload(blob, `일별상품매출현황_매장별_${date}_분류합본.xlsx`);
+    return;
+  }
+  try {
+    const url = await getDownloadURL(exportStorageRef(date));
+    const resp = await fetch(url);
+    const blob = await resp.blob();
+    triggerDownload(blob, `일별상품매출현황_매장별_${date}_분류합본.xlsx`);
+  } catch (err) {
+    console.error('download failed', date, err);
+    alert(`${date} 합본 파일을 찾을 수 없습니다. 그 날짜를 저장할 때 합본 업로드가 실패했을 수 있습니다. 원본 파일을 다시 업로드해서 저장해주세요.`);
+  }
+}
+
+// 과거에 저장된 합본 파일을 다시 받아와서, 현재의 분류 규칙(classifyRow)과
+// 기준표로 재분류한 뒤 다시 업로드하고 다운로드한다. 원본 파일을 다시
+// 올릴 필요 없이, 분류 로직이나 기준표를 고친 뒤 과거 날짜를 갱신할 때 사용한다.
+async function reclassifyAndRedownload(date) {
+  if (!confirm(`${date} 합본 파일을 현재 분류 규칙/기준표로 다시 계산합니다. 저장된 결과가 갱신됩니다. 계속할까요?`)) return;
+  try {
+    const url = await getDownloadURL(exportStorageRef(date));
+    const resp = await fetch(url);
+    const buf = await resp.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+    const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
+    const header = json[0].map(String);
+    const cols = resolveRawCols(header);
+    const catIdx = header.indexOf('분류'), detailIdx = header.indexOf('세부구분');
+    const sizeIdx = header.indexOf('사이즈구분'), factorIdx = header.indexOf('보정값');
+    if (catIdx < 0 || cols.minorCode < 0) throw new Error('합본 파일 형식을 알아볼 수 없습니다.');
+
+    const items = [];
+    const rows = json.slice(1);
+    rows.forEach(r => {
+      const majorName = cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '';
+      const midName = cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '';
+      const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '') : '';
+      const { cat, detail } = classifyRow(majorName, midName, productName);
+      const { size, factor } = sizeInfo(productName);
+      r[catIdx] = cat; r[detailIdx] = detail;
+      if (sizeIdx >= 0) r[sizeIdx] = size;
+      if (factorIdx >= 0) r[factorIdx] = factor;
+      items.push({
+        minorCode: normCode(r[cols.minorCode]),
+        minorName: cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '',
+        majorName, midName,
+        revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
+        cat,
+      });
+    });
+
+    const oldReport = dailyIndex.find(d => d.date === date);
+    const newReport = buildDateReport(date, items);
+    newReport.fileName = oldReport ? oldReport.fileName : date;
+
+    const blob = buildExportBlob(header, rows);
+    await uploadBytes(exportStorageRef(date), blob);
+    const ok = await storageSet('daily:' + date, JSON.stringify(newReport));
+    if (!ok) throw new Error('재분류된 대조 결과 저장에 실패했습니다.');
+
+    triggerDownload(blob, `일별상품매출현황_매장별_${date}_분류합본.xlsx`);
+    await loadDailyIndex();
+    document.getElementById('historyDetail').innerHTML = '';
+
+    const oldCount = oldReport ? oldReport.anomalyCount : '?';
+    alert(`${date} 재분류 완료. 이상 건수: ${oldCount} → ${newReport.anomalies.length}`);
+  } catch (err) {
+    console.error('reclassify failed', date, err);
+    alert(`재분류 실패: ${err.message}`);
+  }
 }
 
 // ==========================================================================
@@ -1076,6 +1226,7 @@ Object.assign(window, {
   doLogin, doLogout,
   manualAddCode, toggleDay, toggleAddForm, addAnomalyToMaster, updateMasterName,
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
+  downloadMergedFile, reclassifyAndRedownload,
 });
 </script>
 </body>
