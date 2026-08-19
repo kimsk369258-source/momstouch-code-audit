@@ -1,0 +1,995 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>상품코드 대조 대시보드</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!--
+  ============================================================================
+  설정 방법 (처음 딱 한 번만 하면 됩니다)
+  ============================================================================
+  1) https://console.firebase.google.com 에서 새 프로젝트를 만듭니다 (무료).
+  2) 왼쪽 메뉴 "Firestore Database" → 데이터베이스 만들기 (프로덕션 모드로 시작해도 됨,
+     아래 3번에서 규칙을 직접 넣을 것이므로 상관없습니다).
+  3) Firestore "규칙" 탭에서 아래 규칙을 붙여넣고 게시합니다:
+
+       rules_version = '2';
+       service cloud.firestore {
+         match /databases/{database}/documents {
+           match /{document=**} {
+             allow read, write: if request.auth != null;
+           }
+         }
+       }
+
+  4) 왼쪽 메뉴 "Authentication" → 시작하기 → 로그인 방법에서 "이메일/비밀번호" 사용 설정.
+     그 다음 "Users" 탭 → 사용자 추가 → 팀에서 쓸 이메일(아무 이메일 형식이나 가능,
+     예: team@momstouch.local)과 비밀번호를 하나 등록합니다. 이게 "팀 공용 비밀번호"입니다.
+  5) 프로젝트 설정(⚙️) → 일반 → "내 앱" → 웹 앱 추가 → 나오는 firebaseConfig 값을
+     아래 FIREBASE_CONFIG 에 그대로 붙여넣고, TEAM_EMAIL 값도 4번에서 등록한 이메일로 바꿉니다.
+  6) 이 파일을 GitHub Pages 등에 올리면 끝입니다.
+  ============================================================================
+-->
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700;800&display=swap');
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family:'Pretendard',-apple-system,BlinkMacSystemFont,sans-serif;
+    background:#f6f7f9; color:#1a1a2e; min-height:100vh;
+  }
+  .container { max-width:1080px; margin:0 auto; padding:32px 20px 80px; }
+
+  header.top { margin-bottom:22px; }
+  header.top h1 { font-size:21px; font-weight:800; margin-bottom:4px; }
+  header.top p { font-size:13px; color:#6b7280; }
+
+  .storage-note {
+    display:flex; gap:8px; align-items:flex-start;
+    background:#eff6ff; border:1px solid #bfdbfe; color:#1e40af;
+    border-radius:10px; padding:10px 14px; font-size:12px; line-height:1.6; margin-bottom:20px;
+  }
+
+  /* Tabs */
+  .tabs { display:flex; gap:4px; background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:4px; margin-bottom:20px; }
+  .tab-btn {
+    flex:1; border:none; background:transparent; padding:10px 12px; border-radius:9px;
+    font-family:inherit; font-size:13px; font-weight:600; color:#6b7280; cursor:pointer; transition:.15s;
+  }
+  .tab-btn.active { background:#1a1a2e; color:#fff; }
+  .tab-btn:not(.active):hover { background:#f3f4f6; }
+
+  .panel { display:none; }
+  .panel.active { display:block; }
+
+  .card {
+    background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:18px 20px; margin-bottom:16px;
+  }
+  .card h2 { font-size:15px; font-weight:700; margin-bottom:4px; }
+  .card .card-sub { font-size:12px; color:#6b7280; margin-bottom:14px; }
+
+  .status-line { display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:13px; }
+  .pill { display:inline-flex; align-items:center; gap:5px; padding:4px 10px; border-radius:999px; font-size:12px; font-weight:700; }
+  .pill-ok { background:#f0fdf4; color:#166534; border:1px solid #bbf7d0; }
+  .pill-warn { background:#fffbeb; color:#92400e; border:1px solid #fde68a; }
+  .pill-bad { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; }
+  .pill-neutral { background:#f3f4f6; color:#4b5563; border:1px solid #e5e7eb; }
+
+  .drop-zone {
+    border:2px dashed #c7ccd6; border-radius:12px; padding:34px 20px; text-align:center;
+    cursor:pointer; transition:.15s; background:#fafbfc; position:relative;
+  }
+  .drop-zone:hover, .drop-zone.drag-over { border-color:#2563eb; background:#eff6ff; }
+  .drop-zone .dz-icon { font-size:30px; margin-bottom:8px; opacity:.55; }
+  .drop-zone .dz-text { font-size:14px; font-weight:600; color:#374151; }
+  .drop-zone .dz-hint { font-size:12px; color:#9ca3af; margin-top:4px; }
+  input[type=file] { display:none; }
+
+  .btn {
+    border:none; border-radius:8px; padding:9px 16px; font-family:inherit; font-size:13px;
+    font-weight:700; cursor:pointer; transition:.15s;
+  }
+  .btn-primary { background:#2563eb; color:#fff; }
+  .btn-primary:hover { background:#1d4ed8; }
+  .btn-primary:disabled { background:#93c5fd; cursor:not-allowed; }
+  .btn-ghost { background:#f3f4f6; color:#374151; }
+  .btn-ghost:hover { background:#e5e7eb; }
+  .btn-danger { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; }
+  .btn-danger:hover { background:#fee2e2; }
+  .btn-sm { padding:5px 10px; font-size:12px; border-radius:6px; }
+
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th { background:#f9fafb; text-align:left; padding:8px 10px; font-weight:700; color:#374151; border-bottom:1px solid #e5e7eb; white-space:nowrap; }
+  td { padding:7px 10px; border-bottom:1px solid #f3f4f6; color:#374151; vertical-align:top; }
+  tr:last-child td { border-bottom:none; }
+  .table-wrap { overflow-x:auto; border:1px solid #e5e7eb; border-radius:10px; }
+  .num { text-align:right; font-variant-numeric:tabular-nums; }
+
+  .empty { text-align:center; padding:36px 16px; color:#9ca3af; font-size:13px; }
+
+  .badge-type {
+    display:inline-block; padding:2px 8px; border-radius:6px; font-size:11px; font-weight:700; white-space:nowrap;
+  }
+  .t-new_code { background:#fef2f2; color:#991b1b; }
+  .t-name_mismatch { background:#fffbeb; color:#92400e; }
+  .t-category_mismatch { background:#eff6ff; color:#1e40af; }
+  .t-unclassified { background:#f3f4f6; color:#4b5563; }
+
+  .day-card { border:1px solid #e5e7eb; border-radius:12px; margin-bottom:14px; overflow:hidden; }
+  .day-head {
+    display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
+    padding:14px 18px; background:#fafbfc; cursor:pointer;
+  }
+  .day-head:hover { background:#f3f4f6; }
+  .day-head-left { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .day-date { font-size:14px; font-weight:800; }
+  .day-meta { font-size:12px; color:#6b7280; }
+  .day-body { padding:0 18px 16px; display:none; }
+  .day-body.open { display:block; }
+
+  .stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; margin:12px 0 16px; }
+  .stat-box { background:#f9fafb; border:1px solid #eef0f2; border-radius:10px; padding:10px 12px; }
+  .stat-box .stat-label { font-size:11px; color:#9ca3af; font-weight:600; margin-bottom:3px; }
+  .stat-box .stat-value { font-size:16px; font-weight:800; }
+
+  .add-form {
+    display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; padding:10px; background:#f9fafb; border-radius:8px;
+  }
+  .add-form input, .add-form select {
+    font-family:inherit; font-size:12px; padding:6px 8px; border:1px solid #d1d5db; border-radius:6px;
+  }
+  .add-form input { width:110px; }
+
+  .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+  .search-input {
+    flex:1; min-width:160px; font-family:inherit; font-size:13px; padding:8px 12px;
+    border:1px solid #d1d5db; border-radius:8px;
+  }
+
+  .mini-bars { display:flex; align-items:flex-end; gap:6px; height:70px; margin-top:6px; }
+  .mini-bar-col { flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; }
+  .mini-bar { width:100%; border-radius:4px 4px 0 0; background:#93c5fd; min-height:2px; }
+  .mini-bar.has-issue { background:#f87171; }
+  .mini-bar-label { font-size:10px; color:#9ca3af; }
+
+  .note { font-size:12px; color:#9ca3af; line-height:1.6; margin-top:8px; }
+  .footer-note { text-align:center; font-size:12px; color:#9ca3af; margin-top:24px; }
+</style>
+</head>
+<body>
+
+<!-- ===================== 설정 필요 안내 (FIREBASE_CONFIG 미입력 시) ===================== -->
+<div class="container" id="setupNeeded" style="display:none; max-width:640px; padding-top:60px;">
+  <div class="card">
+    <h2>⚙️ 설정이 필요합니다</h2>
+    <div class="card-sub">이 파일 상단(&lt;head&gt; 안 주석)에 Firebase 설정 방법이 적혀 있습니다.</div>
+    <p style="font-size:13px; line-height:1.8; color:#4b5563;">
+      1) Firebase 콘솔에서 프로젝트를 만들고<br>
+      2) Firestore 규칙을 붙여넣고<br>
+      3) Authentication에서 이메일/비밀번호로 팀 계정을 하나 만든 뒤<br>
+      4) 이 HTML 파일 안의 <code>FIREBASE_CONFIG</code> 와 <code>TEAM_EMAIL</code> 값을 채워 넣고 다시 열어주세요.
+    </p>
+  </div>
+</div>
+
+<!-- ===================== 로그인 화면 ===================== -->
+<div class="container" id="loginScreen" style="display:none; max-width:380px; padding-top:100px;">
+  <div class="card">
+    <h2>🔒 팀 비밀번호 로그인</h2>
+    <div class="card-sub">상품코드 대조 대시보드에 접근하려면 팀 공용 비밀번호를 입력하세요.</div>
+    <input type="password" id="loginPassword" placeholder="비밀번호" class="search-input" style="width:100%; margin-bottom:10px;" onkeydown="if(event.key==='Enter') doLogin();">
+    <button class="btn btn-primary" style="width:100%;" onclick="doLogin()">로그인</button>
+    <div id="loginError" class="status-line" style="margin-top:10px;"></div>
+  </div>
+</div>
+
+<!-- ===================== 메인 앱 ===================== -->
+<div class="container" id="mainApp" style="display:none;">
+
+  <header class="top" style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+    <div>
+      <h1>📋 상품코드 대조 대시보드</h1>
+      <p>일별 매출 데이터를 상품코드 기준표와 자동 대조하고, 이상 유무와 이력을 저장합니다.</p>
+    </div>
+    <button class="btn btn-ghost btn-sm" onclick="doLogout()">로그아웃</button>
+  </header>
+
+  <div class="storage-note">
+    <span>🔒</span>
+    <span>이 사이트의 데이터(기준표, 일별 대조 이력)는 Firebase에 저장되어 팀원 누구나 같은 비밀번호로 로그인하면 이어서 볼 수 있습니다. 로그인 없이는 데이터를 읽거나 쓸 수 없도록 서버 측 규칙으로 막혀 있습니다. 다만 팀 전체가 같은 비밀번호를 공유하는 방식이라 개인별 접근 기록은 남지 않으니, 비밀번호는 필요한 사람에게만 알려주세요.</span>
+  </div>
+
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="master">① 기준코드 관리</button>
+    <button class="tab-btn" data-tab="daily">② 일별 대조</button>
+    <button class="tab-btn" data-tab="history">③ 이력</button>
+  </div>
+
+  <!-- ===================== TAB 1: 기준코드 관리 ===================== -->
+  <section class="panel active" id="panel-master">
+    <div class="card">
+      <h2>기준코드 현황</h2>
+      <div class="card-sub">상품코드정리.xlsx (대분류/중분류/소분류코드 · 분류 · 세부구분) 기준표</div>
+      <div class="status-line" id="masterStatus">불러오는 중...</div>
+    </div>
+
+    <div class="card">
+      <h2>기준표 업로드 / 갱신</h2>
+      <div class="card-sub">새 파일을 업로드하면 기존 기준표를 완전히 대체합니다.</div>
+      <div class="drop-zone" id="masterDropZone">
+        <div class="dz-icon">📁</div>
+        <div class="dz-text">상품코드정리.xlsx 파일을 여기로 드래그하거나 클릭</div>
+        <div class="dz-hint">.xlsx / .xls</div>
+      </div>
+      <input type="file" id="masterFileInput" accept=".xlsx,.xls">
+      <div id="masterUploadPreview"></div>
+    </div>
+
+    <div class="card">
+      <h2>코드 수동 추가 / 검색</h2>
+      <div class="card-sub">기준표에 코드를 하나만 빠르게 추가하거나, 등록된 코드를 검색합니다.</div>
+      <div class="add-form" id="masterAddForm">
+        <input type="text" placeholder="대분류코드" id="mf-majorCode" style="width:80px">
+        <input type="text" placeholder="대분류명" id="mf-majorName">
+        <input type="text" placeholder="중분류코드" id="mf-midCode" style="width:80px">
+        <input type="text" placeholder="중분류명" id="mf-midName">
+        <input type="text" placeholder="소분류코드" id="mf-minorCode" style="width:80px">
+        <input type="text" placeholder="소분류명" id="mf-minorName">
+        <input type="text" placeholder="분류" id="mf-cat" style="width:90px">
+        <input type="text" placeholder="세부구분" id="mf-detail" style="width:90px">
+        <button class="btn btn-primary btn-sm" onclick="manualAddCode()">추가</button>
+      </div>
+      <div class="toolbar" style="margin-top:14px;">
+        <input class="search-input" id="masterSearch" placeholder="코드, 상품명, 분류로 검색...">
+      </div>
+      <div class="table-wrap">
+        <table id="masterTable"><thead></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== TAB 2: 일별 대조 ===================== -->
+  <section class="panel" id="panel-daily">
+    <div class="card">
+      <h2>일별 매출 파일 업로드</h2>
+      <div class="card-sub">POS 엑셀 합치기 툴로 생성한 "_분류합본.xlsx" 파일을 올리면, 파일에 포함된 매출일자별로 기준표와 자동 대조합니다.</div>
+      <div class="drop-zone" id="dailyDropZone">
+        <div class="dz-icon">🧾</div>
+        <div class="dz-text">일별상품매출현황(매장별)_분류합본.xlsx 를 여기로 드래그하거나 클릭</div>
+        <div class="dz-hint">.xlsx / .xls</div>
+      </div>
+      <input type="file" id="dailyFileInput" accept=".xlsx,.xls">
+      <div class="status-line" id="dailyUploadStatus" style="margin-top:10px;"></div>
+    </div>
+
+    <div id="dailyResults"></div>
+  </section>
+
+  <!-- ===================== TAB 3: 이력 ===================== -->
+  <section class="panel" id="panel-history">
+    <div class="card">
+      <h2>최근 대조 추이</h2>
+      <div class="card-sub">최근 저장된 날짜의 이상 발생 건수</div>
+      <div id="trendChart"><div class="empty">저장된 이력이 없습니다.</div></div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+        <h2>대조 이력</h2>
+        <button class="btn btn-danger btn-sm" onclick="resetAllHistory()">전체 이력 삭제</button>
+      </div>
+      <div class="card-sub">날짜별로 저장된 대조 결과 목록입니다.</div>
+      <div class="table-wrap">
+        <table id="historyTable"><thead></thead><tbody></tbody></table>
+      </div>
+    </div>
+
+    <div id="historyDetail"></div>
+  </section>
+
+  <div class="footer-note">POS 엑셀 합치기 툴의 결과 파일과 함께 사용하도록 설계되었습니다.</div>
+</div>
+<!-- /#mainApp -->
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {
+  getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged,
+  setPersistence, browserLocalPersistence,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {
+  getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+// ==========================================================================
+// ⚙️ 설정 — 여기 두 값만 채우면 됩니다 (파일 상단 주석 참고)
+// ==========================================================================
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyAeZ56yINeQUxokaRi4-ZUdqSDQoEmARI8",
+  authDomain: "product-sales-c83fd.firebaseapp.com",
+  projectId: "product-sales-c83fd",
+  storageBucket: "product-sales-c83fd.firebasestorage.app",
+  messagingSenderId: "747443719495",
+  appId: "1:747443719495:web:9a16e843fed20aebfc1062",
+};
+const TEAM_EMAIL = "kimsk369258@gmail.com"; // Firebase Authentication에 등록한 팀 계정 이메일
+
+const isConfigured = FIREBASE_CONFIG.apiKey && !FIREBASE_CONFIG.apiKey.startsWith('YOUR_');
+
+let app, auth, db;
+if (isConfigured) {
+  app = initializeApp(FIREBASE_CONFIG);
+  auth = getAuth(app);
+  db = getFirestore(app);
+  setPersistence(auth, browserLocalPersistence).catch(() => {});
+}
+
+// ==========================================================================
+// State
+// ==========================================================================
+let masterMap = {};      // { normCode: { majorCode,majorName,midCode,midName,minorCode,minorName,cat,detail } }
+let masterUpdatedAt = null;
+let masterRowCount = 0;
+let dailyIndex = [];     // [{date, fileName, uploadedAt, totalRows, totalRevenue, uniqueCodes, anomalyCount, status}]
+let currentDailyReports = null; // last parsed (not-yet-saved) reports, keyed by date
+
+// ==========================================================================
+// Helpers
+// ==========================================================================
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function fmtNum(n) { return Math.round(n||0).toLocaleString(); }
+function nowISO() { return new Date().toISOString(); }
+
+function normCode(v) {
+  if (v === null || v === undefined || v === '') return '';
+  const digits = String(v).replace(/[^0-9]/g, '');
+  if (digits === '') return String(v).trim();
+  return String(parseInt(digits, 10));
+}
+
+function formatDate(d) {
+  const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
+function dateKeyOf(v) {
+  if (v instanceof Date) return formatDate(v);
+  return String(v).trim().slice(0, 10);
+}
+
+function readWorkbook(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const data = new Uint8Array(e.target.result);
+        const wb = XLSX.read(data, { type:'array', cellDates:true });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const json = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' });
+        resolve(json);
+      } catch (err) { reject(err); }
+    };
+    reader.onerror = () => reject(new Error('파일을 읽을 수 없습니다.'));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+// Firestore-backed storage. 'master' -> meta/master doc. 'daily:YYYY-MM-DD' -> daily/{date} doc.
+function resolveDocRef(key) {
+  if (key.startsWith('daily:')) return doc(db, 'daily', key.slice(6));
+  return doc(db, 'meta', key);
+}
+async function storageGet(key) {
+  try {
+    const snap = await getDoc(resolveDocRef(key));
+    return snap.exists() ? JSON.stringify(snap.data()) : null;
+  } catch (e) { console.error('storage get failed', key, e); return null; }
+}
+async function storageSet(key, value) {
+  try { await setDoc(resolveDocRef(key), JSON.parse(value)); return true; }
+  catch (e) { console.error('storage set failed', key, e); return false; }
+}
+async function storageDelete(key) {
+  try { await deleteDoc(resolveDocRef(key)); return true; }
+  catch (e) { console.error('storage delete failed', key, e); return false; }
+}
+
+// ==========================================================================
+// Tabs
+// ==========================================================================
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
+  });
+});
+
+// ==========================================================================
+// MASTER (기준코드)
+// ==========================================================================
+function findMasterHeaderRow(rows) {
+  for (let i = 0; i < Math.min(rows.length, 15); i++) {
+    const r = rows[i];
+    if (r && r.some(v => String(v).trim() === '대분류코드')) return i;
+  }
+  return -1;
+}
+
+function resolveMasterCols(header) {
+  const idx = name => header.findIndex(v => String(v).trim() === name);
+  return {
+    majorCode: idx('대분류코드'), majorName: idx('대분류명'),
+    midCode: idx('중분류코드'), midName: idx('중분류명'),
+    minorCode: idx('소분류코드'), minorName: idx('소분류명'),
+    cat: idx('분류'), detail: idx('세부구분'),
+  };
+}
+
+function buildMasterMapFromRows(json) {
+  const headerRowIdx = findMasterHeaderRow(json);
+  if (headerRowIdx < 0) throw new Error('"대분류코드" 헤더를 찾을 수 없습니다. 파일 형식을 확인해주세요.');
+  const header = json[headerRowIdx].map(v => String(v).trim());
+  const cols = resolveMasterCols(header);
+  if (cols.minorCode < 0) throw new Error('"소분류코드" 컬럼을 찾을 수 없습니다.');
+
+  const map = {};
+  let count = 0;
+  for (let i = headerRowIdx + 1; i < json.length; i++) {
+    const r = json[i];
+    const rawMinor = cols.minorCode >= 0 ? r[cols.minorCode] : '';
+    const code = normCode(rawMinor);
+    if (!code) continue;
+    map[code] = {
+      majorCode: normCode(cols.majorCode >= 0 ? r[cols.majorCode] : ''),
+      majorName: cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '',
+      midCode: normCode(cols.midCode >= 0 ? r[cols.midCode] : ''),
+      midName: cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '',
+      minorCode: code,
+      minorName: cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '',
+      cat: cols.cat >= 0 ? String(r[cols.cat] ?? '').trim() : '',
+      detail: cols.detail >= 0 ? String(r[cols.detail] ?? '').trim() : '',
+    };
+    count++;
+  }
+  return { map, count };
+}
+
+async function loadMaster() {
+  const raw = await storageGet('master');
+  if (!raw) { masterMap = {}; masterRowCount = 0; masterUpdatedAt = null; renderMasterStatus(); renderMasterTable(); return; }
+  try {
+    const obj = JSON.parse(raw);
+    masterMap = obj.map || {};
+    masterRowCount = obj.count || Object.keys(masterMap).length;
+    masterUpdatedAt = obj.updatedAt || null;
+  } catch (e) { masterMap = {}; masterRowCount = 0; masterUpdatedAt = null; }
+  renderMasterStatus();
+  renderMasterTable();
+}
+
+async function saveMaster(map, count, sourceFileName) {
+  masterMap = map;
+  masterRowCount = count;
+  masterUpdatedAt = nowISO();
+  const payload = JSON.stringify({ map, count, updatedAt: masterUpdatedAt, sourceFileName: sourceFileName || null });
+  await storageSet('master', payload);
+  renderMasterStatus();
+  renderMasterTable();
+}
+
+function renderMasterStatus() {
+  const el = document.getElementById('masterStatus');
+  if (masterRowCount === 0) {
+    el.innerHTML = `<span class="pill pill-warn">⚠ 기준표 없음</span><span>아래에서 상품코드정리.xlsx를 업로드해주세요.</span>`;
+    return;
+  }
+  const dt = masterUpdatedAt ? new Date(masterUpdatedAt).toLocaleString('ko-KR') : '-';
+  el.innerHTML = `<span class="pill pill-ok">✓ 등록됨</span><span><strong>${masterRowCount.toLocaleString()}</strong>개 코드</span><span>· 마지막 갱신: ${esc(dt)}</span>`;
+}
+
+function renderMasterTable(filterText) {
+  const table = document.getElementById('masterTable');
+  const entries = Object.values(masterMap).sort((a,b) => Number(a.minorCode) - Number(b.minorCode));
+  const filtered = filterText
+    ? entries.filter(e => (e.minorCode+e.minorName+e.majorName+e.midName+e.cat+e.detail).toLowerCase().includes(filterText.toLowerCase()))
+    : entries;
+
+  let html = '<thead><tr><th>소분류코드</th><th>소분류명</th><th>대분류명</th><th>중분류명</th><th>분류</th><th>세부구분</th></tr></thead><tbody>';
+  if (filtered.length === 0) {
+    html += `<tr><td colspan="6"><div class="empty">${entries.length === 0 ? '등록된 코드가 없습니다.' : '검색 결과가 없습니다.'}</div></td></tr>`;
+  } else {
+    filtered.slice(0, 500).forEach(e => {
+      html += `<tr><td>${esc(e.minorCode)}</td><td>${esc(e.minorName)}</td><td>${esc(e.majorName)}</td><td>${esc(e.midName)}</td><td>${esc(e.cat)}</td><td>${esc(e.detail)}</td></tr>`;
+    });
+    if (filtered.length > 500) html += `<tr><td colspan="6" class="note">... 외 ${filtered.length-500}개 (검색으로 좁혀보세요)</td></tr>`;
+  }
+  html += '</tbody>';
+  table.innerHTML = html;
+}
+
+document.getElementById('masterSearch').addEventListener('input', e => renderMasterTable(e.target.value));
+
+function manualAddCode() {
+  const g = id => document.getElementById(id).value.trim();
+  const minorCode = normCode(g('mf-minorCode'));
+  if (!minorCode) { alert('소분류코드를 입력해주세요.'); return; }
+  const entry = {
+    majorCode: normCode(g('mf-majorCode')), majorName: g('mf-majorName'),
+    midCode: normCode(g('mf-midCode')), midName: g('mf-midName'),
+    minorCode, minorName: g('mf-minorName'),
+    cat: g('mf-cat'), detail: g('mf-detail'),
+  };
+  const newMap = { ...masterMap, [minorCode]: entry };
+  saveMaster(newMap, Object.keys(newMap).length, masterUpdatedAtSourceName());
+  ['mf-majorCode','mf-majorName','mf-midCode','mf-midName','mf-minorCode','mf-minorName','mf-cat','mf-detail'].forEach(id => document.getElementById(id).value='');
+}
+function masterUpdatedAtSourceName() { return undefined; }
+
+// Master drop zone
+setupDropZone('masterDropZone', 'masterFileInput', async (file) => {
+  const preview = document.getElementById('masterUploadPreview');
+  preview.innerHTML = `<div class="note">읽는 중...</div>`;
+  try {
+    const json = await readWorkbook(file);
+    const { map, count } = buildMasterMapFromRows(json);
+    await saveMaster(map, count, file.name);
+    preview.innerHTML = `<div class="status-line" style="margin-top:10px;"><span class="pill pill-ok">✓ 완료</span><span>${esc(file.name)} 에서 ${count.toLocaleString()}개 코드를 불러와 저장했습니다.</span></div>`;
+  } catch (err) {
+    preview.innerHTML = `<div class="status-line" style="margin-top:10px;"><span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span></div>`;
+  }
+});
+
+// ==========================================================================
+// DAILY (일별 대조)
+// ==========================================================================
+function resolveDailyCols(header) {
+  const idx = name => header.indexOf(name);
+  return {
+    date: idx('매출일자'),
+    majorCode: idx('대분류코드'), majorName: idx('대분류명'),
+    midCode: idx('중분류코드'), midName: idx('중분류명'),
+    minorCode: idx('소분류코드'), minorName: idx('소분류명'),
+    productName: idx('상품명'),
+    totalSales: idx('총매출액'),
+    realSales3: idx('3 실매출액'),
+    catAssigned: idx('분류'),
+  };
+}
+
+function toNum(v) { if (v==='' || v===null || v===undefined) return 0; const n = Number(v); return isNaN(n) ? 0 : n; }
+
+function analyzeDailyFile(json) {
+  if (json.length < 2) throw new Error('데이터가 없는 파일입니다.');
+  const header = json[0].map(String);
+  const cols = resolveDailyCols(header);
+  if (cols.date < 0 || cols.minorCode < 0) throw new Error('"매출일자" 또는 "소분류코드" 컬럼을 찾을 수 없습니다. POS 합치기 툴로 생성한 파일인지 확인해주세요.');
+
+  const rows = json.slice(1).filter(r => {
+    const v = r[cols.date];
+    return !(v === '' || v === null || v === undefined);
+  });
+
+  // group by date
+  const byDate = {};
+  rows.forEach(r => {
+    const dk = dateKeyOf(r[cols.date]);
+    if (!byDate[dk]) byDate[dk] = [];
+    byDate[dk].push(r);
+  });
+
+  const reports = {};
+  Object.keys(byDate).forEach(dk => {
+    reports[dk] = buildDateReport(dk, byDate[dk], cols);
+  });
+  return reports;
+}
+
+function buildDateReport(date, rowsForDate, cols) {
+  // aggregate per minorCode
+  const agg = {}; // code -> {majorName, midName, minorName, revenue, rowCount, catAssignedSet}
+  let totalRevenue = 0;
+
+  rowsForDate.forEach(r => {
+    const code = normCode(cols.minorCode >= 0 ? r[cols.minorCode] : '');
+    if (!code) return;
+    const revenue = cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0);
+    totalRevenue += revenue;
+    if (!agg[code]) {
+      agg[code] = {
+        code,
+        majorName: cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '',
+        midName: cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '',
+        minorName: cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '',
+        revenue: 0, rowCount: 0, catAssignedSet: new Set(),
+      };
+    }
+    agg[code].revenue += revenue;
+    agg[code].rowCount += 1;
+    const ca = cols.catAssigned >= 0 ? String(r[cols.catAssigned] ?? '').trim() : '';
+    if (ca) agg[code].catAssignedSet.add(ca);
+  });
+
+  const TRACKED = ['버거','피자','치킨','비프'];
+  const anomalies = [];
+
+  Object.values(agg).forEach(item => {
+    const master = masterMap[item.code];
+    const assignedCats = [...item.catAssignedSet];
+    if (!master) {
+      anomalies.push({
+        code: item.code, type: 'new_code',
+        minorName: item.minorName, majorName: item.majorName, midName: item.midName,
+        revenue: item.revenue, rowCount: item.rowCount,
+        assignedCat: assignedCats.join(', '),
+        master: null,
+      });
+      return;
+    }
+    // Name/category consistency checks are only meaningful for codes the master
+    // itself treats as one of the 4 tracked categories. Codes under generic
+    // "promotion / bucket" mid-categories (e.g. 매장행사) get reused for many
+    // unrelated products by design, and pizza-set (피치세트) items are
+    // *intentionally* re-labeled 피자 by the merge tool even though the master
+    // lists them under 맘스세트 — both are expected, not anomalies.
+    if (TRACKED.includes(master.cat)) {
+      // name mismatch (minor name changed)
+      if (master.minorName && item.minorName && master.minorName !== item.minorName) {
+        anomalies.push({
+          code: item.code, type: 'name_mismatch',
+          minorName: item.minorName, majorName: item.majorName, midName: item.midName,
+          revenue: item.revenue, rowCount: item.rowCount,
+          assignedCat: assignedCats.join(', '),
+          master,
+        });
+      }
+      // category mismatch: tool-assigned category disagrees with master's category
+      assignedCats.forEach(ac => {
+        if (!TRACKED.includes(ac)) return;
+        if (master.cat !== ac) {
+          anomalies.push({
+            code: item.code, type: 'category_mismatch',
+            minorName: item.minorName, majorName: item.majorName, midName: item.midName,
+            revenue: item.revenue, rowCount: item.rowCount,
+            assignedCat: ac,
+            master,
+          });
+        }
+      });
+    }
+    // unclassified: master expects a tracked category but tool assigned nothing
+    if (TRACKED.includes(master.cat) && assignedCats.length === 0) {
+      anomalies.push({
+        code: item.code, type: 'unclassified',
+        minorName: item.minorName, majorName: item.majorName, midName: item.midName,
+        revenue: item.revenue, rowCount: item.rowCount,
+        assignedCat: '',
+        master,
+      });
+    }
+  });
+
+  return {
+    date, uploadedAt: nowISO(), totalRows: rowsForDate.length,
+    totalRevenue, uniqueCodes: Object.keys(agg).length,
+    anomalies, status: anomalies.length === 0 ? 'ok' : 'issue',
+  };
+}
+
+setupDropZone('dailyDropZone', 'dailyFileInput', async (file) => {
+  const statusEl = document.getElementById('dailyUploadStatus');
+  if (masterRowCount === 0) {
+    statusEl.innerHTML = `<span class="pill pill-warn">⚠ 기준표 먼저 등록 필요</span><span>① 기준코드 관리 탭에서 상품코드정리.xlsx를 먼저 업로드해주세요.</span>`;
+    return;
+  }
+  statusEl.innerHTML = `<span class="pill pill-neutral">읽는 중...</span>`;
+  try {
+    const json = await readWorkbook(file);
+    const reports = analyzeDailyFile(json);
+    Object.values(reports).forEach(r => r.fileName = file.name);
+    currentDailyReports = reports;
+    const dates = Object.keys(reports).sort();
+    statusEl.innerHTML = `<span class="pill pill-ok">✓ 분석 완료</span><span>${esc(file.name)} · ${dates.length}개 날짜(${dates.join(', ')}) 발견</span>`;
+    renderDailyResults(reports);
+  } catch (err) {
+    statusEl.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`;
+  }
+});
+
+function renderDailyResults(reports) {
+  const container = document.getElementById('dailyResults');
+  const dates = Object.keys(reports).sort().reverse();
+  if (dates.length === 0) { container.innerHTML = ''; return; }
+
+  container.innerHTML = dates.map(dk => dayCardHTML(reports[dk], true)).join('');
+}
+
+function dayCardHTML(report, showSaveBtn) {
+  const id = 'day-' + report.date.replace(/-/g,'');
+  const statusPill = report.status === 'ok'
+    ? `<span class="pill pill-ok">✓ 이상 없음</span>`
+    : `<span class="pill pill-bad">⚠ 이상 ${report.anomalies.length}건</span>`;
+
+  const saveBtn = showSaveBtn
+    ? `<button class="btn btn-primary btn-sm" onclick="saveDayReport('${report.date}')">이 날짜 결과 저장</button>`
+    : `<button class="btn btn-danger btn-sm" onclick="deleteDayReport('${report.date}')">이력 삭제</button>`;
+
+  const anomalyRows = report.anomalies.map(a => anomalyRowHTML(a, report.date)).join('');
+
+  return `
+  <div class="day-card">
+    <div class="day-head" onclick="toggleDay('${id}')">
+      <div class="day-head-left">
+        <span class="day-date">${esc(report.date)}</span>
+        ${statusPill}
+        <span class="day-meta">${fmtNum(report.totalRows)}행 · 코드 ${report.uniqueCodes}종 · 매출 합계(옵션 구성행 포함, 참고용) ${fmtNum(report.totalRevenue)}원</span>
+      </div>
+      <div onclick="event.stopPropagation()">${saveBtn}</div>
+    </div>
+    <div class="day-body" id="${id}">
+      <div class="stat-grid">
+        <div class="stat-box"><div class="stat-label">처리 행수</div><div class="stat-value">${fmtNum(report.totalRows)}</div></div>
+        <div class="stat-box"><div class="stat-label">고유 상품코드</div><div class="stat-value">${report.uniqueCodes}</div></div>
+        <div class="stat-box"><div class="stat-label">이상 건수</div><div class="stat-value">${report.anomalies.length}</div></div>
+        <div class="stat-box"><div class="stat-label">매출 합계(참고용)</div><div class="stat-value">${fmtNum(report.totalRevenue)}</div></div>
+      </div>
+      ${report.anomalies.length === 0
+        ? `<div class="empty">기준표와 대조한 결과 이상이 없습니다. 👍</div>`
+        : `<div class="table-wrap"><table>
+             <thead><tr><th>유형</th><th>코드</th><th>상품명</th><th>대/중분류</th><th>기준표 분류</th><th>현재 분류</th><th class="num">매출</th><th class="num">건수</th><th></th></tr></thead>
+             <tbody>${anomalyRows}</tbody>
+           </table></div>`
+      }
+      <div class="note">※ '이상 없음'은 기준코드표에 없는 코드, 코드명 변경, 자동분류 결과 불일치가 없다는 뜻입니다. 매출 합계는 세트 구성행이 포함되어 실제 매출과 다를 수 있어 참고용입니다.</div>
+    </div>
+  </div>`;
+}
+
+function anomalyTypeLabel(t) {
+  return { new_code:'미등록 코드', name_mismatch:'상품명 변경', category_mismatch:'분류 불일치', unclassified:'미분류' }[t] || t;
+}
+
+function anomalyRowHTML(a, date) {
+  const badge = `<span class="badge-type t-${a.type}">${anomalyTypeLabel(a.type)}</span>`;
+  let masterCol = '-', currentCol = esc(a.assignedCat || '-');
+  if (a.type === 'new_code') { masterCol = '<em style="color:#9ca3af;">기준표 없음</em>'; }
+  else if (a.master) { masterCol = esc(a.master.cat || '-'); }
+
+  let nameCell = esc(a.minorName);
+  if (a.type === 'name_mismatch' && a.master) {
+    nameCell = `${esc(a.minorName)} <span class="note" style="display:block;">기준표상 이름: ${esc(a.master.minorName)}</span>`;
+  }
+
+  let action = '';
+  if (a.type === 'new_code') {
+    const formId = 'addform-' + date.replace(/-/g,'') + '-' + a.code;
+    action = `
+      <button class="btn btn-ghost btn-sm" onclick="toggleAddForm('${formId}')">기준표에 추가</button>
+      <div class="add-form" id="${formId}" style="display:none;">
+        <input type="text" id="${formId}-major" placeholder="대분류명" value="${esc(a.majorName)}">
+        <input type="text" id="${formId}-mid" placeholder="중분류명" value="${esc(a.midName)}">
+        <input type="text" id="${formId}-minor" placeholder="소분류명" value="${esc(a.minorName)}">
+        <input type="text" id="${formId}-cat" placeholder="분류(버거/피자/치킨/비프/사이드 등)" value="${esc(a.assignedCat)}" style="width:170px">
+        <input type="text" id="${formId}-detail" placeholder="세부구분">
+        <button class="btn btn-primary btn-sm" onclick="addAnomalyToMaster('${formId}','${a.code}')">저장</button>
+      </div>`;
+  } else if (a.type === 'name_mismatch') {
+    action = `<button class="btn btn-ghost btn-sm" onclick="updateMasterName('${a.code}', ${JSON.stringify(a.minorName)})">기준표 이름 갱신</button>`;
+  }
+
+  return `<tr>
+    <td>${badge}</td>
+    <td>${esc(a.code)}</td>
+    <td>${nameCell}</td>
+    <td>${esc(a.majorName)} / ${esc(a.midName)}</td>
+    <td>${masterCol}</td>
+    <td>${currentCol}</td>
+    <td class="num">${fmtNum(a.revenue)}</td>
+    <td class="num">${a.rowCount}</td>
+    <td>${action}</td>
+  </tr>`;
+}
+
+function toggleDay(id) { document.getElementById(id).classList.toggle('open'); }
+function toggleAddForm(id) { const el = document.getElementById(id); el.style.display = el.style.display === 'none' ? 'flex' : 'none'; }
+
+async function addAnomalyToMaster(formId, code) {
+  const g = suffix => document.getElementById(formId + suffix).value.trim();
+  const entry = {
+    majorCode: '', majorName: g('-major'),
+    midCode: '', midName: g('-mid'),
+    minorCode: code, minorName: g('-minor'),
+    cat: g('-cat'), detail: g('-detail'),
+  };
+  const newMap = { ...masterMap, [code]: entry };
+  await saveMaster(newMap, Object.keys(newMap).length);
+  alert(`코드 ${code} 를(을) 기준표에 추가했습니다. 대조 결과를 다시 확인해 보세요.`);
+  if (currentDailyReports) {
+    // re-run analysis against updated master
+    Object.keys(currentDailyReports).forEach(dk => {
+      // rebuild using stored raw isn't available; simplest: just remove resolved anomaly visually by re-render note
+    });
+  }
+}
+
+async function updateMasterName(code, newName) {
+  if (!masterMap[code]) return;
+  const newMap = { ...masterMap, [code]: { ...masterMap[code], minorName: newName } };
+  await saveMaster(newMap, Object.keys(newMap).length);
+  alert(`코드 ${code} 의 기준표 상품명을 "${newName}" 으로 갱신했습니다.`);
+}
+
+async function saveDayReport(date) {
+  const report = currentDailyReports[date];
+  if (!report) return;
+
+  const existing = dailyIndex.find(d => d.date === date);
+  if (existing) {
+    if (!confirm(`${date} 날짜의 저장된 이력이 이미 있습니다. 덮어쓸까요?`)) return;
+  }
+
+  await storageSet('daily:' + date, JSON.stringify(report));
+
+  alert(`${date} 대조 결과를 저장했습니다. '③ 이력' 탭에서 확인할 수 있습니다.`);
+  await loadDailyIndex();
+}
+
+// ==========================================================================
+// HISTORY (이력) — 'daily' 컬렉션을 직접 조회 (여러 명이 동시에 써도 안전)
+// ==========================================================================
+async function loadDailyIndex() {
+  dailyIndex = [];
+  try {
+    const snap = await getDocs(collection(db, 'daily'));
+    snap.forEach(d => {
+      const data = d.data();
+      dailyIndex.push({
+        date: data.date, fileName: data.fileName, uploadedAt: data.uploadedAt,
+        totalRows: data.totalRows, totalRevenue: data.totalRevenue,
+        uniqueCodes: data.uniqueCodes, anomalyCount: (data.anomalies||[]).length, status: data.status,
+      });
+    });
+  } catch (e) { console.error('load daily index failed', e); }
+  renderHistoryTab();
+}
+
+function renderHistoryTab() {
+  renderTrendChart();
+  renderHistoryTable();
+}
+
+function renderTrendChart() {
+  const el = document.getElementById('trendChart');
+  const sorted = [...dailyIndex].sort((a,b) => a.date.localeCompare(b.date)).slice(-14);
+  if (sorted.length === 0) { el.innerHTML = '<div class="empty">저장된 이력이 없습니다.</div>'; return; }
+  const max = Math.max(1, ...sorted.map(d => d.anomalyCount));
+  el.innerHTML = `<div class="mini-bars">${sorted.map(d => {
+    const h = Math.max(3, Math.round((d.anomalyCount / max) * 66));
+    return `<div class="mini-bar-col" title="${d.date}: 이상 ${d.anomalyCount}건">
+      <div class="mini-bar ${d.anomalyCount>0?'has-issue':''}" style="height:${h}px;"></div>
+      <div class="mini-bar-label">${d.date.slice(5)}</div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function renderHistoryTable() {
+  const table = document.getElementById('historyTable');
+  const sorted = [...dailyIndex].sort((a,b) => b.date.localeCompare(a.date));
+  let html = '<thead><tr><th>날짜</th><th>파일명</th><th class="num">처리행수</th><th class="num">매출합계(참고)</th><th class="num">코드수</th><th class="num">이상건수</th><th>상태</th><th></th></tr></thead><tbody>';
+  if (sorted.length === 0) {
+    html += `<tr><td colspan="8"><div class="empty">저장된 이력이 없습니다. '② 일별 대조' 탭에서 파일을 업로드하고 저장해보세요.</div></td></tr>`;
+  } else {
+    sorted.forEach(d => {
+      const pill = d.status === 'ok' ? `<span class="pill pill-ok">이상없음</span>` : `<span class="pill pill-bad">이상 ${d.anomalyCount}건</span>`;
+      html += `<tr>
+        <td><strong>${esc(d.date)}</strong></td>
+        <td>${esc(d.fileName||'-')}</td>
+        <td class="num">${fmtNum(d.totalRows)}</td>
+        <td class="num">${fmtNum(d.totalRevenue)}</td>
+        <td class="num">${d.uniqueCodes}</td>
+        <td class="num">${d.anomalyCount}</td>
+        <td>${pill}</td>
+        <td><button class="btn btn-ghost btn-sm" onclick="viewHistoryDetail('${d.date}')">보기</button></td>
+      </tr>`;
+    });
+  }
+  html += '</tbody>';
+  table.innerHTML = html;
+}
+
+async function viewHistoryDetail(date) {
+  const raw = await storageGet('daily:' + date);
+  const detailEl = document.getElementById('historyDetail');
+  if (!raw) { detailEl.innerHTML = `<div class="card"><div class="empty">저장된 상세 데이터를 찾을 수 없습니다.</div></div>`; return; }
+  const report = JSON.parse(raw);
+  detailEl.innerHTML = `<div class="card">${dayCardHTML(report, false)}</div>`;
+  const id = 'day-' + date.replace(/-/g,'');
+  setTimeout(() => { const el = document.getElementById(id); if (el) el.classList.add('open'); }, 0);
+  detailEl.scrollIntoView({ behavior:'smooth', block:'start' });
+}
+
+async function deleteDayReport(date) {
+  if (!confirm(`${date} 대조 이력을 삭제할까요?`)) return;
+  await storageDelete('daily:' + date);
+  document.getElementById('historyDetail').innerHTML = '';
+  await loadDailyIndex();
+}
+
+async function resetAllHistory() {
+  if (!confirm('저장된 모든 대조 이력을 삭제할까요? 기준코드표는 삭제되지 않습니다.')) return;
+  for (const d of dailyIndex) { await storageDelete('daily:' + d.date); }
+  document.getElementById('historyDetail').innerHTML = '';
+  await loadDailyIndex();
+}
+
+// ==========================================================================
+// Drop zone util
+// ==========================================================================
+function setupDropZone(zoneId, inputId, onFile) {
+  const zone = document.getElementById(zoneId);
+  const input = document.getElementById(inputId);
+  zone.addEventListener('click', () => input.click());
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); zone.classList.remove('drag-over');
+    const f = e.dataTransfer.files[0]; if (f) onFile(f);
+  });
+  input.addEventListener('change', e => {
+    const f = e.target.files[0]; if (f) onFile(f);
+    input.value = '';
+  });
+}
+
+// ==========================================================================
+// AUTH
+// ==========================================================================
+async function doLogin() {
+  const pw = document.getElementById('loginPassword').value;
+  const errEl = document.getElementById('loginError');
+  errEl.innerHTML = '';
+  if (!pw) return;
+  try {
+    await signInWithEmailAndPassword(auth, TEAM_EMAIL, pw);
+    // onAuthStateChanged handles showing the app
+  } catch (e) {
+    errEl.innerHTML = `<span class="pill pill-bad">✗ 로그인 실패</span><span>비밀번호가 올바르지 않습니다.</span>`;
+  }
+}
+
+async function doLogout() {
+  await signOut(auth);
+}
+
+function showScreen(name) {
+  document.getElementById('setupNeeded').style.display = name === 'setup' ? 'block' : 'none';
+  document.getElementById('loginScreen').style.display = name === 'login' ? 'block' : 'none';
+  document.getElementById('mainApp').style.display = name === 'app' ? 'block' : 'none';
+}
+
+// ==========================================================================
+// Init
+// ==========================================================================
+if (!isConfigured) {
+  showScreen('setup');
+} else {
+  showScreen('login');
+  onAuthStateChanged(auth, async (user) => {
+    if (user) {
+      showScreen('app');
+      await loadMaster();
+      await loadDailyIndex();
+    } else {
+      showScreen('login');
+    }
+  });
+}
+
+Object.assign(window, {
+  doLogin, doLogout,
+  manualAddCode, toggleDay, toggleAddForm, addAnomalyToMaster, updateMasterName,
+  saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
+});
+</script>
+</body>
+</html>
