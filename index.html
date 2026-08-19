@@ -642,7 +642,9 @@ async function processRawDailyFiles(fileList) {
       // 담은 유령 행으로, 그대로 합치면 매출이 중복 집계됩니다.
       if (dv === '' || dv === null || dv === undefined) { totalRemovedSummary++; return; }
 
+      const majorCode = cols.majorCode >= 0 ? normCode(r[cols.majorCode]) : '';
       const majorName = cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '';
+      const midCode = cols.midCode >= 0 ? normCode(r[cols.midCode]) : '';
       const midName = cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '';
       const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '') : '';
       const { cat, detail } = classifyRow(majorName, midName, productName);
@@ -653,7 +655,7 @@ async function processRawDailyFiles(fileList) {
       byDate[dk].push({
         minorCode: normCode(r[cols.minorCode]),
         minorName: cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '',
-        majorName, midName,
+        majorCode, majorName, midCode, midName,
         revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
         cat,
       });
@@ -677,7 +679,7 @@ async function processRawDailyFiles(fileList) {
 
 function buildDateReport(date, itemsForDate) {
   // aggregate per minorCode
-  const agg = {}; // code -> {majorName, midName, minorName, revenue, rowCount, catAssignedSet}
+  const agg = {}; // code -> {majorCode, majorName, midCode, midName, minorName, revenue, rowCount, catAssignedSet}
   let totalRevenue = 0;
 
   itemsForDate.forEach(item => {
@@ -686,7 +688,9 @@ function buildDateReport(date, itemsForDate) {
     if (!agg[item.minorCode]) {
       agg[item.minorCode] = {
         code: item.minorCode,
-        majorName: item.majorName, midName: item.midName, minorName: item.minorName,
+        majorCode: item.majorCode || '', majorName: item.majorName,
+        midCode: item.midCode || '', midName: item.midName,
+        minorName: item.minorName,
         revenue: 0, rowCount: 0, catAssignedSet: new Set(),
       };
     }
@@ -704,7 +708,9 @@ function buildDateReport(date, itemsForDate) {
     if (!master) {
       anomalies.push({
         code: item.code, type: 'new_code',
-        minorName: item.minorName, majorName: item.majorName, midName: item.midName,
+        majorCode: item.majorCode, majorName: item.majorName,
+        midCode: item.midCode, midName: item.midName,
+        minorName: item.minorName,
         revenue: item.revenue, rowCount: item.rowCount,
         assignedCat: assignedCats.join(', '),
         master: null,
@@ -722,7 +728,9 @@ function buildDateReport(date, itemsForDate) {
       if (master.minorName && item.minorName && master.minorName !== item.minorName) {
         anomalies.push({
           code: item.code, type: 'name_mismatch',
-          minorName: item.minorName, majorName: item.majorName, midName: item.midName,
+          majorCode: item.majorCode, majorName: item.majorName,
+          midCode: item.midCode, midName: item.midName,
+          minorName: item.minorName,
           revenue: item.revenue, rowCount: item.rowCount,
           assignedCat: assignedCats.join(', '),
           master,
@@ -734,7 +742,9 @@ function buildDateReport(date, itemsForDate) {
         if (master.cat !== ac) {
           anomalies.push({
             code: item.code, type: 'category_mismatch',
-            minorName: item.minorName, majorName: item.majorName, midName: item.midName,
+            majorCode: item.majorCode, majorName: item.majorName,
+            midCode: item.midCode, midName: item.midName,
+            minorName: item.minorName,
             revenue: item.revenue, rowCount: item.rowCount,
             assignedCat: ac,
             master,
@@ -746,7 +756,9 @@ function buildDateReport(date, itemsForDate) {
     if (TRACKED.includes(master.cat) && assignedCats.length === 0) {
       anomalies.push({
         code: item.code, type: 'unclassified',
-        minorName: item.minorName, majorName: item.majorName, midName: item.midName,
+        majorCode: item.majorCode, majorName: item.majorName,
+        midCode: item.midCode, midName: item.midName,
+        minorName: item.minorName,
         revenue: item.revenue, rowCount: item.rowCount,
         assignedCat: '',
         master,
@@ -831,10 +843,10 @@ function dayCardHTML(report, showSaveBtn) {
     : `<span class="pill pill-bad">⚠ 이상 ${report.anomalies.length}건</span>`;
 
   const saveBtn = showSaveBtn
-    ? `<button class="btn btn-ghost btn-sm" onclick="downloadMergedFile('${report.date}')">📥 다운로드</button>
-       <button class="btn btn-primary btn-sm" onclick="saveDayReport('${report.date}')">이 날짜 결과 저장</button>`
-    : `<button class="btn btn-ghost btn-sm" onclick="downloadMergedFile('${report.date}')">📥 다운로드</button>
-       <button class="btn btn-ghost btn-sm" onclick="reclassifyAndRedownload('${report.date}')">🔄 재분류 후 다운로드</button>
+    ? `<button class="btn btn-ghost btn-sm" onclick="downloadMergedFile('${report.date}', this)">📥 다운로드</button>
+       <button class="btn btn-primary btn-sm" onclick="saveDayReport('${report.date}', this)">이 날짜 결과 저장</button>`
+    : `<button class="btn btn-ghost btn-sm" onclick="downloadMergedFile('${report.date}', this)">📥 다운로드</button>
+       <button class="btn btn-ghost btn-sm" onclick="reclassifyAndRedownload('${report.date}', this)">🔄 재분류 후 다운로드</button>
        <button class="btn btn-danger btn-sm" onclick="deleteDayReport('${report.date}')">이력 삭제</button>`;
 
   const anomalyRows = report.anomalies.map(a => anomalyRowHTML(a, report.date)).join('');
@@ -859,11 +871,12 @@ function dayCardHTML(report, showSaveBtn) {
       ${report.anomalies.length === 0
         ? `<div class="empty">기준표와 대조한 결과 이상이 없습니다. 👍</div>`
         : `<div class="table-wrap"><table>
-             <thead><tr><th>유형</th><th>코드</th><th>상품명</th><th>대/중분류</th><th>기준표 분류</th><th>현재 분류</th><th class="num">매출</th><th class="num">건수</th><th></th></tr></thead>
+             <thead><tr><th>유형</th><th>대분류코드</th><th>대분류명</th><th>중분류코드</th><th>중분류명</th><th>소분류코드</th><th>소분류명</th><th>기준표 분류</th><th>현재 분류</th><th class="num">매출</th><th class="num">건수</th><th></th></tr></thead>
              <tbody>${anomalyRows}</tbody>
            </table></div>`
       }
-      <div class="note">※ '이상 없음'은 기준코드표에 없는 코드, 코드명 변경, 자동분류 결과 불일치가 없다는 뜻입니다. 매출 합계는 세트 구성행이 포함되어 실제 매출과 다를 수 있어 참고용입니다.</div>
+      <div class="note">※ '이상 없음'은 기준코드표에 없는 코드, 코드명 변경, 자동분류 결과 불일치가 없다는 뜻입니다. 매출 합계는 세트 구성행이 포함되어 실제 매출과 다를 수 있어 참고용입니다.
+      ${report.totalRows > 50000 ? `<br>※ 처리 행수가 많아(${fmtNum(report.totalRows)}행) 다운로드/저장 버튼을 누른 뒤 파일 생성에 1~2분, Storage 저장까지는 몇 분 정도 걸릴 수 있습니다. 버튼에 "생성 중..." 등 문구가 떠 있으면 정상 진행 중이니 다른 동작 없이 기다려주세요.` : ''}</div>
     </div>
   </div>`;
 }
@@ -878,9 +891,9 @@ function anomalyRowHTML(a, date) {
   if (a.type === 'new_code') { masterCol = '<em style="color:#9ca3af;">기준표 없음</em>'; }
   else if (a.master) { masterCol = esc(a.master.cat || '-'); }
 
-  let nameCell = esc(a.minorName);
+  let minorNameCell = esc(a.minorName);
   if (a.type === 'name_mismatch' && a.master) {
-    nameCell = `${esc(a.minorName)} <span class="note" style="display:block;">기준표상 이름: ${esc(a.master.minorName)}</span>`;
+    minorNameCell = `${esc(a.minorName)} <span class="note" style="display:block;">기준표상 이름: ${esc(a.master.minorName)}</span>`;
   }
 
   let action = '';
@@ -889,7 +902,9 @@ function anomalyRowHTML(a, date) {
     action = `
       <button class="btn btn-ghost btn-sm" onclick="toggleAddForm('${formId}')">기준표에 추가</button>
       <div class="add-form" id="${formId}" style="display:none;">
+        <input type="text" id="${formId}-majorCode" placeholder="대분류코드" value="${esc(a.majorCode)}" style="width:80px">
         <input type="text" id="${formId}-major" placeholder="대분류명" value="${esc(a.majorName)}">
+        <input type="text" id="${formId}-midCode" placeholder="중분류코드" value="${esc(a.midCode)}" style="width:80px">
         <input type="text" id="${formId}-mid" placeholder="중분류명" value="${esc(a.midName)}">
         <input type="text" id="${formId}-minor" placeholder="소분류명" value="${esc(a.minorName)}">
         <input type="text" id="${formId}-cat" placeholder="분류(버거/피자/치킨/비프/사이드 등)" value="${esc(a.assignedCat)}" style="width:170px">
@@ -902,9 +917,12 @@ function anomalyRowHTML(a, date) {
 
   return `<tr>
     <td>${badge}</td>
+    <td>${esc(a.majorCode || '-')}</td>
+    <td>${esc(a.majorName || '-')}</td>
+    <td>${esc(a.midCode || '-')}</td>
+    <td>${esc(a.midName || '-')}</td>
     <td>${esc(a.code)}</td>
-    <td>${nameCell}</td>
-    <td>${esc(a.majorName)} / ${esc(a.midName)}</td>
+    <td>${minorNameCell}</td>
     <td>${masterCol}</td>
     <td>${currentCol}</td>
     <td class="num">${fmtNum(a.revenue)}</td>
@@ -919,8 +937,8 @@ function toggleAddForm(id) { const el = document.getElementById(id); el.style.di
 async function addAnomalyToMaster(formId, code) {
   const g = suffix => document.getElementById(formId + suffix).value.trim();
   const entry = {
-    majorCode: '', majorName: g('-major'),
-    midCode: '', midName: g('-mid'),
+    majorCode: g('-majorCode'), majorName: g('-major'),
+    midCode: g('-midCode'), midName: g('-mid'),
     minorCode: code, minorName: g('-minor'),
     cat: g('-cat'), detail: g('-detail'),
   };
@@ -946,7 +964,7 @@ async function updateMasterName(code, newName) {
   alert(`코드 ${code} 의 기준표 상품명을 "${newName}" 으로 갱신했습니다.`);
 }
 
-async function saveDayReport(date) {
+async function saveDayReport(date, btnEl) {
   const report = currentDailyReports[date];
   if (!report) return;
 
@@ -955,52 +973,71 @@ async function saveDayReport(date) {
     if (!confirm(`${date} 날짜의 저장된 이력이 이미 있습니다. 덮어쓸까요?`)) return;
   }
 
-  const ok = await storageSet('daily:' + date, JSON.stringify(report));
-  if (!ok) {
-    alert(`${date} 대조 결과 저장에 실패했습니다. 브라우저 개발자 도구(F12) 콘솔에서 에러 메시지를 확인하고, 로그인이 유지되어 있는지 확인해주세요.`);
-    return;
-  }
-
-  // 합본(분류 포함 전체 행) 파일도 Storage에 올려서, 다른 세션에서도 다운로드/재분류할 수 있게 한다.
-  let exportNote = '';
-  if (currentMergedHeader && currentMergedRowsByDate[date]) {
-    try {
-      const blob = buildExportBlob(currentMergedHeader, currentMergedRowsByDate[date]);
-      await uploadBytes(exportStorageRef(date), blob);
-    } catch (err) {
-      console.error('export upload failed', date, err);
-      exportNote = '\n(단, 다운로드용 합본 파일 저장에는 실패했습니다 — 대조 결과 자체는 정상 저장되었습니다.)';
+  const originalText = btnEl ? btnEl.textContent : '';
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = '저장 중...'; }
+  try {
+    const ok = await storageSet('daily:' + date, JSON.stringify(report));
+    if (!ok) {
+      alert(`${date} 대조 결과 저장에 실패했습니다. 브라우저 개발자 도구(F12) 콘솔에서 에러 메시지를 확인하고, 로그인이 유지되어 있는지 확인해주세요.`);
+      return;
     }
-  }
 
-  alert(`${date} 대조 결과를 저장했습니다. '③ 이력' 탭에서 확인할 수 있습니다.${exportNote}`);
-  await loadDailyIndex();
+    // 합본(분류 포함 전체 행) 파일도 Storage에 올려서, 다른 세션에서도 다운로드/재분류할 수 있게 한다.
+    // 행 수가 많으면(10만행 이상) 파일 생성 + 업로드에 수십 초 이상 걸릴 수 있다.
+    let exportNote = '';
+    if (currentMergedHeader && currentMergedRowsByDate[date]) {
+      try {
+        if (btnEl) btnEl.textContent = '합본 파일 업로드 중...';
+        const blob = buildExportBlob(currentMergedHeader, currentMergedRowsByDate[date]);
+        await uploadBytes(exportStorageRef(date), blob);
+      } catch (err) {
+        console.error('export upload failed', date, err);
+        exportNote = '\n(단, 다운로드용 합본 파일 저장에는 실패했습니다 — 대조 결과 자체는 정상 저장되었습니다. 에러: ' + err.message + ')';
+      }
+    }
+
+    alert(`${date} 대조 결과를 저장했습니다. '③ 이력' 탭에서 확인할 수 있습니다.${exportNote}`);
+    await loadDailyIndex();
+  } finally {
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = originalText; }
+  }
 }
 
 // 방금 처리한(아직 세션에 남아있는) 병합 데이터가 있으면 바로 다운로드,
 // 없으면(이력 탭에서 과거 날짜를 열었을 때) Storage에 저장된 합본 파일을 받아온다.
-async function downloadMergedFile(date) {
-  if (currentMergedHeader && currentMergedRowsByDate[date]) {
-    const blob = buildExportBlob(currentMergedHeader, currentMergedRowsByDate[date]);
-    triggerDownload(blob, `일별상품매출현황_매장별_${date}_분류합본.xlsx`);
-    return;
-  }
+// 행 수가 많으면(10만행 이상) 파일 생성 자체에 몇 초~수십 초 걸릴 수 있어
+// 버튼에 진행 상태를 표시한다.
+async function downloadMergedFile(date, btnEl) {
+  const originalText = btnEl ? btnEl.textContent : '';
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = '생성 중...'; }
   try {
+    if (currentMergedHeader && currentMergedRowsByDate[date]) {
+      // 브라우저가 버튼 상태를 먼저 그리도록 한 틱 양보한 뒤 무거운 작업 시작
+      await new Promise(r => setTimeout(r, 30));
+      const blob = buildExportBlob(currentMergedHeader, currentMergedRowsByDate[date]);
+      triggerDownload(blob, `일별상품매출현황_매장별_${date}_분류합본.xlsx`);
+      return;
+    }
+    if (btnEl) btnEl.textContent = '받아오는 중...';
     const url = await getDownloadURL(exportStorageRef(date));
     const resp = await fetch(url);
     const blob = await resp.blob();
     triggerDownload(blob, `일별상품매출현황_매장별_${date}_분류합본.xlsx`);
   } catch (err) {
     console.error('download failed', date, err);
-    alert(`${date} 합본 파일을 찾을 수 없습니다. 그 날짜를 저장할 때 합본 업로드가 실패했을 수 있습니다. 원본 파일을 다시 업로드해서 저장해주세요.`);
+    alert(`${date} 합본 파일 다운로드에 실패했습니다.\n에러: ${err.message}\n\n브라우저 개발자 도구(F12) 콘솔에서 더 자세한 내용을 확인할 수 있습니다. 팝업/다운로드 차단 알림이 주소창 근처에 떴는지도 확인해주세요.`);
+  } finally {
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = originalText; }
   }
 }
 
 // 과거에 저장된 합본 파일을 다시 받아와서, 현재의 분류 규칙(classifyRow)과
 // 기준표로 재분류한 뒤 다시 업로드하고 다운로드한다. 원본 파일을 다시
 // 올릴 필요 없이, 분류 로직이나 기준표를 고친 뒤 과거 날짜를 갱신할 때 사용한다.
-async function reclassifyAndRedownload(date) {
+async function reclassifyAndRedownload(date, btnEl) {
   if (!confirm(`${date} 합본 파일을 현재 분류 규칙/기준표로 다시 계산합니다. 저장된 결과가 갱신됩니다. 계속할까요?`)) return;
+  const originalText = btnEl ? btnEl.textContent : '';
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = '재분류 중...'; }
   try {
     const url = await getDownloadURL(exportStorageRef(date));
     const resp = await fetch(url);
@@ -1016,7 +1053,9 @@ async function reclassifyAndRedownload(date) {
     const items = [];
     const rows = json.slice(1);
     rows.forEach(r => {
+      const majorCode = cols.majorCode >= 0 ? normCode(r[cols.majorCode]) : '';
       const majorName = cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '';
+      const midCode = cols.midCode >= 0 ? normCode(r[cols.midCode]) : '';
       const midName = cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '';
       const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '') : '';
       const { cat, detail } = classifyRow(majorName, midName, productName);
@@ -1027,7 +1066,7 @@ async function reclassifyAndRedownload(date) {
       items.push({
         minorCode: normCode(r[cols.minorCode]),
         minorName: cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '',
-        majorName, midName,
+        majorCode, majorName, midCode, midName,
         revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
         cat,
       });
@@ -1051,6 +1090,8 @@ async function reclassifyAndRedownload(date) {
   } catch (err) {
     console.error('reclassify failed', date, err);
     alert(`재분류 실패: ${err.message}`);
+  } finally {
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = originalText; }
   }
 }
 
