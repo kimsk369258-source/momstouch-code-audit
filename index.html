@@ -469,11 +469,13 @@ async function loadMaster() {
 }
 
 async function saveMaster(map, count, sourceFileName) {
+  const updatedAt = nowISO();
+  const payload = JSON.stringify({ map, count, updatedAt, sourceFileName: sourceFileName || null });
+  const ok = await storageSet('master', payload);
+  if (!ok) throw new Error('Firebase에 저장하지 못했습니다. 브라우저 개발자 도구(F12) 콘솔에서 에러 메시지를 확인해주세요.');
   masterMap = map;
   masterRowCount = count;
-  masterUpdatedAt = nowISO();
-  const payload = JSON.stringify({ map, count, updatedAt: masterUpdatedAt, sourceFileName: sourceFileName || null });
-  await storageSet('master', payload);
+  masterUpdatedAt = updatedAt;
   renderMasterStatus();
   renderMasterTable();
 }
@@ -510,7 +512,7 @@ function renderMasterTable(filterText) {
 
 document.getElementById('masterSearch').addEventListener('input', e => renderMasterTable(e.target.value));
 
-function manualAddCode() {
+async function manualAddCode() {
   const g = id => document.getElementById(id).value.trim();
   const minorCode = normCode(g('mf-minorCode'));
   if (!minorCode) { alert('소분류코드를 입력해주세요.'); return; }
@@ -521,7 +523,12 @@ function manualAddCode() {
     cat: g('mf-cat'), detail: g('mf-detail'),
   };
   const newMap = { ...masterMap, [minorCode]: entry };
-  saveMaster(newMap, Object.keys(newMap).length, masterUpdatedAtSourceName());
+  try {
+    await saveMaster(newMap, Object.keys(newMap).length);
+  } catch (err) {
+    alert('저장 실패: ' + err.message);
+    return;
+  }
   ['mf-majorCode','mf-majorName','mf-midCode','mf-midName','mf-minorCode','mf-minorName','mf-cat','mf-detail'].forEach(id => document.getElementById(id).value='');
 }
 function masterUpdatedAtSourceName() { return undefined; }
@@ -857,20 +864,24 @@ async function addAnomalyToMaster(formId, code) {
     cat: g('-cat'), detail: g('-detail'),
   };
   const newMap = { ...masterMap, [code]: entry };
-  await saveMaster(newMap, Object.keys(newMap).length);
-  alert(`코드 ${code} 를(을) 기준표에 추가했습니다. 대조 결과를 다시 확인해 보세요.`);
-  if (currentDailyReports) {
-    // re-run analysis against updated master
-    Object.keys(currentDailyReports).forEach(dk => {
-      // rebuild using stored raw isn't available; simplest: just remove resolved anomaly visually by re-render note
-    });
+  try {
+    await saveMaster(newMap, Object.keys(newMap).length);
+  } catch (err) {
+    alert('저장 실패: ' + err.message);
+    return;
   }
+  alert(`코드 ${code} 를(을) 기준표에 추가했습니다. 대조 결과를 다시 확인해 보세요.`);
 }
 
 async function updateMasterName(code, newName) {
   if (!masterMap[code]) return;
   const newMap = { ...masterMap, [code]: { ...masterMap[code], minorName: newName } };
-  await saveMaster(newMap, Object.keys(newMap).length);
+  try {
+    await saveMaster(newMap, Object.keys(newMap).length);
+  } catch (err) {
+    alert('저장 실패: ' + err.message);
+    return;
+  }
   alert(`코드 ${code} 의 기준표 상품명을 "${newName}" 으로 갱신했습니다.`);
 }
 
@@ -883,7 +894,11 @@ async function saveDayReport(date) {
     if (!confirm(`${date} 날짜의 저장된 이력이 이미 있습니다. 덮어쓸까요?`)) return;
   }
 
-  await storageSet('daily:' + date, JSON.stringify(report));
+  const ok = await storageSet('daily:' + date, JSON.stringify(report));
+  if (!ok) {
+    alert(`${date} 대조 결과 저장에 실패했습니다. 브라우저 개발자 도구(F12) 콘솔에서 에러 메시지를 확인하고, 로그인이 유지되어 있는지 확인해주세요.`);
+    return;
+  }
 
   alert(`${date} 대조 결과를 저장했습니다. '③ 이력' 탭에서 확인할 수 있습니다.`);
   await loadDailyIndex();
