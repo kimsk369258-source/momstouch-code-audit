@@ -251,14 +251,14 @@
   <!-- ===================== TAB 2: 일별 대조 ===================== -->
   <section class="panel" id="panel-daily">
     <div class="card">
-      <h2>일별 매출 파일 업로드</h2>
-      <div class="card-sub">POS 엑셀 합치기 툴로 생성한 "_분류합본.xlsx" 파일을 올리면, 파일에 포함된 매출일자별로 기준표와 자동 대조합니다.</div>
+      <h2>일별 매출 원본 파일 업로드</h2>
+      <div class="card-sub">POS에서 받은 "일별상품매출현황(매장별)" 원본 파일 8~10개를 한 번에 선택하면, 자동으로 합치고 분류한 뒤 기준표와 대조합니다. 별도 합치기 툴을 거칠 필요가 없습니다.</div>
       <div class="drop-zone" id="dailyDropZone">
         <div class="dz-icon">🧾</div>
-        <div class="dz-text">일별상품매출현황(매장별)_분류합본.xlsx 를 여기로 드래그하거나 클릭</div>
-        <div class="dz-hint">.xlsx / .xls</div>
+        <div class="dz-text">일별상품매출현황(매장별) 원본 파일 여러 개를 여기로 드래그하거나 클릭 (여러 개 동시 선택 가능)</div>
+        <div class="dz-hint">.xlsx / .xls · 여러 파일 선택 가능</div>
       </div>
-      <input type="file" id="dailyFileInput" accept=".xlsx,.xls">
+      <input type="file" id="dailyFileInput" accept=".xlsx,.xls" multiple>
       <div class="status-line" id="dailyUploadStatus" style="margin-top:10px;"></div>
     </div>
 
@@ -541,9 +541,36 @@ setupDropZone('masterDropZone', 'masterFileInput', async (file) => {
 });
 
 // ==========================================================================
-// DAILY (일별 대조)
+// DAILY (일별 대조) — 여러 개의 원본 파일을 그대로 업로드하면
+// 자동으로 합치고(POS 엑셀 합치기 로직) 분류한 뒤 기준표와 대조합니다.
 // ==========================================================================
-function resolveDailyCols(header) {
+function toNum(v) { if (v==='' || v===null || v===undefined) return 0; const n = Number(v); return isNaN(n) ? 0 : n; }
+
+// ── 조각피자 판별 ──
+function isSlicePizzaName(name) {
+  return name.includes('조각피자') || name.includes('해피') || name.includes('피자(조각)');
+}
+
+// ── 분류 로직 (POS 엑셀 합치기 툴과 동일한 규칙) ──
+// 반환값: '버거' | '피자' | '치킨' | '비프' | '' (미분류)
+function classifyCat(majorName, midName, productName) {
+  const name = productName || '';
+  const major = majorName || '';
+  const mid = midName || '';
+
+  if (major === '버거' && mid === '비프패티') return '비프';
+  if (major === '버거' && mid === '싸이패티') return '버거';
+  if (major === '버거' && mid === '가슴살패티') return '버거';
+  if (major === '버거' && (mid === '복합패티' || mid === '불고기패티' || mid === '새우패티')) return '버거';
+  // 피자 대분류 전체 또는 피치세트 중분류(맘스세트 하위 포함)는 항상 피자로 강제 분류
+  if (major === '피자' || mid === '피치세트') return '피자';
+  if (mid === '뼈치킨') return '치킨';
+  if (mid === '순살치킨') return '치킨';
+  if (isSlicePizzaName(name)) return '피자';
+  return '';
+}
+
+function resolveRawCols(header) {
   const idx = name => header.indexOf(name);
   return {
     date: idx('매출일자'),
@@ -553,61 +580,80 @@ function resolveDailyCols(header) {
     productName: idx('상품명'),
     totalSales: idx('총매출액'),
     realSales3: idx('3 실매출액'),
-    catAssigned: idx('분류'),
   };
 }
 
-function toNum(v) { if (v==='' || v===null || v===undefined) return 0; const n = Number(v); return isNaN(n) ? 0 : n; }
+// 여러 개의 원본 파일을 읽어서: ① 숨은 합계행 제외 ② 자동 분류 ③ 매출일자별로 그룹화
+async function processRawDailyFiles(fileList) {
+  const extracted = []; // 모든 파일의 모든 실거래 행 (정규화된 형태)
+  const fileNames = [];
+  let totalRemovedSummary = 0;
 
-function analyzeDailyFile(json) {
-  if (json.length < 2) throw new Error('데이터가 없는 파일입니다.');
-  const header = json[0].map(String);
-  const cols = resolveDailyCols(header);
-  if (cols.date < 0 || cols.minorCode < 0) throw new Error('"매출일자" 또는 "소분류코드" 컬럼을 찾을 수 없습니다. POS 합치기 툴로 생성한 파일인지 확인해주세요.');
+  for (const file of fileList) {
+    const json = await readWorkbook(file);
+    if (json.length < 2) continue;
+    fileNames.push(file.name);
 
-  const rows = json.slice(1).filter(r => {
-    const v = r[cols.date];
-    return !(v === '' || v === null || v === undefined);
-  });
+    const header = json[0].map(String);
+    const cols = resolveRawCols(header);
+    if (cols.date < 0 || cols.minorCode < 0) {
+      throw new Error(`"${file.name}" 파일에서 "매출일자" 또는 "소분류코드" 컬럼을 찾을 수 없습니다. 일별상품매출현황(매장별) 원본 파일이 맞는지 확인해주세요.`);
+    }
 
-  // group by date
+    json.slice(1).forEach(r => {
+      const dv = r[cols.date];
+      // 숨은 합계(소계) 행 제외 — 매출일자가 비어있는 행은 그 파일 전체 합계를
+      // 담은 유령 행으로, 그대로 합치면 매출이 중복 집계됩니다.
+      if (dv === '' || dv === null || dv === undefined) { totalRemovedSummary++; return; }
+
+      const majorName = cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '';
+      const midName = cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '';
+      const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '') : '';
+
+      extracted.push({
+        date: dateKeyOf(dv),
+        minorCode: normCode(r[cols.minorCode]),
+        minorName: cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '',
+        majorName, midName,
+        revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
+        cat: classifyCat(majorName, midName, productName),
+      });
+    });
+  }
+
+  // 매출일자별로 그룹화
   const byDate = {};
-  rows.forEach(r => {
-    const dk = dateKeyOf(r[cols.date]);
-    if (!byDate[dk]) byDate[dk] = [];
-    byDate[dk].push(r);
+  extracted.forEach(item => {
+    if (!byDate[item.date]) byDate[item.date] = [];
+    byDate[item.date].push(item);
   });
 
   const reports = {};
   Object.keys(byDate).forEach(dk => {
-    reports[dk] = buildDateReport(dk, byDate[dk], cols);
+    reports[dk] = buildDateReport(dk, byDate[dk]);
   });
-  return reports;
+
+  return { reports, fileNames, totalRemovedSummary, totalRows: extracted.length };
 }
 
-function buildDateReport(date, rowsForDate, cols) {
+function buildDateReport(date, itemsForDate) {
   // aggregate per minorCode
   const agg = {}; // code -> {majorName, midName, minorName, revenue, rowCount, catAssignedSet}
   let totalRevenue = 0;
 
-  rowsForDate.forEach(r => {
-    const code = normCode(cols.minorCode >= 0 ? r[cols.minorCode] : '');
-    if (!code) return;
-    const revenue = cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0);
-    totalRevenue += revenue;
-    if (!agg[code]) {
-      agg[code] = {
-        code,
-        majorName: cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '',
-        midName: cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '',
-        minorName: cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '',
+  itemsForDate.forEach(item => {
+    if (!item.minorCode) return;
+    totalRevenue += item.revenue;
+    if (!agg[item.minorCode]) {
+      agg[item.minorCode] = {
+        code: item.minorCode,
+        majorName: item.majorName, midName: item.midName, minorName: item.minorName,
         revenue: 0, rowCount: 0, catAssignedSet: new Set(),
       };
     }
-    agg[code].revenue += revenue;
-    agg[code].rowCount += 1;
-    const ca = cols.catAssigned >= 0 ? String(r[cols.catAssigned] ?? '').trim() : '';
-    if (ca) agg[code].catAssignedSet.add(ca);
+    agg[item.minorCode].revenue += item.revenue;
+    agg[item.minorCode].rowCount += 1;
+    if (item.cat) agg[item.minorCode].catAssignedSet.add(item.cat);
   });
 
   const TRACKED = ['버거','피자','치킨','비프'];
@@ -630,8 +676,8 @@ function buildDateReport(date, rowsForDate, cols) {
     // itself treats as one of the 4 tracked categories. Codes under generic
     // "promotion / bucket" mid-categories (e.g. 매장행사) get reused for many
     // unrelated products by design, and pizza-set (피치세트) items are
-    // *intentionally* re-labeled 피자 by the merge tool even though the master
-    // lists them under 맘스세트 — both are expected, not anomalies.
+    // *intentionally* re-labeled 피자 even though the master lists them under
+    // 맘스세트 — both are expected, not anomalies.
     if (TRACKED.includes(master.cat)) {
       // name mismatch (minor name changed)
       if (master.minorName && item.minorName && master.minorName !== item.minorName) {
@@ -657,7 +703,7 @@ function buildDateReport(date, rowsForDate, cols) {
         }
       });
     }
-    // unclassified: master expects a tracked category but tool assigned nothing
+    // unclassified: master expects a tracked category but nothing got assigned
     if (TRACKED.includes(master.cat) && assignedCats.length === 0) {
       anomalies.push({
         code: item.code, type: 'unclassified',
@@ -670,31 +716,40 @@ function buildDateReport(date, rowsForDate, cols) {
   });
 
   return {
-    date, uploadedAt: nowISO(), totalRows: rowsForDate.length,
+    date, uploadedAt: nowISO(), totalRows: itemsForDate.length,
     totalRevenue, uniqueCodes: Object.keys(agg).length,
     anomalies, status: anomalies.length === 0 ? 'ok' : 'issue',
   };
 }
 
-setupDropZone('dailyDropZone', 'dailyFileInput', async (file) => {
+async function handleDailyFiles(fileList) {
   const statusEl = document.getElementById('dailyUploadStatus');
   if (masterRowCount === 0) {
     statusEl.innerHTML = `<span class="pill pill-warn">⚠ 기준표 먼저 등록 필요</span><span>① 기준코드 관리 탭에서 상품코드정리.xlsx를 먼저 업로드해주세요.</span>`;
     return;
   }
-  statusEl.innerHTML = `<span class="pill pill-neutral">읽는 중...</span>`;
+  const files = Array.from(fileList).filter(f => /\.(xlsx|xls)$/i.test(f.name));
+  if (files.length === 0) return;
+
+  statusEl.innerHTML = `<span class="pill pill-neutral">읽는 중... (${files.length}개 파일)</span>`;
   try {
-    const json = await readWorkbook(file);
-    const reports = analyzeDailyFile(json);
-    Object.values(reports).forEach(r => r.fileName = file.name);
+    const { reports, fileNames, totalRemovedSummary, totalRows } = await processRawDailyFiles(files);
+    const fileLabel = fileNames.length > 1 ? `${fileNames.length}개 파일` : (fileNames[0] || '');
+    Object.values(reports).forEach(r => r.fileName = fileLabel);
     currentDailyReports = reports;
     const dates = Object.keys(reports).sort();
-    statusEl.innerHTML = `<span class="pill pill-ok">✓ 분석 완료</span><span>${esc(file.name)} · ${dates.length}개 날짜(${dates.join(', ')}) 발견</span>`;
+    let msg = `<span class="pill pill-ok">✓ 합치기+분류+대조 완료</span><span>${files.length}개 파일 · 총 ${fmtNum(totalRows)}행 · ${dates.length}개 날짜(${dates.join(', ')})</span>`;
+    statusEl.innerHTML = msg;
+    if (totalRemovedSummary > 0) {
+      statusEl.innerHTML += `<div class="note" style="margin-top:4px;">원본 파일들의 숨은 합계행 ${totalRemovedSummary}개는 매출 중복집계 방지를 위해 자동 제외되었습니다.</div>`;
+    }
     renderDailyResults(reports);
   } catch (err) {
     statusEl.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`;
   }
-});
+}
+
+setupMultiDropZone('dailyDropZone', 'dailyFileInput', handleDailyFiles);
 
 function renderDailyResults(reports) {
   const container = document.getElementById('dailyResults');
@@ -937,6 +992,23 @@ function setupDropZone(zoneId, inputId, onFile) {
   });
   input.addEventListener('change', e => {
     const f = e.target.files[0]; if (f) onFile(f);
+    input.value = '';
+  });
+}
+
+// 여러 파일을 한 번에 받는 드롭존 (일별 대조 탭 — 원본 파일 8~10개 동시 업로드용)
+function setupMultiDropZone(zoneId, inputId, onFiles) {
+  const zone = document.getElementById(zoneId);
+  const input = document.getElementById(inputId);
+  zone.addEventListener('click', () => input.click());
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); zone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) onFiles(e.dataTransfer.files);
+  });
+  input.addEventListener('change', e => {
+    if (e.target.files.length) onFiles(e.target.files);
     input.value = '';
   });
 }
