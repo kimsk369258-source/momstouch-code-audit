@@ -329,7 +329,7 @@ if (isConfigured) {
 }
 
 // 날짜별 합본(분류된 전체 행) 파일이 저장되는 Storage 경로
-function exportStorageRef(date) { return ref(storage, `exports/${date}.xlsx`); }
+function exportStorageRef(date) { return ref(storage, `exports/${date}.csv`); }
 
 // ==========================================================================
 // State
@@ -773,22 +773,21 @@ function buildDateReport(date, itemsForDate) {
   };
 }
 
-// ── 다운로드용 워크북 만들기 ──
+// ── 다운로드용 CSV 만들기 ──
+// (참고: xlsx 형식은 SheetJS가 브라우저에서 20만 행 이상을 쓸 때 내부 한계로
+// 실패하는 경우가 있어(Invalid array length), 대용량에서도 안정적인 CSV로 만든다.
+// 엑셀에서 그대로 더블클릭해서 열 수 있다.)
+function csvField(v) {
+  if (v === null || v === undefined) return '';
+  let s = v instanceof Date ? formatDate(v) : String(v);
+  if (/[",\n\r]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
 function buildExportBlob(header, rows) {
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
-  const colWidths = header.map((h, ci) => {
-    let max = String(h).length;
-    for (let ri = 0; ri < Math.min(rows.length, 100); ri++) {
-      const v = ci < rows[ri].length ? String(rows[ri][ci]) : '';
-      if (v.length > max) max = v.length;
-    }
-    return { wch: Math.min(max + 2, 30) };
-  });
-  ws['!cols'] = colWidths;
-  XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
-  const arrayBuf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-  return new Blob([arrayBuf], { type: 'application/octet-stream' });
+  const lines = [header.map(csvField).join(',')];
+  for (const r of rows) lines.push(r.map(csvField).join(','));
+  const csvText = '\uFEFF' + lines.join('\r\n'); // BOM: 엑셀에서 한글이 깨지지 않도록
+  return new Blob([csvText], { type: 'text/csv;charset=utf-8' });
 }
 
 function triggerDownload(blob, filename) {
@@ -876,7 +875,7 @@ function dayCardHTML(report, showSaveBtn) {
            </table></div>`
       }
       <div class="note">※ '이상 없음'은 기준코드표에 없는 코드, 코드명 변경, 자동분류 결과 불일치가 없다는 뜻입니다. 매출 합계는 세트 구성행이 포함되어 실제 매출과 다를 수 있어 참고용입니다.
-      ${report.totalRows > 50000 ? `<br>※ 처리 행수가 많아(${fmtNum(report.totalRows)}행) 다운로드/저장 버튼을 누른 뒤 파일 생성에 1~2분, Storage 저장까지는 몇 분 정도 걸릴 수 있습니다. 버튼에 "생성 중..." 등 문구가 떠 있으면 정상 진행 중이니 다른 동작 없이 기다려주세요.` : ''}</div>
+      ${report.totalRows > 200000 ? `<br>※ 처리 행수가 많아(${fmtNum(report.totalRows)}행) 다운로드/저장에 몇 초~십수 초 정도 걸릴 수 있습니다. 버튼에 "생성 중..." 등 문구가 떠 있으면 정상 진행 중입니다.` : ''}</div>
     </div>
   </div>`;
 }
@@ -1015,14 +1014,14 @@ async function downloadMergedFile(date, btnEl) {
       // 브라우저가 버튼 상태를 먼저 그리도록 한 틱 양보한 뒤 무거운 작업 시작
       await new Promise(r => setTimeout(r, 30));
       const blob = buildExportBlob(currentMergedHeader, currentMergedRowsByDate[date]);
-      triggerDownload(blob, `일별상품매출현황_매장별_${date}_분류합본.xlsx`);
+      triggerDownload(blob, `일별상품매출현황_매장별_${date}_분류합본.csv`);
       return;
     }
     if (btnEl) btnEl.textContent = '받아오는 중...';
     const url = await getDownloadURL(exportStorageRef(date));
     const resp = await fetch(url);
     const blob = await resp.blob();
-    triggerDownload(blob, `일별상품매출현황_매장별_${date}_분류합본.xlsx`);
+    triggerDownload(blob, `일별상품매출현황_매장별_${date}_분류합본.csv`);
   } catch (err) {
     console.error('download failed', date, err);
     alert(`${date} 합본 파일 다운로드에 실패했습니다.\n에러: ${err.message}\n\n브라우저 개발자 도구(F12) 콘솔에서 더 자세한 내용을 확인할 수 있습니다. 팝업/다운로드 차단 알림이 주소창 근처에 떴는지도 확인해주세요.`);
@@ -1041,9 +1040,10 @@ async function reclassifyAndRedownload(date, btnEl) {
   try {
     const url = await getDownloadURL(exportStorageRef(date));
     const resp = await fetch(url);
-    const buf = await resp.arrayBuffer();
-    const wb = XLSX.read(buf, { type: 'array', cellDates: true });
-    const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
+    let text = await resp.text();
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1); // BOM 제거
+    const wb = XLSX.read(text, { type: 'string', raw: true });
+    const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: true });
     const header = json[0].map(String);
     const cols = resolveRawCols(header);
     const catIdx = header.indexOf('분류'), detailIdx = header.indexOf('세부구분');
@@ -1081,7 +1081,7 @@ async function reclassifyAndRedownload(date, btnEl) {
     const ok = await storageSet('daily:' + date, JSON.stringify(newReport));
     if (!ok) throw new Error('재분류된 대조 결과 저장에 실패했습니다.');
 
-    triggerDownload(blob, `일별상품매출현황_매장별_${date}_분류합본.xlsx`);
+    triggerDownload(blob, `일별상품매출현황_매장별_${date}_분류합본.csv`);
     await loadDailyIndex();
     document.getElementById('historyDetail').innerHTML = '';
 
