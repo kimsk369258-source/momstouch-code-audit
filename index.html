@@ -492,6 +492,16 @@ async function saveMaster(map, count, sourceFileName) {
   renderMasterTable();
 }
 
+// 기준표를 읽고(현재 masterMap) 고쳐서 다시 저장하는 모든 동작(코드 추가/이름 갱신/파일 업로드 등)을
+// 이 큐를 통해 하나씩 순서대로만 실행한다. 그렇지 않으면 "추가" 버튼을 연달아 빠르게 눌렀을 때
+// 나중 저장이 먼저 것 위에 겹쳐써서 앞서 추가한 내용이 사라지는 경쟁 상태(race condition)가 생긴다.
+let masterQueue = Promise.resolve();
+function withMasterLock(fn) {
+  const run = masterQueue.then(fn, fn);
+  masterQueue = run.then(() => {}, () => {});
+  return run;
+}
+
 function renderMasterStatus() {
   const el = document.getElementById('masterStatus');
   if (masterRowCount === 0) {
@@ -544,16 +554,17 @@ async function manualAddCode() {
     minorCode, minorName: g('mf-minorName'),
     cat: g('mf-cat'), detail: g('mf-detail'),
   };
-  const newMap = { ...masterMap, [minorCode]: entry };
   try {
-    await saveMaster(newMap, Object.keys(newMap).length);
+    await withMasterLock(async () => {
+      const newMap = { ...masterMap, [minorCode]: entry };
+      await saveMaster(newMap, Object.keys(newMap).length);
+    });
   } catch (err) {
     alert('저장 실패: ' + err.message);
     return;
   }
   ['mf-majorCode','mf-majorName','mf-midCode','mf-midName','mf-minorCode','mf-minorName','mf-cat','mf-detail'].forEach(id => document.getElementById(id).value='');
 }
-function masterUpdatedAtSourceName() { return undefined; }
 
 // Master drop zone
 setupDropZone('masterDropZone', 'masterFileInput', async (file) => {
@@ -562,7 +573,7 @@ setupDropZone('masterDropZone', 'masterFileInput', async (file) => {
   try {
     const json = await readWorkbook(file);
     const { map, count } = buildMasterMapFromRows(json);
-    await saveMaster(map, count, file.name);
+    await withMasterLock(() => saveMaster(map, count, file.name));
     preview.innerHTML = `<div class="status-line" style="margin-top:10px;"><span class="pill pill-ok">✓ 완료</span><span>${esc(file.name)} 에서 ${count.toLocaleString()}개 코드를 불러와 저장했습니다.</span></div>`;
   } catch (err) {
     preview.innerHTML = `<div class="status-line" style="margin-top:10px;"><span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span></div>`;
@@ -956,9 +967,11 @@ async function addAnomalyToMaster(formId, code) {
     minorCode: code, minorName: g('-minor'),
     cat: g('-cat'), detail: g('-detail'),
   };
-  const newMap = { ...masterMap, [code]: entry };
   try {
-    await saveMaster(newMap, Object.keys(newMap).length);
+    await withMasterLock(async () => {
+      const newMap = { ...masterMap, [code]: entry };
+      await saveMaster(newMap, Object.keys(newMap).length);
+    });
   } catch (err) {
     alert('저장 실패: ' + err.message);
     return;
@@ -968,9 +981,12 @@ async function addAnomalyToMaster(formId, code) {
 
 async function updateMasterName(code, newName) {
   if (!masterMap[code]) return;
-  const newMap = { ...masterMap, [code]: { ...masterMap[code], minorName: newName } };
   try {
-    await saveMaster(newMap, Object.keys(newMap).length);
+    await withMasterLock(async () => {
+      if (!masterMap[code]) return;
+      const newMap = { ...masterMap, [code]: { ...masterMap[code], minorName: newName } };
+      await saveMaster(newMap, Object.keys(newMap).length);
+    });
   } catch (err) {
     alert('저장 실패: ' + err.message);
     return;
