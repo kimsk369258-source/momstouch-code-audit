@@ -605,21 +605,30 @@ function sizeInfo(productName) {
 
 // ── 분류 로직 (POS 엑셀 합치기 툴과 동일한 규칙) ──
 // 반환값: { cat: '버거'|'피자'|'치킨'|'비프'|'', detail: string }
-function classifyRow(majorName, midName, productName) {
+function classifyRow(majorName, midName, productName, minorName) {
   const name = productName || '';
   const major = majorName || '';
   const mid = midName || '';
+  const minor = minorName || '';
 
   if (major === '버거' && mid === '비프패티') return { cat: '비프', detail: '' };
   if (major === '버거' && mid === '싸이패티') return { cat: '버거', detail: '싸이패티' };
   if (major === '버거' && mid === '가슴살패티') return { cat: '버거', detail: '가슴살패티' };
   if (major === '버거' && (mid === '복합패티' || mid === '불고기패티' || mid === '새우패티')) return { cat: '버거', detail: '복합패티' };
-  // 피자 대분류 전체 또는 피치세트 중분류(맘스세트 하위 포함)는 항상 피자로 강제 분류
-  if (major === '피자' || mid === '피치세트') return { cat: '피자', detail: isSlicePizzaName(name) ? '조각피자' : '' };
-  // 치킨 대분류 전체 (뼈치킨/순살치킨뿐 아니라 떡강정/통다리/윙 등 모든 하위분류 포함)
-  if (major === '치킨') return { cat: '치킨', detail: mid };
   // 이벤트/프로모션성 버거 묶음 코드 (대분류명이 '맘스터치'로 찍히는 코드)
   if (major === '맘스터치' && mid === '버거') return { cat: '버거', detail: '' };
+  // 피자 — 대분류가 '피자'이거나, 중분류/소분류명에 '피자'가 들어가면 피자로 분류.
+  // 브랜드마다 대분류명이 다르게 찍혀도(맘스피자, 맘스터치피자앤치킨 등) 잡을 수 있도록
+  // 중분류/소분류명 텍스트 기준으로도 판단한다. '피치세트'처럼 '피자'라는 글자가 없는
+  // 경우도 별도로 잡아준다.
+  if (major === '피자' || mid === '피치세트' || mid.includes('피자') || minor.includes('피자')) {
+    return { cat: '피자', detail: isSlicePizzaName(name) ? '조각피자' : '' };
+  }
+  // 치킨 — 대분류가 '치킨'이거나, 중분류/소분류명에 '치킨'이 들어가면 치킨으로 분류
+  // (뼈치킨/순살치킨/떡강정/통다리/윙뿐 아니라 다른 브랜드의 표기도 포함)
+  if (major === '치킨' || mid.includes('치킨') || minor.includes('치킨')) {
+    return { cat: '치킨', detail: mid };
+  }
   if (isSlicePizzaName(name)) return { cat: '피자', detail: '조각피자' };
   return { cat: '', detail: '' };
 }
@@ -672,15 +681,16 @@ async function processRawDailyFiles(fileList) {
       const majorName = cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '';
       const midCode = cols.midCode >= 0 ? normCode(r[cols.midCode]) : '';
       const midName = cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '';
+      const minorNameRaw = cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '';
       const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '') : '';
-      const { cat, detail } = classifyRow(majorName, midName, productName);
+      const { cat, detail } = classifyRow(majorName, midName, productName, minorNameRaw);
       const { size, factor } = sizeInfo(productName);
       const dk = dateKeyOf(dv);
 
       if (!byDate[dk]) byDate[dk] = [];
       byDate[dk].push({
         minorCode: normCode(r[cols.minorCode]),
-        minorName: cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '',
+        minorName: minorNameRaw,
         majorCode, majorName, midCode, midName,
         revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
         cat,
@@ -1088,15 +1098,16 @@ async function reclassifyAndRedownload(date, btnEl) {
       const majorName = cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '';
       const midCode = cols.midCode >= 0 ? normCode(r[cols.midCode]) : '';
       const midName = cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '';
+      const minorNameRaw = cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '';
       const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '') : '';
-      const { cat, detail } = classifyRow(majorName, midName, productName);
+      const { cat, detail } = classifyRow(majorName, midName, productName, minorNameRaw);
       const { size, factor } = sizeInfo(productName);
       r[catIdx] = cat; r[detailIdx] = detail;
       if (sizeIdx >= 0) r[sizeIdx] = size;
       if (factorIdx >= 0) r[factorIdx] = factor;
       items.push({
         minorCode: normCode(r[cols.minorCode]),
-        minorName: cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '',
+        minorName: minorNameRaw,
         majorCode, majorName, midCode, midName,
         revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
         cat,
