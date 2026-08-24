@@ -621,7 +621,7 @@ function classifyRow(majorName, midName, productName, minorName) {
   // 브랜드마다 대분류명이 다르게 찍혀도(맘스피자, 맘스터치피자앤치킨 등) 잡을 수 있도록
   // 중분류/소분류명 텍스트 기준으로도 판단한다. '피치세트'처럼 '피자'라는 글자가 없는
   // 경우도 별도로 잡아준다.
-  if (major === '피자' || mid === '피치세트' || mid.includes('피자') || minor.includes('피자')) {
+  if (major === '피자' || mid.includes('피자') || minor.includes('피자') || mid.includes('피치세트') || minor.includes('피치세트')) {
     return { cat: '피자', detail: isSlicePizzaName(name) ? '조각피자' : '' };
   }
   // 치킨 — 대분류가 '치킨'이거나, 중분류/소분류명에 '치킨'이 들어가면 치킨으로 분류
