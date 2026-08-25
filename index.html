@@ -598,24 +598,22 @@ function downloadMasterFile(btnEl) {
     (overridesByCode[code] = overridesByCode[code] || []).push({ name, ...masterProductOverrides[key] });
   });
 
+  // 항상 상품명 하나당 한 줄씩 세로로 펼쳐서 내보낸다.
   const rows = [];
   entries.forEach(e => {
     const codeOverrides = overridesByCode[e.minorCode] || [];
-    const distinctCats = new Set(codeOverrides.map(o => o.cat));
-    // 상품명별로 분류가 서로 다르면(진짜 뒤섞인 버킷 코드) 한 줄로 합치지 않고
-    // 상품명별로 한 줄씩 그대로 내보낸다 — 다시 올렸을 때도 이 개별 분류가 유지되도록.
-    if (distinctCats.size > 1) {
-      codeOverrides.forEach(o => {
-        const { cat: liveCat } = classifyRow(e.majorName, e.midName, o.name, e.minorName);
-        const match = !TRACKED.includes(o.cat) ? '(추적 대상 아님)' : (liveCat === o.cat ? '일치' : '불일치');
-        rows.push([e.majorCode, e.majorName, e.midCode, e.midName, e.minorCode, e.minorName, o.name, o.cat, o.detail || '', liveCat, match]);
-      });
-      return;
-    }
-    const nameForClassify = e.productName || e.minorName;
-    const { cat: liveCat } = classifyRow(e.majorName, e.midName, nameForClassify, e.minorName);
-    const match = !TRACKED.includes(e.cat) ? '(추적 대상 아님)' : (liveCat === e.cat ? '일치' : '불일치');
-    rows.push([e.majorCode, e.majorName, e.midCode, e.midName, e.minorCode, e.minorName, e.productName || '', e.cat, e.detail, liveCat, match]);
+    // 상품명별 개별 분류가 있으면 그걸 그대로 한 줄씩, 없으면 코드의 상품명 필드를
+    // "/"로 나눠서 각각 코드 레벨 분류로 한 줄씩 만든다.
+    const nameEntries = codeOverrides.length > 0
+      ? codeOverrides
+      : (e.productName ? e.productName.split(' / ').filter(Boolean).map(name => ({ name, cat: e.cat, detail: e.detail })) : [{ name: '', cat: e.cat, detail: e.detail }]);
+
+    nameEntries.forEach(o => {
+      const nameForClassify = o.name || e.minorName;
+      const { cat: liveCat } = classifyRow(e.majorName, e.midName, nameForClassify, e.minorName);
+      const match = !TRACKED.includes(o.cat) ? '(추적 대상 아님)' : (liveCat === o.cat ? '일치' : '불일치');
+      rows.push([e.majorCode, e.majorName, e.midCode, e.midName, e.minorCode, e.minorName, o.name, o.cat, o.detail || '', liveCat, match]);
+    });
   });
 
   const blob = buildExportBlob(header, rows);
