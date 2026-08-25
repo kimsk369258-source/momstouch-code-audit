@@ -354,6 +354,15 @@ let currentDailyReports = null; // last parsed (not-yet-saved) reports, keyed by
 // Helpers
 // ==========================================================================
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// HTML 속성(onclick="...") 안에 안전하게 넣을 수 있는 JS 문자열 리터럴을 만든다.
+// JSON.stringify는 항상 큰따옴표로 문자열을 감싸는데, onclick="..." 도 큰따옴표를 쓰기
+// 때문에 상품명 등을 그대로 넣으면 속성이 중간에 끊겨서 버튼이 깨진다(예: 상품 분류
+// 추가 버튼이 동작하지 않던 문제). JSON.stringify 결과의 큰따옴표를 &quot;로 바꿔서
+// HTML이 먼저 원래 문자로 되돌려준 뒤에야 JS가 파싱하도록 만든다.
+function escJs(value) {
+  return JSON.stringify(value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 function fmtNum(n) { return Math.round(n||0).toLocaleString(); }
 function nowISO() { return new Date().toISOString(); }
 
@@ -1110,7 +1119,7 @@ function anomalyRowHTML(a, date, idx) {
         <button class="btn btn-primary btn-sm" onclick="addAnomalyToMaster('${formId}','${a.code}')">저장</button>
       </div>`;
   } else if (a.type === 'name_mismatch') {
-    action = `<button class="btn btn-ghost btn-sm" onclick="updateMasterName('${a.code}', ${JSON.stringify(a.minorName)})">기준표 이름 갱신</button>`;
+    action = `<button class="btn btn-ghost btn-sm" onclick="updateMasterName('${a.code}', ${escJs(a.minorName)})">기준표 이름 갱신</button>`;
   } else if (a.type === 'bucket_unclassified') {
     const formId = 'addform-' + date.replace(/-/g,'') + '-' + a.code + '-' + idx;
     action = `
@@ -1118,7 +1127,7 @@ function anomalyRowHTML(a, date, idx) {
       <div class="add-form" id="${formId}" style="display:none;">
         <input type="text" id="${formId}-cat" placeholder="분류(버거/피자/치킨/비프/사이드 등)" style="width:170px">
         <input type="text" id="${formId}-detail" placeholder="세부구분">
-        <button class="btn btn-primary btn-sm" onclick="addProductOverride('${formId}','${a.code}', ${JSON.stringify(a.productName)})">저장</button>
+        <button class="btn btn-primary btn-sm" onclick="addProductOverride('${formId}','${a.code}', ${escJs(a.productName)})">저장</button>
       </div>`;
   }
 
