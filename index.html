@@ -667,7 +667,12 @@ function classifyRow(majorName, midName, productName, minorName) {
 // 이렇게 해야 "① 기준코드 관리"에서 코드를 추가/수정하면 실제 분류 결과에도 반영된다.
 function classifyForRow(minorCode, majorName, midName, productName, minorName) {
   const master = masterMap[minorCode];
-  if (master && master.cat) {
+  // '프로모션/매장행사' 같은 코드는 서로 무관한 여러 상품이 같은 소분류코드를 공유하는
+  // "재사용 버킷" 코드다(아이스아메리카노, 오렌지에이드, 불고기조각피자 등이 한 코드에 섞여있음).
+  // 이런 코드는 기준표의 단일 분류값을 통째로 씌우면 안 되고, 예전처럼 상품명 기준으로
+  // 건별로 판단해야 조각피자 등 실제 내용을 놓치지 않는다.
+  const isReusedBucket = master && (master.majorName === '프로모션' || master.midName === '매장행사');
+  if (master && master.cat && !isReusedBucket) {
     return { cat: master.cat, detail: master.detail || '' };
   }
   return classifyRow(majorName, midName, productName, minorName);
