@@ -114,6 +114,7 @@
   .t-name_mismatch { background:#fffbeb; color:#92400e; }
   .t-category_mismatch { background:#eff6ff; color:#1e40af; }
   .t-unclassified { background:#f3f4f6; color:#4b5563; }
+  .t-bucket_unclassified { background:#faf5ff; color:#6b21a8; }
 
   .day-card { border:1px solid #e5e7eb; border-radius:12px; margin-bottom:14px; overflow:hidden; }
   .day-head {
@@ -807,6 +808,7 @@ async function processRawDailyFiles(fileList) {
         minorCode: minorCodeVal,
         minorName: minorNameRaw,
         majorCode, majorName, midCode, midName,
+        productName,
         revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
         cat,
       });
@@ -836,7 +838,7 @@ async function processRawDailyFiles(fileList) {
 
 function buildDateReport(date, itemsForDate) {
   // aggregate per minorCode
-  const agg = {}; // code -> {majorCode, majorName, midCode, midName, minorName, revenue, rowCount, catAssignedSet}
+  const agg = {}; // code -> {majorCode, majorName, midCode, midName, minorName, revenue, rowCount, catAssignedSet, blankByName}
   let totalRevenue = 0;
 
   itemsForDate.forEach(item => {
@@ -849,11 +851,21 @@ function buildDateReport(date, itemsForDate) {
         midCode: item.midCode || '', midName: item.midName,
         minorName: item.minorName,
         revenue: 0, rowCount: 0, catAssignedSet: new Set(),
+        blankByName: {}, // 분류가 하나도 안 붙은 상품명별 매출/건수 — 버킷 코드에서 "어떤 상품이
+                          // 미분류인지" 구체적으로 짚어내기 위해 코드 단위가 아니라 상품명 단위로 추적
       };
     }
     agg[item.minorCode].revenue += item.revenue;
     agg[item.minorCode].rowCount += 1;
-    if (item.cat) agg[item.minorCode].catAssignedSet.add(item.cat);
+    if (item.cat) {
+      agg[item.minorCode].catAssignedSet.add(item.cat);
+    } else {
+      const key = item.productName || item.minorName || '(상품명 없음)';
+      const bucket = agg[item.minorCode].blankByName;
+      if (!bucket[key]) bucket[key] = { revenue: 0, rowCount: 0 };
+      bucket[key].revenue += item.revenue;
+      bucket[key].rowCount += 1;
+    }
   });
 
   const TRACKED = ['버거','피자','치킨','비프'];
@@ -879,8 +891,13 @@ function buildDateReport(date, itemsForDate) {
     // "promotion / bucket" mid-categories (e.g. 매장행사) get reused for many
     // unrelated products by design, and pizza-set (피치세트) items are
     // *intentionally* re-labeled 피자 even though the master lists them under
-    // 맘스세트 — both are expected, not anomalies.
-    if (TRACKED.includes(master.cat)) {
+    // 맘스세트 — both are expected, not anomalies. Reused-bucket codes can
+    // legitimately contain several different tracked categories at once
+    // (버거/치킨/피자 items sharing one 매장행사 코드), each governed by its own
+    // product-name override, so comparing them against one code-level master
+    // category would falsely flag every non-matching category as an anomaly.
+    const isReusedBucket = master.majorName === '프로모션' || master.midName === '매장행사';
+    if (TRACKED.includes(master.cat) && !isReusedBucket) {
       // name mismatch (minor name changed)
       if (master.minorName && item.minorName && master.minorName !== item.minorName) {
         anomalies.push({
@@ -910,7 +927,7 @@ function buildDateReport(date, itemsForDate) {
       });
     }
     // unclassified: master expects a tracked category but nothing got assigned
-    if (TRACKED.includes(master.cat) && assignedCats.length === 0) {
+    if (TRACKED.includes(master.cat) && !isReusedBucket && assignedCats.length === 0) {
       anomalies.push({
         code: item.code, type: 'unclassified',
         majorCode: item.majorCode, majorName: item.majorName,
@@ -919,6 +936,24 @@ function buildDateReport(date, itemsForDate) {
         revenue: item.revenue, rowCount: item.rowCount,
         assignedCat: '',
         master,
+      });
+    }
+    // 버킷 코드는 코드 단위 이상 감지에서는 빠지지만, "분류가 하나도 안 붙은 특정 상품명"은
+    // 계속 짚어낸다 — 어떤 상품이 새로 생겼는지, 기존 규칙/상품명 오버라이드로 못 잡는지
+    // 놓치지 않기 위함. 이미 등록된 상품명은(오버라이드가 있으면) 여기 안 걸린다.
+    if (isReusedBucket) {
+      Object.keys(item.blankByName).forEach(pname => {
+        const info = item.blankByName[pname];
+        anomalies.push({
+          code: item.code, type: 'bucket_unclassified',
+          majorCode: item.majorCode, majorName: item.majorName,
+          midCode: item.midCode, midName: item.midName,
+          minorName: item.minorName,
+          productName: pname,
+          revenue: info.revenue, rowCount: info.rowCount,
+          assignedCat: '',
+          master,
+        });
       });
     }
   });
@@ -1005,7 +1040,7 @@ function dayCardHTML(report, showSaveBtn) {
        <button class="btn btn-ghost btn-sm" onclick="reclassifyAndRedownload('${report.date}', this)">🔄 재분류 후 다운로드</button>
        <button class="btn btn-danger btn-sm" onclick="deleteDayReport('${report.date}')">이력 삭제</button>`;
 
-  const anomalyRows = report.anomalies.map(a => anomalyRowHTML(a, report.date)).join('');
+  const anomalyRows = report.anomalies.map((a, i) => anomalyRowHTML(a, report.date, i)).join('');
 
   return `
   <div class="day-card">
@@ -1038,18 +1073,21 @@ function dayCardHTML(report, showSaveBtn) {
 }
 
 function anomalyTypeLabel(t) {
-  return { new_code:'미등록 코드', name_mismatch:'상품명 변경', category_mismatch:'분류 불일치', unclassified:'미분류' }[t] || t;
+  return { new_code:'미등록 코드', name_mismatch:'상품명 변경', category_mismatch:'분류 불일치', unclassified:'미분류', bucket_unclassified:'버킷코드 내 미분류 상품' }[t] || t;
 }
 
-function anomalyRowHTML(a, date) {
+function anomalyRowHTML(a, date, idx) {
   const badge = `<span class="badge-type t-${a.type}">${anomalyTypeLabel(a.type)}</span>`;
   let masterCol = '-', currentCol = esc(a.assignedCat || '-');
   if (a.type === 'new_code') { masterCol = '<em style="color:#9ca3af;">기준표 없음</em>'; }
+  else if (a.type === 'bucket_unclassified') { masterCol = '<em style="color:#9ca3af;">버킷코드 — 상품명별 관리</em>'; }
   else if (a.master) { masterCol = esc(a.master.cat || '-'); }
 
   let minorNameCell = esc(a.minorName);
   if (a.type === 'name_mismatch' && a.master) {
     minorNameCell = `${esc(a.minorName)} <span class="note" style="display:block;">기준표상 이름: ${esc(a.master.minorName)}</span>`;
+  } else if (a.type === 'bucket_unclassified') {
+    minorNameCell = `${esc(a.minorName)} <span class="note" style="display:block;">상품명: ${esc(a.productName)}</span>`;
   }
 
   let action = '';
@@ -1070,6 +1108,15 @@ function anomalyRowHTML(a, date) {
       </div>`;
   } else if (a.type === 'name_mismatch') {
     action = `<button class="btn btn-ghost btn-sm" onclick="updateMasterName('${a.code}', ${JSON.stringify(a.minorName)})">기준표 이름 갱신</button>`;
+  } else if (a.type === 'bucket_unclassified') {
+    const formId = 'addform-' + date.replace(/-/g,'') + '-' + a.code + '-' + idx;
+    action = `
+      <button class="btn btn-ghost btn-sm" onclick="toggleAddForm('${formId}')">상품 분류 추가</button>
+      <div class="add-form" id="${formId}" style="display:none;">
+        <input type="text" id="${formId}-cat" placeholder="분류(버거/피자/치킨/비프/사이드 등)" style="width:170px">
+        <input type="text" id="${formId}-detail" placeholder="세부구분">
+        <button class="btn btn-primary btn-sm" onclick="addProductOverride('${formId}','${a.code}', ${JSON.stringify(a.productName)})">저장</button>
+      </div>`;
   }
 
   return `<tr>
@@ -1109,6 +1156,25 @@ async function addAnomalyToMaster(formId, code) {
     return;
   }
   alert(`코드 ${code} 를(을) 기준표에 추가했습니다. 대조 결과를 다시 확인해 보세요.`);
+}
+
+// 버킷 코드(프로모션/매장행사)에서 특정 상품명 하나에만 분류를 지정한다.
+// 코드 전체가 아니라 "코드|상품명" 단위로 저장되어, 같은 코드의 다른 상품명에는 영향이 없다.
+async function addProductOverride(formId, code, productName) {
+  const g = suffix => document.getElementById(formId + suffix).value.trim();
+  const cat = g('-cat');
+  if (!cat) { alert('분류를 입력해주세요.'); return; }
+  const detail = g('-detail');
+  try {
+    await withMasterLock(async () => {
+      const newOverrides = { ...masterProductOverrides, [code + '|' + productName]: { cat, detail } };
+      await saveMaster(masterMap, masterRowCount, undefined, newOverrides);
+    });
+  } catch (err) {
+    alert('저장 실패: ' + err.message);
+    return;
+  }
+  alert(`"${productName}" 상품을 "${cat}"로 분류에 추가했습니다. 대조 결과를 다시 확인해 보세요.`);
 }
 
 async function updateMasterName(code, newName) {
@@ -1232,6 +1298,7 @@ async function reclassifyAndRedownload(date, btnEl) {
         minorCode: minorCodeVal,
         minorName: minorNameRaw,
         majorCode, majorName, midCode, midName,
+        productName,
         revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
         cat,
       });
@@ -1432,7 +1499,7 @@ Object.assign(window, {
   doLogin, doLogout,
   manualAddCode, toggleDay, toggleAddForm, addAnomalyToMaster, updateMasterName,
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
-  downloadMergedFile, reclassifyAndRedownload, downloadMasterFile,
+  downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
 });
 </script>
 </body>
