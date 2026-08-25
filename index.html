@@ -674,8 +674,11 @@ function isSlicePizzaName(name) {
 }
 
 // ── 사이즈구분 + 보정값 ──
-function sizeInfo(productName) {
+function sizeInfo(productName, minorName) {
   const name = productName || '';
+  const minor = minorName || '';
+  // 소분류명이 '반반치킨'이면 상품명 표기와 무관하게 한마리 취급(보정값 2)
+  if (minor === '반반치킨') return { size: '한마리', factor: 2 };
   if (/한마리/.test(name)) return { size: '한마리', factor: 2 };
   if (/반마리/.test(name)) return { size: '반마리', factor: 1 };
   if (/MAX/i.test(name)) return { size: 'Max', factor: 2 };
@@ -800,7 +803,7 @@ async function processRawDailyFiles(fileList) {
       const minorNameRaw = cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '';
       const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '') : '';
       const { cat, detail } = classifyForRow(minorCodeVal, majorName, midName, productName, minorNameRaw);
-      const { size, factor } = sizeInfo(productName);
+      const { size, factor } = sizeInfo(productName, minorNameRaw);
       const dk = dateKeyOf(dv);
 
       if (!byDate[dk]) byDate[dk] = [];
@@ -1290,7 +1293,7 @@ async function reclassifyAndRedownload(date, btnEl) {
       const minorNameRaw = cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '';
       const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '') : '';
       const { cat, detail } = classifyForRow(minorCodeVal, majorName, midName, productName, minorNameRaw);
-      const { size, factor } = sizeInfo(productName);
+      const { size, factor } = sizeInfo(productName, minorNameRaw);
       r[catIdx] = cat; r[detailIdx] = detail;
       if (sizeIdx >= 0) r[sizeIdx] = size;
       if (factorIdx >= 0) r[factorIdx] = factor;
