@@ -257,13 +257,13 @@
   <section class="panel" id="panel-daily">
     <div class="card">
       <h2>일별 매출 원본 파일 업로드</h2>
-      <div class="card-sub">POS에서 받은 "일별상품매출현황(매장별)" 원본 파일 8~10개를 한 번에 선택하면, 자동으로 합치고 분류한 뒤 기준표와 대조합니다. 별도 합치기 툴을 거칠 필요가 없습니다.</div>
+      <div class="card-sub">POS에서 받은 "일별상품매출현황(매장별)" 원본 파일 8~10개를 한 번에 선택하면, 자동으로 합치고 분류한 뒤 기준표와 대조합니다. 별도 합치기 툴을 거칠 필요가 없습니다. 이미 내려받은 "_분류합본" 파일을 수정 후 다시 올려도 됩니다 — 자동으로 알아보고 재분류합니다.</div>
       <div class="drop-zone" id="dailyDropZone">
         <div class="dz-icon">🧾</div>
         <div class="dz-text">일별상품매출현황(매장별) 원본 파일 여러 개를 여기로 드래그하거나 클릭 (여러 개 동시 선택 가능)</div>
-        <div class="dz-hint">.xlsx / .xls · 여러 파일 선택 가능</div>
+        <div class="dz-hint">.xlsx / .xls / .csv · 여러 파일 선택 가능</div>
       </div>
-      <input type="file" id="dailyFileInput" accept=".xlsx,.xls" multiple>
+      <input type="file" id="dailyFileInput" accept=".xlsx,.xls,.csv" multiple>
       <div class="status-line" id="dailyUploadStatus" style="margin-top:10px;"></div>
     </div>
 
@@ -369,19 +369,29 @@ function dateKeyOf(v) {
 }
 
 function readWorkbook(file) {
+  const isCsv = /\.csv$/i.test(file.name);
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = e => {
       try {
-        const data = new Uint8Array(e.target.result);
-        const wb = XLSX.read(data, { type:'array', cellDates:true });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const json = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' });
+        let json;
+        if (isCsv) {
+          let text = e.target.result;
+          if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1); // BOM 제거
+          const wb = XLSX.read(text, { type: 'string', raw: true });
+          json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: true });
+        } else {
+          const data = new Uint8Array(e.target.result);
+          const wb = XLSX.read(data, { type:'array', cellDates:true });
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          json = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' });
+        }
         resolve(json);
       } catch (err) { reject(err); }
     };
     reader.onerror = () => reject(new Error('파일을 읽을 수 없습니다.'));
-    reader.readAsArrayBuffer(file);
+    if (isCsv) reader.readAsText(file, 'utf-8');
+    else reader.readAsArrayBuffer(file);
   });
 }
 
@@ -677,7 +687,14 @@ async function processRawDailyFiles(fileList) {
     fileNames.push(file.name);
 
     const header = json[0].map(String);
-    if (!outputHeader) outputHeader = [...header, '분류', '세부구분', '사이즈구분', '보정값'];
+    // 이미 이 툴에서 내려받은 "_분류합본" 파일(끝에 분류/세부구분/사이즈구분/보정값 컬럼이
+    // 이미 있는 파일)을 다시 올린 경우, 컬럼을 중복으로 덧붙이지 않고 그 자리에서 값만
+    // 최신 규칙으로 다시 계산해 덮어쓴다. 원본 파일이면 새로 4개 컬럼을 추가한다.
+    const alreadyClassified = header.length >= 4 &&
+      header.slice(-4).join('|') === ['분류','세부구분','사이즈구분','보정값'].join('|');
+    const catIdx = alreadyClassified ? header.length - 4 : header.length;
+    const detailIdx = catIdx + 1, sizeIdx = catIdx + 2, factorIdx = catIdx + 3;
+    if (!outputHeader) outputHeader = alreadyClassified ? header : [...header, '분류', '세부구분', '사이즈구분', '보정값'];
     const cols = resolveRawCols(header);
     if (cols.date < 0 || cols.minorCode < 0) {
       throw new Error(`"${file.name}" 파일에서 "매출일자" 또는 "소분류코드" 컬럼을 찾을 수 없습니다. 일별상품매출현황(매장별) 원본 파일이 맞는지 확인해주세요.`);
@@ -709,7 +726,13 @@ async function processRawDailyFiles(fileList) {
       });
 
       if (!rowsByDate[dk]) rowsByDate[dk] = [];
-      rowsByDate[dk].push([...r, cat, detail, size, factor]);
+      if (alreadyClassified) {
+        const newRow = r.slice();
+        newRow[catIdx] = cat; newRow[detailIdx] = detail; newRow[sizeIdx] = size; newRow[factorIdx] = factor;
+        rowsByDate[dk].push(newRow);
+      } else {
+        rowsByDate[dk].push([...r, cat, detail, size, factor]);
+      }
     });
   }
 
@@ -852,7 +875,7 @@ async function handleDailyFiles(fileList) {
     statusEl.innerHTML = `<span class="pill pill-warn">⚠ 기준표 먼저 등록 필요</span><span>① 기준코드 관리 탭에서 상품코드정리.xlsx를 먼저 업로드해주세요.</span>`;
     return;
   }
-  const files = Array.from(fileList).filter(f => /\.(xlsx|xls)$/i.test(f.name));
+  const files = Array.from(fileList).filter(f => /\.(xlsx|xls|csv)$/i.test(f.name));
   if (files.length === 0) return;
 
   statusEl.innerHTML = `<span class="pill pill-neutral">읽는 중... (${files.length}개 파일)</span>`;
