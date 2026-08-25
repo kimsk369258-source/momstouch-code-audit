@@ -655,6 +655,17 @@ function classifyRow(majorName, midName, productName, minorName) {
   return { cat: '', detail: '' };
 }
 
+// 기준표(masterMap)에 등록된 코드는 기준표의 분류값을 그대로 쓰고, 등록되지 않은
+// (아직 기준표에 없는) 코드만 classifyRow의 이름 기반 추론 규칙으로 분류한다.
+// 이렇게 해야 "① 기준코드 관리"에서 코드를 추가/수정하면 실제 분류 결과에도 반영된다.
+function classifyForRow(minorCode, majorName, midName, productName, minorName) {
+  const master = masterMap[minorCode];
+  if (master && master.cat) {
+    return { cat: master.cat, detail: master.detail || '' };
+  }
+  return classifyRow(majorName, midName, productName, minorName);
+}
+
 function resolveRawCols(header) {
   const idx = name => header.indexOf(name);
   return {
@@ -710,15 +721,16 @@ async function processRawDailyFiles(fileList) {
       const majorName = cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '';
       const midCode = cols.midCode >= 0 ? normCode(r[cols.midCode]) : '';
       const midName = cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '';
+      const minorCodeVal = normCode(r[cols.minorCode]);
       const minorNameRaw = cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '';
       const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '') : '';
-      const { cat, detail } = classifyRow(majorName, midName, productName, minorNameRaw);
+      const { cat, detail } = classifyForRow(minorCodeVal, majorName, midName, productName, minorNameRaw);
       const { size, factor } = sizeInfo(productName);
       const dk = dateKeyOf(dv);
 
       if (!byDate[dk]) byDate[dk] = [];
       byDate[dk].push({
-        minorCode: normCode(r[cols.minorCode]),
+        minorCode: minorCodeVal,
         minorName: minorNameRaw,
         majorCode, majorName, midCode, midName,
         revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
@@ -1133,15 +1145,16 @@ async function reclassifyAndRedownload(date, btnEl) {
       const majorName = cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '';
       const midCode = cols.midCode >= 0 ? normCode(r[cols.midCode]) : '';
       const midName = cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '';
+      const minorCodeVal = normCode(r[cols.minorCode]);
       const minorNameRaw = cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '';
       const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '') : '';
-      const { cat, detail } = classifyRow(majorName, midName, productName, minorNameRaw);
+      const { cat, detail } = classifyForRow(minorCodeVal, majorName, midName, productName, minorNameRaw);
       const { size, factor } = sizeInfo(productName);
       r[catIdx] = cat; r[detailIdx] = detail;
       if (sizeIdx >= 0) r[sizeIdx] = size;
       if (factorIdx >= 0) r[factorIdx] = factor;
       items.push({
-        minorCode: normCode(r[cols.minorCode]),
+        minorCode: minorCodeVal,
         minorName: minorNameRaw,
         majorCode, majorName, midCode, midName,
         revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
