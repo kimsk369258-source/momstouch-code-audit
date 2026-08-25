@@ -223,10 +223,10 @@
       <div class="card-sub">새 파일을 업로드하면 기존 기준표를 완전히 대체합니다.</div>
       <div class="drop-zone" id="masterDropZone">
         <div class="dz-icon">📁</div>
-        <div class="dz-text">상품코드정리.xlsx 파일을 여기로 드래그하거나 클릭</div>
-        <div class="dz-hint">.xlsx / .xls</div>
+        <div class="dz-text">상품코드정리.xlsx 파일을 여기로 드래그하거나 클릭 (이 도구에서 내려받은 기준표 .csv도 가능)</div>
+        <div class="dz-hint">.xlsx / .xls / .csv</div>
       </div>
-      <input type="file" id="masterFileInput" accept=".xlsx,.xls">
+      <input type="file" id="masterFileInput" accept=".xlsx,.xls,.csv">
       <div id="masterUploadPreview"></div>
     </div>
 
@@ -440,11 +440,14 @@ function findMasterHeaderRow(rows) {
 
 function resolveMasterCols(header) {
   const idx = name => header.findIndex(v => String(v).trim() === name);
+  // idxAny: 여러 후보 이름 중 먼저 찾은 것을 사용. 이 도구에서 내려받은
+  // 기준표 파일(다시 올릴 때 '기준표 분류'라는 이름으로 되어 있음)도 그대로 인식하기 위함.
+  const idxAny = names => { for (const n of names) { const i = idx(n); if (i >= 0) return i; } return -1; };
   return {
     majorCode: idx('대분류코드'), majorName: idx('대분류명'),
     midCode: idx('중분류코드'), midName: idx('중분류명'),
     minorCode: idx('소분류코드'), minorName: idx('소분류명'),
-    cat: idx('분류'), detail: idx('세부구분'),
+    cat: idxAny(['분류', '기준표 분류']), detail: idx('세부구분'),
   };
 }
 
