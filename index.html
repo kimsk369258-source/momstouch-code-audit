@@ -753,11 +753,13 @@ function classifyRow(majorName, midName, productName, minorName) {
   if (major === '버거') return { cat: '버거', detail: mid };
   // 이벤트/프로모션성 버거 묶음 코드 (대분류명이 '맘스터치'로 찍히는 코드)
   if (major === '맘스터치' && mid === '버거') return { cat: '버거', detail: '' };
-  // 피자 — 대분류가 '피자'이거나, 중분류/소분류명에 '피자'가 들어가면 피자로 분류.
-  // 브랜드마다 대분류명이 다르게 찍혀도(맘스피자, 맘스터치피자앤치킨 등) 잡을 수 있도록
-  // 중분류/소분류명 텍스트 기준으로도 판단한다. '피치세트'처럼 '피자'라는 글자가 없는
-  // 경우도 별도로 잡아준다.
-  if (major === '피자' || mid.includes('피자') || minor.includes('피자') || mid.includes('피치세트') || minor.includes('피치세트')) {
+  // 피자 — 대분류가 '피자'이거나, 중분류/소분류명/상품명에 '피자'나 '피치세트'가 들어가면
+  // 피자로 분류. 브랜드마다 대분류명이 다르게 찍혀도(맘스피자, 맘스터치피자앤치킨 등) 잡을
+  // 수 있도록 중분류/소분류명/상품명 텍스트 기준으로도 판단한다. 중분류명이 '치킨'이어도
+  // 실제 상품명에 '피치세트'가 붙은 피자세트 메뉴는 여기서 먼저 피자로 확정해야
+  // 아래 치킨 규칙에 잘못 걸리지 않는다.
+  if (major === '피자' || mid.includes('피자') || minor.includes('피자') || name.includes('피자')
+      || mid.includes('피치세트') || minor.includes('피치세트') || name.includes('피치세트')) {
     return { cat: '피자', detail: isSlicePizzaName(name) ? '조각피자' : '' };
   }
   // 치킨 — 대분류가 '치킨'이거나, 중분류/소분류명에 '치킨'이 들어가면 치킨으로 분류
