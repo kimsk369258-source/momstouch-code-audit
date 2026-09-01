@@ -743,6 +743,9 @@ function classifyRow(majorName, midName, productName, minorName) {
   const mid = midName || '';
   const minor = minorName || '';
 
+  // 대분류가 '붐바타'인 항목은 통째로 제외 처리 (해당 브랜드는 집계 대상이 아님)
+  if (major === '붐바타') return { cat: '제외', detail: '제외' };
+
   if (major === '버거' && mid === '비프패티') return { cat: '비프', detail: '' };
   if (major === '버거' && mid === '싸이패티') return { cat: '버거', detail: '싸이패티' };
   if (major === '버거' && mid === '가슴살패티') return { cat: '버거', detail: '가슴살패티' };
@@ -964,6 +967,9 @@ function buildDateReport(date, itemsForDate) {
 
     const master = masterMap[item.code];
     if (!master) {
+      // '붐바타' 브랜드는 통째로 제외 대상이라 기준표에 등록 안 해도 "미등록 코드"로
+      // 잡지 않는다 (classifyRow가 이미 '제외'로 분류하므로 별도 등록이 필요 없음).
+      if (item.majorName === '붐바타') return;
       anomalies.push({
         code: item.code, type: 'new_code',
         majorCode: item.majorCode, majorName: item.majorName,
