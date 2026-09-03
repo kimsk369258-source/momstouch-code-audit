@@ -204,6 +204,7 @@
     <button class="tab-btn active" data-tab="master">① 기준코드 관리</button>
     <button class="tab-btn" data-tab="daily">② 일별 대조</button>
     <button class="tab-btn" data-tab="history">③ 이력</button>
+    <button class="tab-btn" data-tab="orders">④ 발주/재고</button>
   </div>
 
   <!-- ===================== TAB 1: 기준코드 관리 ===================== -->
@@ -294,6 +295,58 @@
     <div id="historyDetail"></div>
   </section>
 
+  <!-- ===================== TAB 4: 발주/재고 ===================== -->
+  <section class="panel" id="panel-orders">
+    <div class="card">
+      <h2>발주코드 매핑표</h2>
+      <div class="card-sub">"상품별코드명"(=기준코드표의 발주품목과 같은 값) 하나가 발주코드 여러 개(지역별 소싱 등)에 연결될 수 있습니다.</div>
+      <div class="status-line" id="orderCodeMapStatus">불러오는 중...</div>
+      <div class="drop-zone" id="orderCodeMapDropZone" style="margin-top:12px;">
+        <div class="dz-icon">🔗</div>
+        <div class="dz-text">발주품목코드.xlsx 파일을 여기로 드래그하거나 클릭</div>
+        <div class="dz-hint">.xlsx / .xls / .csv · 상품별코드명 · 발주코드 · 발주품명 컬럼 필요</div>
+      </div>
+      <input type="file" id="orderCodeMapFileInput" accept=".xlsx,.xls,.csv">
+      <div id="orderCodeMapPreview"></div>
+    </div>
+
+    <div class="card">
+      <h2>가맹점별 발주(배송) 데이터 업로드</h2>
+      <div class="card-sub">거래처코드·품목코드·배송일자·배송량이 담긴 원본 파일을 올리면, 배송일자별로 자동 저장됩니다. 화/목/토 배송 기준으로 계속 누적 관리하세요.</div>
+      <div class="drop-zone" id="orderDataDropZone">
+        <div class="dz-icon">🚚</div>
+        <div class="dz-text">가맹점별 발주품목 파일을 여기로 드래그하거나 클릭</div>
+        <div class="dz-hint">.xlsx / .xls / .csv · 여러 날짜 한 파일에 섞여 있어도 자동으로 나눠 저장</div>
+      </div>
+      <input type="file" id="orderDataFileInput" accept=".xlsx,.xls,.csv">
+      <div class="status-line" id="orderDataStatus" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+        <h2>발주 이력</h2>
+        <button class="btn btn-danger btn-sm" onclick="resetAllOrderHistory()">전체 발주 이력 삭제</button>
+      </div>
+      <div class="card-sub">배송일자별로 저장된 입고 데이터 목록입니다.</div>
+      <div class="table-wrap">
+        <table id="orderHistoryTable"><thead></thead><tbody></tbody></table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>재고 현황</h2>
+      <div class="card-sub">추적 시작일부터 지금까지 누적 입고량과 누적 판매(소진)량을 비교합니다. 배송받은 날부터 바로 판매 가능하다고 가정합니다.</div>
+      <div class="toolbar">
+        <select id="stockStoreSelect" class="search-input" style="flex:none; min-width:220px;" onchange="renderStockTable()">
+          <option value="">매장을 선택하세요</option>
+        </select>
+        <button class="btn btn-ghost btn-sm" onclick="loadStockData()">🔄 새로고침</button>
+      </div>
+      <div id="stockTableWrap"><div class="empty">매장을 선택하면 재고 현황이 표시됩니다.</div></div>
+      <div class="note">※ 재고 = (선택 매장의 발주품목별 누적 배송량) − (같은 매장의 판매 데이터에서 그 발주품목으로 매칭된 판매수량×보정값의 누적). 저장된 일별 대조/발주 이력이 있는 날짜만 집계에 포함됩니다.</div>
+    </div>
+  </section>
+
   <div class="footer-note">POS 엑셀 합치기 툴의 결과 파일과 함께 사용하도록 설계되었습니다.</div>
 </div>
 <!-- /#mainApp -->
@@ -353,6 +406,13 @@ let masterUpdatedAt = null;
 let masterRowCount = 0;
 let dailyIndex = [];     // [{date, fileName, uploadedAt, totalRows, totalRevenue, uniqueCodes, anomalyCount, status}]
 let currentDailyReports = null; // last parsed (not-yet-saved) reports, keyed by date
+let currentConsumptionByDate = {}; // 방금 처리한 판매 데이터의 발주품목 소진량 { date: { "매장코드|발주품목": {storeName, qty} } }
+
+// ── 발주/재고 상태 ──
+let orderCodeMap = {};       // 발주코드(정규화) -> 상품별코드명(=발주품목)
+let orderCodeEntries = [];   // [{codeName, orderCode, orderName}] (표시/다운로드용)
+let orderCodeUpdatedAt = null;
+let ordersIndex = [];        // [{date, fileName, uploadedAt, storeCount, itemCount, totalQty}]
 
 // ==========================================================================
 // Helpers
@@ -416,6 +476,8 @@ function readWorkbook(file) {
 // Firestore-backed storage. 'master' -> meta/master doc. 'daily:YYYY-MM-DD' -> daily/{date} doc.
 function resolveDocRef(key) {
   if (key.startsWith('daily:')) return doc(db, 'daily', key.slice(6));
+  if (key.startsWith('orders:')) return doc(db, 'orders', key.slice(7));
+  if (key.startsWith('consumption:')) return doc(db, 'consumption', key.slice(12));
   return doc(db, 'meta', key);
 }
 async function storageGet(key) {
@@ -467,6 +529,7 @@ function resolveMasterCols(header) {
     minorCode: idx('소분류코드'), minorName: idx('소분류명'),
     productCode: idx('상품코드'), productName: idx('상품명'),
     cat: idxAny(['분류', '기준표 분류']), detail: idx('세부구분'),
+    orderItem: idx('발주품목'),
   };
 }
 
@@ -491,6 +554,7 @@ function buildMasterMapFromRows(json) {
     const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '').trim() : '';
     const cat = cols.cat >= 0 ? String(r[cols.cat] ?? '').trim() : '';
     const detail = cols.detail >= 0 ? String(r[cols.detail] ?? '').trim() : '';
+    const orderItem = cols.orderItem >= 0 ? String(r[cols.orderItem] ?? '').trim() : '';
 
     // 소분류코드가 비어있는 행: 원본 POS 데이터에 소분류코드 자체가 없는 거래(제휴/이벤트
     // 메뉴 등)를 위한 것. 상품코드(없으면 상품명)를 키로 별도 저장한다.
@@ -501,12 +565,12 @@ function buildMasterMapFromRows(json) {
         majorName: cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '',
         midCode: normCode(cols.midCode >= 0 ? r[cols.midCode] : ''),
         midName: cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '',
-        productCode, productName, cat, detail,
+        productCode, productName, cat, detail, orderItem,
       };
       orphanEntries.push(entry);
-      if (cat) {
+      if (cat || orderItem) {
         const key = productCode ? ('PC:' + productCode) : ('NM:' + productName);
-        orphanIndex[key] = { cat, detail };
+        orphanIndex[key] = { cat, detail, orderItem };
       }
       continue;
     }
@@ -518,29 +582,32 @@ function buildMasterMapFromRows(json) {
       midName: cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '',
       minorCode: code,
       minorName: cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '',
-      productName, cat, detail,
+      productName, cat, detail, orderItem,
     };
 
     // 같은 코드가 여러 줄로 올라온 경우(상품명별로 분류를 따로 지정한 파일) — 코드 레벨
     // 대표값은 처음 나온 값을 쓰고, 나머지는 상품명별 개별 오버라이드로만 쌓는다.
     if (!(code in map)) { map[code] = rowEntry; count++; }
     if (!namesByCode[code]) namesByCode[code] = [];
-    namesByCode[code].push({ name: rowEntry.productName, cat: rowEntry.cat, detail: rowEntry.detail });
+    namesByCode[code].push({ name: rowEntry.productName, cat: rowEntry.cat, detail: rowEntry.detail, orderItem: rowEntry.orderItem });
 
-    // 상품명이 있고(공백 제외) 분류가 지정된 모든 행은 "코드|상품명" 단위 개별 분류로 저장.
-    // 나중에 실제 거래의 상품명이 정확히 일치하면 코드 레벨 분류보다 이 값을 우선 적용한다.
-    if (rowEntry.productName && rowEntry.cat) {
-      productOverrides[code + '|' + rowEntry.productName] = { cat: rowEntry.cat, detail: rowEntry.detail };
+    // 상품명이 있고(공백 제외) 분류 또는 발주품목이 지정된 모든 행은 "코드|상품명" 단위
+    // 개별 값으로 저장. 나중에 실제 거래의 상품명이 정확히 일치하면 코드 레벨 값보다
+    // 이 값을 우선 적용한다.
+    if (rowEntry.productName && (rowEntry.cat || rowEntry.orderItem)) {
+      productOverrides[code + '|' + rowEntry.productName] = { cat: rowEntry.cat, detail: rowEntry.detail, orderItem: rowEntry.orderItem };
     }
   }
 
-  // 코드당 상품명이 여러 개인데 전부 분류가 같으면(=진짜 다품종이 아니라 단순 여러 이름),
-  // 굳이 여러 줄로 나눠 저장할 필요 없이 상품명만 "/"로 합쳐 코드 레벨 entry에 채워 넣는다.
+  // 코드당 상품명이 여러 개인데 전부 분류와 발주품목이 같으면(=진짜 다품종이 아니라
+  // 단순 여러 이름), 굳이 여러 줄로 나눠 저장할 필요 없이 상품명만 "/"로 합쳐
+  // 코드 레벨 entry에 채워 넣는다.
   Object.keys(namesByCode).forEach(code => {
     const list = namesByCode[code].filter(x => x.name);
     if (list.length <= 1) { if (list.length === 1) map[code].productName = list[0].name; return; }
     const cats = new Set(list.map(x => x.cat));
-    if (cats.size <= 1) {
+    const orderItems = new Set(list.map(x => x.orderItem));
+    if (cats.size <= 1 && orderItems.size <= 1) {
       map[code].productName = [...new Set(list.map(x => x.name))].join(' / ');
     }
     // cats.size > 1(진짜 상품명별로 분류가 다른 경우)이면 productOverrides가 이미 개별
@@ -628,7 +695,7 @@ document.getElementById('masterSearch').addEventListener('input', e => renderMas
 
 function downloadMasterFile(btnEl) {
   if (masterRowCount === 0 && masterOrphanEntries.length === 0) { alert('등록된 기준표가 없습니다. 먼저 상품코드정리.xlsx를 업로드해주세요.'); return; }
-  const header = ['대분류코드','대분류명','중분류코드','중분류명','소분류코드','상품코드','소분류명','상품명','기준표 분류','세부구분','현재 자동분류','일치 여부'];
+  const header = ['대분류코드','대분류명','중분류코드','중분류명','소분류코드','상품코드','소분류명','상품명','기준표 분류','세부구분','발주품목','현재 자동분류','일치 여부'];
   const entries = Object.values(masterMap).sort((a, b) => Number(a.minorCode) - Number(b.minorCode));
   const TRACKED = ['버거','피자','치킨','비프'];
 
@@ -648,13 +715,13 @@ function downloadMasterFile(btnEl) {
     // "/"로 나눠서 각각 코드 레벨 분류로 한 줄씩 만든다.
     const nameEntries = codeOverrides.length > 0
       ? codeOverrides
-      : (e.productName ? e.productName.split(' / ').filter(Boolean).map(name => ({ name, cat: e.cat, detail: e.detail })) : [{ name: '', cat: e.cat, detail: e.detail }]);
+      : (e.productName ? e.productName.split(' / ').filter(Boolean).map(name => ({ name, cat: e.cat, detail: e.detail, orderItem: e.orderItem })) : [{ name: '', cat: e.cat, detail: e.detail, orderItem: e.orderItem }]);
 
     nameEntries.forEach(o => {
       const nameForClassify = o.name || e.minorName;
       const { cat: liveCat } = classifyRow(e.majorName, e.midName, nameForClassify, e.minorName);
       const match = !TRACKED.includes(o.cat) ? '(추적 대상 아님)' : (liveCat === o.cat ? '일치' : '불일치');
-      rows.push([e.majorCode, e.majorName, e.midCode, e.midName, e.minorCode, '', e.minorName, o.name, o.cat, o.detail || '', liveCat, match]);
+      rows.push([e.majorCode, e.majorName, e.midCode, e.midName, e.minorCode, '', e.minorName, o.name, o.cat, o.detail || '', o.orderItem || '', liveCat, match]);
     });
   });
 
@@ -662,7 +729,7 @@ function downloadMasterFile(btnEl) {
   masterOrphanEntries.forEach(o => {
     const { cat: liveCat } = classifyRow(o.majorName, o.midName, o.productName, '');
     const match = !TRACKED.includes(o.cat) ? '(추적 대상 아님)' : (liveCat === o.cat ? '일치' : '불일치');
-    rows.push([o.majorCode, o.majorName, o.midCode, o.midName, '', o.productCode, '', o.productName, o.cat, o.detail || '', liveCat, match]);
+    rows.push([o.majorCode, o.majorName, o.midCode, o.midName, '', o.productCode, '', o.productName, o.cat, o.detail || '', o.orderItem || '', liveCat, match]);
   });
 
   const blob = buildExportBlob(header, rows);
@@ -809,14 +876,33 @@ function classifyForRow(minorCode, majorName, midName, productName, minorName, p
   return classifyRow(majorName, midName, productName, minorName);
 }
 
+// 발주품목 매칭 — cat/detail과 같은 우선순위로 찾되, 분류와는 독립적으로 조회한다
+// (예: 아직 기준표 분류는 안 정했어도 발주품목만 먼저 지정해둔 경우도 지원).
+function orderItemForRow(minorCode, productName, productCode) {
+  const overrideKey = minorCode + '|' + (productName || '').trim();
+  const override = masterProductOverrides[overrideKey];
+  if (override && override.orderItem) return override.orderItem;
+  if (!minorCode) {
+    const pcKey = productCode ? 'PC:' + productCode : null;
+    const nmKey = 'NM:' + (productName || '').trim();
+    const orphan = (pcKey && masterOrphanIndex[pcKey]) || masterOrphanIndex[nmKey];
+    if (orphan && orphan.orderItem) return orphan.orderItem;
+  }
+  const master = masterMap[minorCode];
+  if (master && master.orderItem) return master.orderItem;
+  return '';
+}
+
 function resolveRawCols(header) {
   const idx = name => header.indexOf(name);
   return {
     date: idx('매출일자'),
+    storeCode: idx('매장코드'), storeName: idx('매장명'),
     majorCode: idx('대분류코드'), majorName: idx('대분류명'),
     midCode: idx('중분류코드'), midName: idx('중분류명'),
     minorCode: idx('소분류코드'), minorName: idx('소분류명'),
     productCode: idx('상품코드'), productName: idx('상품명'),
+    qty: idx('3 단품/세트/구성'),
     totalSales: idx('총매출액'),
     realSales3: idx('3 실매출액'),
   };
@@ -831,6 +917,7 @@ let currentMergedRowsByDate = {}; // { date: [row, row, ...] }
 async function processRawDailyFiles(fileList) {
   const byDate = {};          // date -> [{집계용 item}]
   const rowsByDate = {};      // date -> [원본행+분류4열]
+  const consumptionByDate = {}; // date -> { "매장코드|발주품목": {storeName, qty} } — 발주품목 소진량 추적용
   const fileNames = [];
   let totalRemovedSummary = 0;
   let outputHeader = null;
@@ -868,6 +955,8 @@ async function processRawDailyFiles(fileList) {
       const minorNameRaw = cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '';
       const productCodeVal = cols.productCode >= 0 ? normCode(r[cols.productCode]) : '';
       const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '') : '';
+      const storeCodeVal = cols.storeCode >= 0 ? String(r[cols.storeCode] ?? '').trim() : '';
+      const storeNameVal = cols.storeName >= 0 ? String(r[cols.storeName] ?? '').trim() : '';
       const { cat, detail } = classifyForRow(minorCodeVal, majorName, midName, productName, minorNameRaw, productCodeVal);
       const { size, factor } = sizeInfo(productName, minorNameRaw);
       const dk = dateKeyOf(dv);
@@ -881,6 +970,19 @@ async function processRawDailyFiles(fileList) {
         revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
         cat,
       });
+
+      // 발주품목이 매칭되는 상품이면, 매장별 판매(소진)량을 누적 추적한다.
+      // 소진량 = 판매수량(3 단품/세트/구성) × 보정값(사이즈 환산 배수).
+      const orderItem = orderItemForRow(minorCodeVal, productName, productCodeVal);
+      if (orderItem && storeCodeVal) {
+        const qtySold = cols.qty >= 0 ? toNum(r[cols.qty]) : 0;
+        if (qtySold) {
+          if (!consumptionByDate[dk]) consumptionByDate[dk] = {};
+          const key = storeCodeVal + '|' + orderItem;
+          if (!consumptionByDate[dk][key]) consumptionByDate[dk][key] = { storeCode: storeCodeVal, storeName: storeNameVal, orderItem, qty: 0 };
+          consumptionByDate[dk][key].qty += qtySold * factor;
+        }
+      }
 
       if (!rowsByDate[dk]) rowsByDate[dk] = [];
       if (alreadyClassified) {
@@ -900,6 +1002,7 @@ async function processRawDailyFiles(fileList) {
 
   currentMergedHeader = outputHeader;
   currentMergedRowsByDate = rowsByDate;
+  currentConsumptionByDate = consumptionByDate;
 
   const totalRows = Object.values(byDate).reduce((s, arr) => s + arr.length, 0);
   return { reports, fileNames, totalRemovedSummary, totalRows };
@@ -1338,6 +1441,12 @@ async function saveDayReport(date, btnEl) {
       exportNote = `\n(참고: 지금 이 화면에 ${date}의 처리된 원본 데이터가 없어서 다운로드용 합본 파일은 서버에 저장되지 않았습니다. 나중에 다운로드/재분류가 필요하면, "② 일별 대조"에서 원본 파일을 다시 올려 처리한 뒤 다시 저장해주세요.)`;
     }
 
+    // 발주품목 소진량(재고 추적용)도 함께 저장한다.
+    if (currentConsumptionByDate[date]) {
+      const entries = Object.values(currentConsumptionByDate[date]);
+      await storageSet('consumption:' + date, JSON.stringify({ date, entries }));
+    }
+
     alert(`${date} 대조 결과를 저장했습니다. '③ 이력' 탭에서 확인할 수 있습니다.${exportNote}`);
     await loadDailyIndex();
   } finally {
@@ -1367,8 +1476,11 @@ async function downloadMergedFile(date, btnEl) {
     triggerDownload(blob, `일별상품매출현황_매장별_${date}_분류합본.csv`);
   } catch (err) {
     console.error('download failed', date, err);
-    if (String(err.code || err.message || '').includes('storage/object-not-found')) {
+    const msg = String(err.code || err.message || '');
+    if (msg.includes('storage/object-not-found')) {
       alert(`${date}는 서버에 합본 파일이 저장되어 있지 않아 다운로드할 수 없습니다.\n"② 일별 대조"에서 ${date} 원본 파일들을 다시 업로드한 뒤 "이 날짜 결과 저장"을 눌러주시면, 그 자리에서 바로 다운로드도 가능하고 다음부터는 이 버튼으로도 받을 수 있게 됩니다.`);
+    } else if (msg.includes('Failed to fetch')) {
+      alert(`${date} 합본 파일을 서버에서 받아오는 중 네트워크 요청이 막혔습니다(파일이 없는 게 아닙니다).\n\n흔한 원인:\n· 광고 차단 확장 프로그램이 Firebase 요청을 막는 경우 — 확장 프로그램을 끄고 다시 시도해주세요.\n· 일시적인 연결 문제 — 잠시 후 다시 시도해주세요.\n· 시크릿 창에서 다시 시도해보시면 확장 프로그램 문제인지 바로 확인할 수 있습니다.`);
     } else {
       alert(`${date} 합본 파일 다운로드에 실패했습니다.\n에러: ${err.message}\n\n브라우저 개발자 도구(F12) 콘솔에서 더 자세한 내용을 확인할 수 있습니다. 팝업/다운로드 차단 알림이 주소창 근처에 떴는지도 확인해주세요.`);
     }
@@ -1440,8 +1552,11 @@ async function reclassifyAndRedownload(date, btnEl) {
     alert(`${date} 재분류 완료. 이상 건수: ${oldCount} → ${newReport.anomalies.length}`);
   } catch (err) {
     console.error('reclassify failed', date, err);
-    if (String(err.code || err.message || '').includes('storage/object-not-found')) {
+    const msg = String(err.code || err.message || '');
+    if (msg.includes('storage/object-not-found')) {
       alert(`${date}는 서버에 합본 파일이 저장되어 있지 않아 재분류할 수 없습니다.\n\n원본 파일을 처리한 화면에서 바로 저장하지 않았거나(다른 날짜 파일을 먼저 올렸거나 새로고침한 뒤 저장한 경우), 저장 당시 업로드가 실패했을 가능성이 있습니다.\n\n"② 일별 대조"에서 ${date} 원본 파일들을 다시 업로드한 뒤 "이 날짜 결과 저장"을 눌러주세요 — 그러면 합본 파일이 새로 저장되고, 이후에는 재분류가 정상 동작합니다.`);
+    } else if (msg.includes('Failed to fetch')) {
+      alert(`${date} 합본 파일을 서버에서 받아오는 중 네트워크 요청이 막혔습니다(파일이 없는 게 아닙니다).\n\n흔한 원인:\n· 광고 차단 확장 프로그램이 Firebase 요청을 막는 경우 — 확장 프로그램을 끄고 다시 시도해주세요.\n· 일시적인 연결 문제 — 잠시 후 다시 시도해주세요.\n· 시크릿 창에서 다시 시도해보시면 확장 프로그램 문제인지 바로 확인할 수 있습니다.\n\n브라우저 개발자 도구(F12) 콘솔에 더 자세한 원인이 표시되어 있을 수 있습니다.`);
     } else {
       alert(`재분류 실패: ${err.message}`);
     }
@@ -1539,6 +1654,309 @@ async function resetAllHistory() {
 }
 
 // ==========================================================================
+// 발주/재고 — 발주코드 매핑표
+// ==========================================================================
+function findOrderCodeHeaderRow(rows) {
+  for (let i = 0; i < Math.min(rows.length, 15); i++) {
+    const r = rows[i];
+    if (r && r.some(v => String(v).trim() === '발주코드')) return i;
+  }
+  return -1;
+}
+
+function buildOrderCodeMapFromRows(json) {
+  const headerRowIdx = findOrderCodeHeaderRow(json);
+  if (headerRowIdx < 0) throw new Error('"발주코드" 헤더를 찾을 수 없습니다. 발주품목코드.xlsx 형식을 확인해주세요.');
+  const header = json[headerRowIdx].map(v => String(v).trim());
+  const idx = name => header.indexOf(name);
+  const cCodeName = idx('상품별코드명'), cOrderCode = idx('발주코드'), cOrderName = idx('발주품명');
+  if (cCodeName < 0 || cOrderCode < 0) throw new Error('"상품별코드명" 또는 "발주코드" 컬럼을 찾을 수 없습니다.');
+
+  const map = {};
+  const entries = [];
+  for (let i = headerRowIdx + 1; i < json.length; i++) {
+    const r = json[i];
+    const codeName = String(r[cCodeName] ?? '').trim();
+    const orderCode = normCode(r[cOrderCode]);
+    const orderName = cOrderName >= 0 ? String(r[cOrderName] ?? '').trim() : '';
+    if (!codeName || !orderCode) continue;
+    map[orderCode] = codeName;
+    entries.push({ codeName, orderCode, orderName });
+  }
+  return { map, entries };
+}
+
+async function loadOrderCodeMap() {
+  const raw = await storageGet('orderCodeMap');
+  if (!raw) { orderCodeMap = {}; orderCodeEntries = []; orderCodeUpdatedAt = null; renderOrderCodeMapStatus(); return; }
+  try {
+    const obj = JSON.parse(raw);
+    orderCodeMap = obj.map || {};
+    orderCodeEntries = obj.entries || [];
+    orderCodeUpdatedAt = obj.updatedAt || null;
+  } catch (e) { orderCodeMap = {}; orderCodeEntries = []; orderCodeUpdatedAt = null; }
+  renderOrderCodeMapStatus();
+}
+
+async function saveOrderCodeMap(map, entries) {
+  const updatedAt = nowISO();
+  const ok = await storageSet('orderCodeMap', JSON.stringify({ map, entries, updatedAt }));
+  if (!ok) throw new Error('Firebase에 저장하지 못했습니다.');
+  orderCodeMap = map; orderCodeEntries = entries; orderCodeUpdatedAt = updatedAt;
+  renderOrderCodeMapStatus();
+}
+
+function renderOrderCodeMapStatus() {
+  const el = document.getElementById('orderCodeMapStatus');
+  if (!el) return;
+  if (orderCodeEntries.length === 0) {
+    el.innerHTML = `<span class="pill pill-warn">⚠ 매핑표 없음</span><span>위에서 발주품목코드.xlsx를 업로드해주세요.</span>`;
+    return;
+  }
+  const codeNames = new Set(orderCodeEntries.map(e => e.codeName)).size;
+  const dt = orderCodeUpdatedAt ? new Date(orderCodeUpdatedAt).toLocaleString('ko-KR') : '-';
+  el.innerHTML = `<span class="pill pill-ok">✓ 등록됨</span><span><strong>${codeNames}</strong>개 발주품목 · <strong>${orderCodeEntries.length}</strong>개 발주코드</span><span>· 마지막 갱신: ${esc(dt)}</span>`;
+}
+
+setupDropZone('orderCodeMapDropZone', 'orderCodeMapFileInput', async (file) => {
+  const preview = document.getElementById('orderCodeMapPreview');
+  preview.innerHTML = `<div class="note">읽는 중...</div>`;
+  try {
+    const json = await readWorkbook(file);
+    const { map, entries } = buildOrderCodeMapFromRows(json);
+    await saveOrderCodeMap(map, entries);
+    preview.innerHTML = `<div class="status-line" style="margin-top:10px;"><span class="pill pill-ok">✓ 완료</span><span>${esc(file.name)} 에서 ${entries.length.toLocaleString()}개 발주코드를 불러와 저장했습니다.</span></div>`;
+  } catch (err) {
+    preview.innerHTML = `<div class="status-line" style="margin-top:10px;"><span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span></div>`;
+  }
+});
+
+// ==========================================================================
+// 발주/재고 — 가맹점별 발주(배송) 데이터
+// ==========================================================================
+function resolveOrderDataCols(header) {
+  const idx = name => header.indexOf(name);
+  return {
+    storeCode: idx('거래처코드'), storeName: idx('거래처'),
+    orderCode: idx('품목코드'), orderName: idx('품명'),
+    deliveryDate: idx('배송일자'), qty: idx('배송량'),
+  };
+}
+
+function orderDeliveryDateKey(v) {
+  const s = String(v ?? '').trim();
+  // YYYYMMDD 형태를 YYYY-MM-DD로 변환
+  const m = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  if (v instanceof Date) return formatDate(v);
+  return s.slice(0, 10);
+}
+
+async function handleOrderDataFile(file) {
+  const statusEl = document.getElementById('orderDataStatus');
+  if (orderCodeEntries.length === 0) {
+    statusEl.innerHTML = `<span class="pill pill-warn">⚠ 발주코드 매핑표 먼저 등록 필요</span><span>위에서 발주품목코드.xlsx를 먼저 업로드해주세요.</span>`;
+    return;
+  }
+  statusEl.innerHTML = `<span class="pill pill-neutral">읽는 중...</span>`;
+  try {
+    const json = await readWorkbook(file);
+    if (json.length < 2) throw new Error('데이터가 없는 파일입니다.');
+    // 첫 몇 줄에 "거래처정보" 같은 그룹 헤더가 있을 수 있으니, "거래처코드"가 있는 줄을 찾는다.
+    let headerRowIdx = 0;
+    for (let i = 0; i < Math.min(json.length, 5); i++) {
+      if (json[i].some(v => String(v).trim() === '거래처코드')) { headerRowIdx = i; break; }
+    }
+    const header = json[headerRowIdx].map(v => String(v).trim());
+    const cols = resolveOrderDataCols(header);
+    if (cols.storeCode < 0 || cols.orderCode < 0 || cols.deliveryDate < 0) {
+      throw new Error('"거래처코드", "품목코드", "배송일자" 컬럼을 찾을 수 없습니다.');
+    }
+
+    const byDate = {}; // date -> { "storeCode|codeName": {storeCode, storeName, orderItem, qty} }
+    let unmatchedCodes = new Set();
+    json.slice(headerRowIdx + 1).forEach(r => {
+      const storeCode = String(r[cols.storeCode] ?? '').trim();
+      const storeName = cols.storeName >= 0 ? String(r[cols.storeName] ?? '').trim() : '';
+      const orderCode = normCode(r[cols.orderCode]);
+      const qty = cols.qty >= 0 ? toNum(r[cols.qty]) : 0;
+      const dv = r[cols.deliveryDate];
+      if (!storeCode || !orderCode || (dv === '' || dv === null || dv === undefined)) return;
+      const dk = orderDeliveryDateKey(dv);
+      const codeName = orderCodeMap[orderCode];
+      if (!codeName) { unmatchedCodes.add(orderCode); return; }
+      if (!byDate[dk]) byDate[dk] = {};
+      const key = storeCode + '|' + codeName;
+      if (!byDate[dk][key]) byDate[dk][key] = { storeCode, storeName, orderItem: codeName, qty: 0 };
+      byDate[dk][key].qty += qty;
+    });
+
+    const dates = Object.keys(byDate).sort();
+    if (dates.length === 0) throw new Error('처리할 수 있는 배송 데이터가 없습니다. 발주코드 매핑표에 없는 품목코드만 있을 수 있습니다.');
+
+    for (const dk of dates) {
+      const entries = Object.values(byDate[dk]);
+      const storeCount = new Set(entries.map(e => e.storeCode)).size;
+      const totalQty = entries.reduce((s, e) => s + e.qty, 0);
+      await storageSet('orders:' + dk, JSON.stringify({ date: dk, fileName: file.name, uploadedAt: nowISO(), entries }));
+    }
+
+    let msg = `<span class="pill pill-ok">✓ 완료</span><span>${esc(file.name)} · ${dates.length}개 날짜(${dates.join(', ')}) 저장</span>`;
+    if (unmatchedCodes.size > 0) {
+      msg += `<div class="note" style="margin-top:4px;">발주코드 매핑표에 없는 품목코드 ${unmatchedCodes.size}개는 제외되었습니다: ${[...unmatchedCodes].slice(0,10).join(', ')}${unmatchedCodes.size>10?' 외':''}</div>`;
+    }
+    statusEl.innerHTML = msg;
+    await loadOrdersIndex();
+  } catch (err) {
+    statusEl.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`;
+  }
+}
+setupDropZone('orderDataDropZone', 'orderDataFileInput', handleOrderDataFile);
+
+async function loadOrdersIndex() {
+  ordersIndex = [];
+  try {
+    const snap = await getDocs(collection(db, 'orders'));
+    snap.forEach(d => {
+      const data = d.data();
+      const entries = data.entries || [];
+      ordersIndex.push({
+        date: data.date, fileName: data.fileName, uploadedAt: data.uploadedAt,
+        storeCount: new Set(entries.map(e => e.storeCode)).size,
+        itemCount: new Set(entries.map(e => e.orderItem)).size,
+        totalQty: entries.reduce((s, e) => s + e.qty, 0),
+      });
+    });
+  } catch (e) { console.error('load orders index failed', e); }
+  renderOrderHistoryTable();
+  populateStockStoreSelect();
+}
+
+function renderOrderHistoryTable() {
+  const table = document.getElementById('orderHistoryTable');
+  if (!table) return;
+  const sorted = [...ordersIndex].sort((a,b) => b.date.localeCompare(a.date));
+  let html = '<thead><tr><th>배송일자</th><th>파일명</th><th class="num">매장수</th><th class="num">품목수</th><th class="num">총 배송량</th><th></th></tr></thead><tbody>';
+  if (sorted.length === 0) {
+    html += `<tr><td colspan="5"><div class="empty">저장된 발주 이력이 없습니다.</div></td></tr>`;
+  } else {
+    sorted.forEach(d => {
+      html += `<tr>
+        <td><strong>${esc(d.date)}</strong></td>
+        <td>${esc(d.fileName||'-')}</td>
+        <td class="num">${d.storeCount}</td>
+        <td class="num">${d.itemCount}</td>
+        <td class="num">${fmtNum(d.totalQty)}</td>
+        <td><button class="btn btn-danger btn-sm" onclick="deleteOrderDay('${d.date}')">삭제</button></td>
+      </tr>`;
+    });
+  }
+  html += '</tbody>';
+  table.innerHTML = html;
+}
+
+async function deleteOrderDay(date) {
+  if (!confirm(`${date} 발주 이력을 삭제할까요?`)) return;
+  await storageDelete('orders:' + date);
+  await loadOrdersIndex();
+}
+
+async function resetAllOrderHistory() {
+  if (!confirm('저장된 모든 발주 이력을 삭제할까요? 발주코드 매핑표는 삭제되지 않습니다.')) return;
+  for (const d of ordersIndex) { await storageDelete('orders:' + d.date); }
+  await loadOrdersIndex();
+}
+
+// ==========================================================================
+// 발주/재고 — 재고 현황 (누적 입고 − 누적 판매)
+// ==========================================================================
+function populateStockStoreSelect() {
+  // 실제 매장 목록 채우기는 loadStockData()에서 처리한다 (발주/판매 데이터를
+  // 직접 조회해야 정확한 매장 목록을 얻을 수 있기 때문).
+}
+
+let stockOrderDocs = null; // 캐시된 orders 문서들
+let stockConsumptionDocs = null; // 캐시된 consumption 문서들
+
+async function loadStockData() {
+  const sel = document.getElementById('stockStoreSelect');
+  sel.innerHTML = '<option value="">불러오는 중...</option>';
+  try {
+    const [orderSnap, consumeSnap] = await Promise.all([
+      getDocs(collection(db, 'orders')),
+      getDocs(collection(db, 'consumption')),
+    ]);
+    stockOrderDocs = []; orderSnap.forEach(d => stockOrderDocs.push(d.data()));
+    stockConsumptionDocs = []; consumeSnap.forEach(d => stockConsumptionDocs.push(d.data()));
+
+    const stores = {}; // storeCode -> storeName
+    stockOrderDocs.forEach(doc => (doc.entries||[]).forEach(e => { if (e.storeCode) stores[e.storeCode] = e.storeName || stores[e.storeCode] || ''; }));
+    stockConsumptionDocs.forEach(doc => (doc.entries||[]).forEach(e => { if (e.storeCode) stores[e.storeCode] = stores[e.storeCode] || e.storeName || ''; }));
+
+    const codes = Object.keys(stores).sort();
+    const prevSelected = sel.value;
+    sel.innerHTML = '<option value="">매장을 선택하세요</option>' +
+      codes.map(c => `<option value="${esc(c)}">${esc(c)} ${esc(stores[c]||'')}</option>`).join('');
+    if (codes.includes(prevSelected)) sel.value = prevSelected;
+    renderStockTable();
+  } catch (err) {
+    console.error('load stock data failed', err);
+    sel.innerHTML = '<option value="">불러오기 실패</option>';
+  }
+}
+
+function renderStockTable() {
+  const wrap = document.getElementById('stockTableWrap');
+  const storeCode = document.getElementById('stockStoreSelect').value;
+  if (!storeCode) { wrap.innerHTML = '<div class="empty">매장을 선택하면 재고 현황이 표시됩니다.</div>'; return; }
+  if (!stockOrderDocs || !stockConsumptionDocs) { wrap.innerHTML = '<div class="empty">🔄 새로고침을 눌러 데이터를 불러와주세요.</div>'; return; }
+
+  const received = {}; // 발주품목 -> {qty, lastDate}
+  stockOrderDocs.forEach(doc => {
+    (doc.entries || []).forEach(e => {
+      if (e.storeCode !== storeCode) return;
+      if (!received[e.orderItem]) received[e.orderItem] = { qty: 0, lastDate: '' };
+      received[e.orderItem].qty += e.qty;
+      if (doc.date > received[e.orderItem].lastDate) received[e.orderItem].lastDate = doc.date;
+    });
+  });
+
+  const sold = {}; // 발주품목 -> {qty, lastDate}
+  stockConsumptionDocs.forEach(doc => {
+    (doc.entries || []).forEach(e => {
+      if (e.storeCode !== storeCode) return;
+      if (!sold[e.orderItem]) sold[e.orderItem] = { qty: 0, lastDate: '' };
+      sold[e.orderItem].qty += e.qty;
+      if (doc.date > sold[e.orderItem].lastDate) sold[e.orderItem].lastDate = doc.date;
+    });
+  });
+
+  const items = [...new Set([...Object.keys(received), ...Object.keys(sold)])].sort();
+  if (items.length === 0) { wrap.innerHTML = '<div class="empty">이 매장의 발주/판매 데이터가 없습니다.</div>'; return; }
+
+  let html = '<div class="table-wrap"><table><thead><tr><th>발주품목</th><th class="num">누적 입고</th><th class="num">누적 판매(환산)</th><th class="num">현재 재고</th><th>최근 입고일</th><th>최근 판매일</th></tr></thead><tbody>';
+  items.forEach(item => {
+    const rQty = received[item] ? received[item].qty : 0;
+    const sQty = sold[item] ? sold[item].qty : 0;
+    const stock = rQty - sQty;
+    const rowStyle = stock < 0 ? ' style="background:#fef2f2;"' : (stock === 0 ? ' style="background:#fffbeb;"' : '');
+    const stockLabel = stock < 0
+      ? `<span class="pill pill-bad">부족 ${fmtNum(Math.abs(stock))}</span>`
+      : (stock === 0 ? `<span class="pill pill-warn">소진</span>` : `<span class="pill pill-ok">${fmtNum(stock)}</span>`);
+    html += `<tr${rowStyle}>
+      <td>${esc(item)}</td>
+      <td class="num">${fmtNum(rQty)}</td>
+      <td class="num">${fmtNum(sQty)}</td>
+      <td class="num">${stockLabel}</td>
+      <td>${esc(received[item]?.lastDate || '-')}</td>
+      <td>${esc(sold[item]?.lastDate || '-')}</td>
+    </tr>`;
+  });
+  html += '</tbody></table></div>';
+  wrap.innerHTML = html;
+}
+
+// ==========================================================================
 // Drop zone util
 // ==========================================================================
 function setupDropZone(zoneId, inputId, onFile) {
@@ -1612,6 +2030,8 @@ if (!isConfigured) {
       showScreen('app');
       await loadMaster();
       await loadDailyIndex();
+      await loadOrderCodeMap();
+      await loadOrdersIndex();
     } else {
       showScreen('login');
     }
@@ -1623,6 +2043,7 @@ Object.assign(window, {
   manualAddCode, toggleDay, toggleAddForm, addAnomalyToMaster, updateMasterName,
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
+  deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable,
 });
 </script>
 </body>
