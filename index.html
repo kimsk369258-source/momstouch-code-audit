@@ -1330,6 +1330,12 @@ async function saveDayReport(date, btnEl) {
         console.error('export upload failed', date, err);
         exportNote = '\n(단, 다운로드용 합본 파일 저장에는 실패했습니다 — 대조 결과 자체는 정상 저장되었습니다. 에러: ' + err.message + ')';
       }
+    } else {
+      // 이 화면에 처리된 원본 데이터가 없는 상태(예: 새로고침 후, 또는 다른 날짜만
+      // 처리한 상태)에서 저장한 경우 — 대조 결과(집계)는 저장되지만, 합본 파일은
+      // Storage에 올라가지 않는다. 나중에 "다운로드"나 "재분류"를 누르면 실패하니
+      // 미리 알려준다.
+      exportNote = `\n(참고: 지금 이 화면에 ${date}의 처리된 원본 데이터가 없어서 다운로드용 합본 파일은 서버에 저장되지 않았습니다. 나중에 다운로드/재분류가 필요하면, "② 일별 대조"에서 원본 파일을 다시 올려 처리한 뒤 다시 저장해주세요.)`;
     }
 
     alert(`${date} 대조 결과를 저장했습니다. '③ 이력' 탭에서 확인할 수 있습니다.${exportNote}`);
@@ -1361,7 +1367,11 @@ async function downloadMergedFile(date, btnEl) {
     triggerDownload(blob, `일별상품매출현황_매장별_${date}_분류합본.csv`);
   } catch (err) {
     console.error('download failed', date, err);
-    alert(`${date} 합본 파일 다운로드에 실패했습니다.\n에러: ${err.message}\n\n브라우저 개발자 도구(F12) 콘솔에서 더 자세한 내용을 확인할 수 있습니다. 팝업/다운로드 차단 알림이 주소창 근처에 떴는지도 확인해주세요.`);
+    if (String(err.code || err.message || '').includes('storage/object-not-found')) {
+      alert(`${date}는 서버에 합본 파일이 저장되어 있지 않아 다운로드할 수 없습니다.\n"② 일별 대조"에서 ${date} 원본 파일들을 다시 업로드한 뒤 "이 날짜 결과 저장"을 눌러주시면, 그 자리에서 바로 다운로드도 가능하고 다음부터는 이 버튼으로도 받을 수 있게 됩니다.`);
+    } else {
+      alert(`${date} 합본 파일 다운로드에 실패했습니다.\n에러: ${err.message}\n\n브라우저 개발자 도구(F12) 콘솔에서 더 자세한 내용을 확인할 수 있습니다. 팝업/다운로드 차단 알림이 주소창 근처에 떴는지도 확인해주세요.`);
+    }
   } finally {
     if (btnEl) { btnEl.disabled = false; btnEl.textContent = originalText; }
   }
@@ -1430,7 +1440,11 @@ async function reclassifyAndRedownload(date, btnEl) {
     alert(`${date} 재분류 완료. 이상 건수: ${oldCount} → ${newReport.anomalies.length}`);
   } catch (err) {
     console.error('reclassify failed', date, err);
-    alert(`재분류 실패: ${err.message}`);
+    if (String(err.code || err.message || '').includes('storage/object-not-found')) {
+      alert(`${date}는 서버에 합본 파일이 저장되어 있지 않아 재분류할 수 없습니다.\n\n원본 파일을 처리한 화면에서 바로 저장하지 않았거나(다른 날짜 파일을 먼저 올렸거나 새로고침한 뒤 저장한 경우), 저장 당시 업로드가 실패했을 가능성이 있습니다.\n\n"② 일별 대조"에서 ${date} 원본 파일들을 다시 업로드한 뒤 "이 날짜 결과 저장"을 눌러주세요 — 그러면 합본 파일이 새로 저장되고, 이후에는 재분류가 정상 동작합니다.`);
+    } else {
+      alert(`재분류 실패: ${err.message}`);
+    }
   } finally {
     if (btnEl) { btnEl.disabled = false; btnEl.textContent = originalText; }
   }
