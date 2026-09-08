@@ -1432,7 +1432,11 @@ function anomalyRowHTML(a, date, idx) {
     action = `
       <button class="btn btn-ghost btn-sm" onclick="toggleAddForm('${formId}')">기준표에 추가</button>
       <div class="add-form" id="${formId}" style="display:none;">
-        <input type="text" id="${formId}-productCode" placeholder="상품코드" style="width:110px">
+        <label style="display:flex; align-items:center; gap:4px; font-size:12px; color:#374151;">
+          <input type="checkbox" id="${formId}-wholeCode" checked style="width:auto;">
+          소분류코드(${esc(a.code)}) 전체를 이 분류로 등록
+        </label>
+        <input type="text" id="${formId}-productCode" placeholder="상품코드(개별 등록시)" style="width:140px">
         <input type="text" id="${formId}-sideProductCode" placeholder="사이드상품코드(선택)" style="width:120px">
         <input type="text" id="${formId}-productName" placeholder="상품명(선택)" value="${esc(a.minorName)}">
         <input type="text" id="${formId}-cat" placeholder="분류(버거/피자/치킨/비프/사이드 등)" value="${esc(a.assignedCat)}" style="width:170px">
@@ -1498,18 +1502,39 @@ function readFactorInput(g, suffix) {
 
 async function addAnomalyToMaster(formId, code) {
   const g = suffix => document.getElementById(formId + suffix).value.trim();
-  const productCode = normCode(g('-productCode'));
-  const sideProductCode = normCode(g('-sideProductCode'));
-  if (!productCode && !sideProductCode) { alert('상품코드 또는 사이드상품코드 중 하나는 입력해주세요.'); return; }
-  // 상품코드 없이 사이드상품코드만 입력하면, 그 사이드상품코드가 들어가는 모든 세트에
-  // 공통으로 적용되는 "와일드카드" 등록으로 저장한다 ('*'는 상품코드 무관 매칭 표시).
-  const key = productCode ? (productCode + '|' + sideProductCode) : ('*|' + sideProductCode);
-  const productName = g('-productName');
+  const wholeCodeCheckbox = document.getElementById(formId + '-wholeCode');
+  const wholeCode = wholeCodeCheckbox ? wholeCodeCheckbox.checked : false;
   const cat = g('-cat');
   if (!cat) { alert('분류를 입력해주세요.'); return; }
+  const productName = g('-productName');
   const detail1 = g('-detail1'), detail2 = g('-detail2');
   const factor = readFactorInput(g, '-factor');
   const orderItem = g('-orderItem');
+
+  // "소분류코드 전체 등록" 체크 시 — 이 소분류코드에 속한 모든 상품에 공통 적용되는
+  // 코드 레벨 등록. 완전히 새로 생긴 코드(재사용 버킷이 아닌 일반 코드)는 이 방식이
+  // 가장 간단하고 확실하다 — 상품코드가 계속 바뀌어도 코드 자체로 항상 매칭된다.
+  if (wholeCode && code) {
+    const entry = { majorCode: '', majorName: '', midCode: '', midName: '', minorCode: code, minorName: productName, productName, cat, detail1, detail2, factor, orderItem };
+    try {
+      await withMasterLock(async () => {
+        const newMap = { ...masterMap, [code]: entry };
+        await saveMaster(newMap, Object.keys(newMap).length);
+      });
+    } catch (err) {
+      alert('저장 실패: ' + err.message);
+      return;
+    }
+    alert(`소분류코드 ${code} 전체를 "${cat}"로 기준표에 등록했습니다. 대조 결과를 다시 확인해 보세요.`);
+    return;
+  }
+
+  const productCode = normCode(g('-productCode'));
+  const sideProductCode = normCode(g('-sideProductCode'));
+  if (!productCode && !sideProductCode) { alert('상품코드 또는 사이드상품코드 중 하나는 입력해주세요. (또는 위 "소분류코드 전체 등록" 체크박스를 사용하세요)'); return; }
+  // 상품코드 없이 사이드상품코드만 입력하면, 그 사이드상품코드가 들어가는 모든 세트에
+  // 공통으로 적용되는 "와일드카드" 등록으로 저장한다 ('*'는 상품코드 무관 매칭 표시).
+  const key = productCode ? (productCode + '|' + sideProductCode) : ('*|' + sideProductCode);
   try {
     await withMasterLock(async () => {
       const newPcOverrides = { ...masterProductCodeOverrides, [key]: { cat, detail1, detail2, factor, orderItem } };
