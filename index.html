@@ -578,8 +578,15 @@ function buildMasterMapFromRows(json) {
     // 상품코드(거래마다 부여되는 가장 정밀한 식별자)가 있으면, 소분류코드 유무와
     // 무관하게 "상품코드|사이드상품코드" 단위로도 값을 저장한다. 실제 판매 데이터
     // 처리 시 이 값이 소분류코드/상품명 기반 매칭보다 최우선으로 적용된다.
-    if (productCode && (cat || orderItem || factor != null)) {
-      productCodeOverrides[productCode + '|' + sideProductCode] = { cat, detail1, detail2, factor, orderItem };
+    // 상품코드 없이 사이드상품코드만 있는 행은, 그 사이드상품코드가 들어가는 모든
+    // 세트에 공통 적용되는 와일드카드("*|사이드상품코드")로 저장한다 — 세트 구성품은
+    // 어느 세트에 들어있든 사이드상품코드 자체는 고정이기 때문.
+    if (cat || orderItem || factor != null) {
+      if (productCode) {
+        productCodeOverrides[productCode + '|' + sideProductCode] = { cat, detail1, detail2, factor, orderItem };
+      } else if (sideProductCode) {
+        productCodeOverrides['*|' + sideProductCode] = { cat, detail1, detail2, factor, orderItem };
+      }
     }
 
     // 소분류코드가 비어있는 행: 원본 POS 데이터에 소분류코드 자체가 없는 거래(제휴/이벤트
@@ -785,8 +792,9 @@ function downloadMasterFile(btnEl) {
 async function manualAddCode() {
   const g = id => document.getElementById(id).value.trim();
   const productCode = normCode(g('mf-productCode'));
-  if (!productCode) { alert('상품코드를 입력해주세요.'); return; }
   const sideProductCode = normCode(g('mf-sideProductCode'));
+  if (!productCode && !sideProductCode) { alert('상품코드 또는 사이드상품코드 중 하나는 입력해주세요.'); return; }
+  const key = productCode ? (productCode + '|' + sideProductCode) : ('*|' + sideProductCode);
   const factorRaw = g('mf-factor');
   const cat = g('mf-cat');
   if (!cat) { alert('분류를 입력해주세요.'); return; }
@@ -796,8 +804,8 @@ async function manualAddCode() {
   const orderItem = g('mf-orderItem');
   try {
     await withMasterLock(async () => {
-      const newPcOverrides = { ...masterProductCodeOverrides, [productCode + '|' + sideProductCode]: { cat, detail1, detail2, factor, orderItem } };
-      const newOrphanEntries = masterOrphanEntries.filter(o => !(o.productCode === productCode && (o.sideProductCode || '') === sideProductCode));
+      const newPcOverrides = { ...masterProductCodeOverrides, [key]: { cat, detail1, detail2, factor, orderItem } };
+      const newOrphanEntries = masterOrphanEntries.filter(o => !((o.productCode || '') === productCode && (o.sideProductCode || '') === sideProductCode));
       newOrphanEntries.push({ majorCode: '', majorName: '', midCode: '', midName: '', productCode, sideProductCode, productName, cat, detail1, detail2, factor, orderItem });
       await saveMaster(masterMap, masterRowCount, undefined, masterProductOverrides, newOrphanEntries, masterOrphanIndex, newPcOverrides);
     });
@@ -904,6 +912,16 @@ function classifyForRow(minorCode, majorName, midName, productName, minorName, p
     const pcOverride = masterProductCodeOverrides[productCode + '|' + (sideProductCode || '')];
     if (pcOverride && pcOverride.cat) {
       return { cat: pcOverride.cat, detail1: pcOverride.detail1 || '', detail2: pcOverride.detail2 || '', factor: pcOverride.factor ?? null };
+    }
+  }
+  // 0.5) 사이드상품코드 단독 매칭 — 세트 구성품(사이드상품)은 어느 세트에 들어가느냐에
+  // 따라 상품코드(부모 세트의 거래별 코드)가 계속 바뀌지만, 사이드상품코드 자체는
+  // 그 구성품 고유의 안정적인 값이다. "코드|사이드상품코드"로 정확히 등록 안 해도,
+  // 사이드상품코드만으로 등록해두면 어떤 세트에 들어있든 항상 매칭된다.
+  if (sideProductCode) {
+    const scOverride = masterProductCodeOverrides['*|' + sideProductCode];
+    if (scOverride && scOverride.cat) {
+      return { cat: scOverride.cat, detail1: scOverride.detail1 || '', detail2: scOverride.detail2 || '', factor: scOverride.factor ?? null };
     }
   }
 
@@ -1475,8 +1493,11 @@ function readFactorInput(g, suffix) {
 async function addAnomalyToMaster(formId, code) {
   const g = suffix => document.getElementById(formId + suffix).value.trim();
   const productCode = normCode(g('-productCode'));
-  if (!productCode) { alert('상품코드를 입력해주세요.'); return; }
   const sideProductCode = normCode(g('-sideProductCode'));
+  if (!productCode && !sideProductCode) { alert('상품코드 또는 사이드상품코드 중 하나는 입력해주세요.'); return; }
+  // 상품코드 없이 사이드상품코드만 입력하면, 그 사이드상품코드가 들어가는 모든 세트에
+  // 공통으로 적용되는 "와일드카드" 등록으로 저장한다 ('*'는 상품코드 무관 매칭 표시).
+  const key = productCode ? (productCode + '|' + sideProductCode) : ('*|' + sideProductCode);
   const productName = g('-productName');
   const cat = g('-cat');
   if (!cat) { alert('분류를 입력해주세요.'); return; }
@@ -1485,8 +1506,8 @@ async function addAnomalyToMaster(formId, code) {
   const orderItem = g('-orderItem');
   try {
     await withMasterLock(async () => {
-      const newPcOverrides = { ...masterProductCodeOverrides, [productCode + '|' + sideProductCode]: { cat, detail1, detail2, factor, orderItem } };
-      const newOrphanEntries = masterOrphanEntries.filter(o => !(o.productCode === productCode && (o.sideProductCode || '') === sideProductCode));
+      const newPcOverrides = { ...masterProductCodeOverrides, [key]: { cat, detail1, detail2, factor, orderItem } };
+      const newOrphanEntries = masterOrphanEntries.filter(o => !((o.productCode || '') === productCode && (o.sideProductCode || '') === sideProductCode));
       newOrphanEntries.push({ majorCode: '', majorName: '', midCode: '', midName: '', productCode, sideProductCode, productName, cat, detail1, detail2, factor, orderItem });
       await saveMaster(masterMap, masterRowCount, undefined, masterProductOverrides, newOrphanEntries, masterOrphanIndex, newPcOverrides);
     });
