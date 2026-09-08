@@ -978,6 +978,14 @@ function classifyForRow(minorCode, majorName, midName, productName, minorName, p
   if (master && master.cat && !isReusedBucket) {
     return { cat: master.cat, detail1: master.detail1 || '', detail2: master.detail2 || '', factor: master.factor ?? null };
   }
+  // "항상 제외" 버킷 — 직영메뉴/직영행사/선불카드는 계속 새로운 프로모션/상품명이
+  // 추가되는 특성이 있어 일일이 등록하기 어렵다. 지금까지 등록된 사례가 예외 없이
+  // 전부 '제외'였으므로, 이 소분류명 밑에서는 상품명이 뭐든(등록된 적 없는 새 이름
+  // 포함) 기본값으로 제외 처리한다. 다른 값이 필요하면 상품명별 개별 등록이 우선한다.
+  const ALWAYS_EXCLUDE_BUCKETS = ['직영메뉴', '직영행사', '선불카드'];
+  if (ALWAYS_EXCLUDE_BUCKETS.includes(minorName)) {
+    return { cat: '제외', detail1: '제외', detail2: '', factor: null };
+  }
   const heuristic = classifyRow(majorName, midName, productName, minorName);
   return { cat: heuristic.cat, detail1: heuristic.detail || '', detail2: '', factor: null };
 }
