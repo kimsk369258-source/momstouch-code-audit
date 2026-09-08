@@ -657,7 +657,31 @@ function buildMasterMapFromRows(json) {
     // 코드 레벨 productName은 그대로 대표 상품명 1개만 남겨둔다.
   });
 
-  return { map, productOverrides, productCodeOverrides, orphanEntries, orphanIndex, count };
+  // 사이드상품코드 자동 와일드카드 승격 — 같은 사이드상품코드가 서로 다른 상품코드
+  // (=다른 세트)에 각각 개별 등록되어 있어도, 그중 하나라도 '제외'로 분류되어 있으면
+  // 그 사이드상품코드 전체를 '*|사이드상품코드' 와일드카드로 자동 승격한다. 사이드상품
+  // (세트 구성품)은 어느 세트에 들어있든 같은 재료이므로, 한 군데서라도 '제외'로
+  // 확인됐다면 다른 세트에서도 항상 제외가 맞다고 보는 것이 안전하다. 이미 그
+  // 사이드상품코드로 와일드카드가 등록되어 있으면 건드리지 않는다(사람이 이미
+  // 다른 값을 명시적으로 정한 것으로 존중).
+  const sideCodeGroups = {}; // sideCode -> [{cat, detail1, detail2, factor, orderItem}]
+  Object.keys(productCodeOverrides).forEach(key => {
+    const sep = key.indexOf('|');
+    const pc = key.slice(0, sep), sc = key.slice(sep + 1);
+    if (pc === '*' || !sc) return; // 이미 와일드카드거나 사이드상품코드 없는 건 제외
+    (sideCodeGroups[sc] = sideCodeGroups[sc] || []).push(productCodeOverrides[key]);
+  });
+  let autoPromoted = 0;
+  Object.keys(sideCodeGroups).forEach(sc => {
+    if (productCodeOverrides['*|' + sc]) return; // 이미 와일드카드 있음 — 건드리지 않음
+    const hasExcluded = sideCodeGroups[sc].some(v => v.cat === '제외');
+    if (hasExcluded) {
+      productCodeOverrides['*|' + sc] = { cat: '제외', detail1: '제외', detail2: '', factor: null, orderItem: '' };
+      autoPromoted++;
+    }
+  });
+
+  return { map, productOverrides, productCodeOverrides, orphanEntries, orphanIndex, count, autoPromoted };
 }
 
 async function loadMaster() {
@@ -822,14 +846,15 @@ setupDropZone('masterDropZone', 'masterFileInput', async (file) => {
   preview.innerHTML = `<div class="note">읽는 중...</div>`;
   try {
     const json = await readWorkbook(file);
-    const { map, count, productOverrides, productCodeOverrides, orphanEntries, orphanIndex } = buildMasterMapFromRows(json);
+    const { map, count, productOverrides, productCodeOverrides, orphanEntries, orphanIndex, autoPromoted } = buildMasterMapFromRows(json);
     const overrideCount = Object.keys(productOverrides).length;
     const pcOverrideCount = Object.keys(productCodeOverrides).length;
     await withMasterLock(() => saveMaster(map, count, file.name, productOverrides, orphanEntries, orphanIndex, productCodeOverrides));
     const overrideNote = overrideCount > count ? ` (상품명별 개별 분류 ${overrideCount.toLocaleString()}건 포함)` : '';
     const pcNote = pcOverrideCount > 0 ? ` · 상품코드 기준 정밀 매칭 ${pcOverrideCount.toLocaleString()}건 포함` : '';
     const orphanNote = orphanEntries.length > 0 ? ` · 소분류코드 없이 상품코드로만 등록된 항목 ${orphanEntries.length.toLocaleString()}건 포함` : '';
-    preview.innerHTML = `<div class="status-line" style="margin-top:10px;"><span class="pill pill-ok">✓ 완료</span><span>${esc(file.name)} 에서 ${count.toLocaleString()}개 코드를 불러와 저장했습니다.${overrideNote}${pcNote}${orphanNote}</span></div>`;
+    const autoNote = autoPromoted > 0 ? ` · 사이드상품코드 자동 제외 승격 ${autoPromoted.toLocaleString()}건` : '';
+    preview.innerHTML = `<div class="status-line" style="margin-top:10px;"><span class="pill pill-ok">✓ 완료</span><span>${esc(file.name)} 에서 ${count.toLocaleString()}개 코드를 불러와 저장했습니다.${overrideNote}${pcNote}${orphanNote}${autoNote}</span></div>`;
   } catch (err) {
     preview.innerHTML = `<div class="status-line" style="margin-top:10px;"><span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span></div>`;
   }
