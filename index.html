@@ -233,6 +233,20 @@
     </div>
 
     <div class="card">
+      <h2>키워드 규칙</h2>
+      <div class="card-sub">상품명에 이 키워드가 "포함"되어 있으면, 사이즈·세트 구성·상품코드가 달라져도 항상 이 분류를 적용합니다. 콜라/소스류처럼 변형이 계속 새로 생기는 항목에 유용합니다.</div>
+      <div class="add-form" id="keywordAddForm">
+        <input type="text" placeholder="키워드(예: 케이준양념감자)" id="kw-keyword" style="width:180px">
+        <input type="text" placeholder="분류(예: 제외)" id="kw-cat" style="width:100px">
+        <input type="text" placeholder="세부구분1" id="kw-detail1" style="width:90px">
+        <input type="text" placeholder="세부구분2" id="kw-detail2" style="width:90px">
+        <input type="text" placeholder="보정값" id="kw-factor" style="width:70px">
+        <button class="btn btn-primary btn-sm" onclick="addKeywordRule()">추가</button>
+      </div>
+      <div id="keywordRulesList" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card">
       <h2>코드 수동 추가 / 검색</h2>
       <div class="card-sub">기준표에 코드를 하나만 빠르게 추가하거나, 등록된 코드를 검색합니다.</div>
       <div class="add-form" id="masterAddForm">
@@ -405,6 +419,10 @@ let masterOrphanIndex = {};   // "PC:상품코드" 또는 "NM:상품명" -> {cat
 // 식별자라, 소분류코드/상품명보다도 먼저 확인한다. 키는 "상품코드|사이드상품코드"
 // (사이드상품코드 없으면 "상품코드|").
 let masterProductCodeOverrides = {};
+// 키워드 규칙 — 상품명에 이 키워드가 "포함"되어 있으면(사이즈·세트 구성이 달라도)
+// 무조건 이 분류를 적용한다. 콜라/소스류처럼 계속 새 변형(새 상품코드)이 생기는
+// 항목을 매번 정확히 등록할 필요 없이 한 번에 처리하기 위함.
+let masterKeywordRules = []; // [{keyword, cat, detail1, detail2, factor}]
 let masterUpdatedAt = null;
 let masterRowCount = 0;
 let dailyIndex = [];     // [{date, fileName, uploadedAt, totalRows, totalRevenue, uniqueCodes, anomalyCount, status}]
@@ -686,7 +704,7 @@ function buildMasterMapFromRows(json) {
 
 async function loadMaster() {
   const raw = await storageGet('master');
-  if (!raw) { masterMap = {}; masterProductOverrides = {}; masterProductCodeOverrides = {}; masterOrphanEntries = []; masterOrphanIndex = {}; masterRowCount = 0; masterUpdatedAt = null; renderMasterStatus(); renderMasterTable(); return; }
+  if (!raw) { masterMap = {}; masterProductOverrides = {}; masterProductCodeOverrides = {}; masterOrphanEntries = []; masterOrphanIndex = {}; masterKeywordRules = []; masterRowCount = 0; masterUpdatedAt = null; renderMasterStatus(); renderMasterTable(); renderKeywordRules(); return; }
   try {
     const obj = JSON.parse(raw);
     masterMap = obj.map || {};
@@ -694,20 +712,23 @@ async function loadMaster() {
     masterProductCodeOverrides = obj.productCodeOverrides || {};
     masterOrphanEntries = obj.orphanEntries || [];
     masterOrphanIndex = obj.orphanIndex || {};
+    masterKeywordRules = obj.keywordRules || [];
     masterRowCount = obj.count || Object.keys(masterMap).length;
     masterUpdatedAt = obj.updatedAt || null;
-  } catch (e) { masterMap = {}; masterProductOverrides = {}; masterProductCodeOverrides = {}; masterOrphanEntries = []; masterOrphanIndex = {}; masterRowCount = 0; masterUpdatedAt = null; }
+  } catch (e) { masterMap = {}; masterProductOverrides = {}; masterProductCodeOverrides = {}; masterOrphanEntries = []; masterOrphanIndex = {}; masterKeywordRules = []; masterRowCount = 0; masterUpdatedAt = null; }
   renderMasterStatus();
   renderMasterTable();
+  renderKeywordRules();
 }
 
-async function saveMaster(map, count, sourceFileName, productOverrides, orphanEntries, orphanIndex, productCodeOverrides) {
+async function saveMaster(map, count, sourceFileName, productOverrides, orphanEntries, orphanIndex, productCodeOverrides, keywordRules) {
   const updatedAt = nowISO();
   const overrides = productOverrides || masterProductOverrides || {};
   const pcOverrides = productCodeOverrides || masterProductCodeOverrides || {};
   const orphans = orphanEntries || masterOrphanEntries || [];
   const orphanIdx = orphanIndex || masterOrphanIndex || {};
-  const payload = JSON.stringify({ map, count, updatedAt, sourceFileName: sourceFileName || null, productOverrides: overrides, productCodeOverrides: pcOverrides, orphanEntries: orphans, orphanIndex: orphanIdx });
+  const rules = keywordRules || masterKeywordRules || [];
+  const payload = JSON.stringify({ map, count, updatedAt, sourceFileName: sourceFileName || null, productOverrides: overrides, productCodeOverrides: pcOverrides, orphanEntries: orphans, orphanIndex: orphanIdx, keywordRules: rules });
   const ok = await storageSet('master', payload);
   if (!ok) throw new Error('Firebase에 저장하지 못했습니다. 브라우저 개발자 도구(F12) 콘솔에서 에러 메시지를 확인해주세요.');
   masterMap = map;
@@ -715,10 +736,61 @@ async function saveMaster(map, count, sourceFileName, productOverrides, orphanEn
   masterProductCodeOverrides = pcOverrides;
   masterOrphanEntries = orphans;
   masterOrphanIndex = orphanIdx;
+  masterKeywordRules = rules;
   masterRowCount = count;
   masterUpdatedAt = updatedAt;
   renderMasterStatus();
   renderMasterTable();
+  renderKeywordRules();
+}
+
+async function addKeywordRule() {
+  const g = id => document.getElementById(id).value.trim();
+  const keyword = g('kw-keyword');
+  if (!keyword) { alert('키워드를 입력해주세요.'); return; }
+  const cat = g('kw-cat');
+  if (!cat) { alert('분류를 입력해주세요.'); return; }
+  const detail1 = g('kw-detail1'), detail2 = g('kw-detail2');
+  const factorRaw = g('kw-factor');
+  const factor = factorRaw !== '' && !isNaN(Number(factorRaw)) ? Number(factorRaw) : null;
+  try {
+    await withMasterLock(async () => {
+      const newRules = masterKeywordRules.filter(r => r.keyword !== keyword);
+      newRules.push({ keyword, cat, detail1, detail2, factor });
+      await saveMaster(masterMap, masterRowCount, undefined, masterProductOverrides, masterOrphanEntries, masterOrphanIndex, masterProductCodeOverrides, newRules);
+    });
+  } catch (err) {
+    alert('저장 실패: ' + err.message);
+    return;
+  }
+  ['kw-keyword','kw-cat','kw-detail1','kw-detail2','kw-factor'].forEach(id => document.getElementById(id).value = '');
+}
+
+async function deleteKeywordRule(keyword) {
+  if (!confirm(`키워드 규칙 "${keyword}"을(를) 삭제할까요?`)) return;
+  try {
+    await withMasterLock(async () => {
+      const newRules = masterKeywordRules.filter(r => r.keyword !== keyword);
+      await saveMaster(masterMap, masterRowCount, undefined, masterProductOverrides, masterOrphanEntries, masterOrphanIndex, masterProductCodeOverrides, newRules);
+    });
+  } catch (err) {
+    alert('삭제 실패: ' + err.message);
+  }
+}
+
+function renderKeywordRules() {
+  const el = document.getElementById('keywordRulesList');
+  if (!el) return;
+  if (masterKeywordRules.length === 0) {
+    el.innerHTML = '<div class="empty">등록된 키워드 규칙이 없습니다.</div>';
+    return;
+  }
+  let html = '<div class="table-wrap"><table><thead><tr><th>키워드(상품명에 포함되면)</th><th>분류</th><th>세부구분1</th><th>세부구분2</th><th>보정값</th><th></th></tr></thead><tbody>';
+  masterKeywordRules.forEach(r => {
+    html += `<tr><td>${esc(r.keyword)}</td><td>${esc(r.cat)}</td><td>${esc(r.detail1||'')}</td><td>${esc(r.detail2||'')}</td><td class="num">${r.factor!=null?esc(r.factor):''}</td><td><button class="btn btn-danger btn-sm" onclick="deleteKeywordRule(${escJs(r.keyword)})">삭제</button></td></tr>`;
+  });
+  html += '</tbody></table></div>';
+  el.innerHTML = html;
 }
 
 // 기준표를 읽고(현재 masterMap) 고쳐서 다시 저장하는 모든 동작(코드 추가/이름 갱신/파일 업로드 등)을
@@ -950,6 +1022,9 @@ function classifyForRow(minorCode, majorName, midName, productName, minorName, p
     }
   }
 
+  // 0.7) 키워드 규칙은 상품명 단위 개별 지정(1번)과 코드 없는 거래의 개별 등록(1.5번)
+  // 보다는 낮은 우선순위로 둔다 — 구체적으로 등록해 둔 값이 있으면 그게 항상 이긴다.
+
   // 1) 상품명 단위로 개별 지정된 분류가 있으면 그 다음 우선순위로 사용한다 (프로모션
   // 버킷처럼 코드 하나가 여러 실제 상품을 공유할 때, 기준표에서 상품명별로 직접 지정한 값).
   const overrideKey = minorCode + '|' + (productName || '').trim();
@@ -966,6 +1041,18 @@ function classifyForRow(minorCode, majorName, midName, productName, minorName, p
     const orphan = (pcKey && masterOrphanIndex[pcKey]) || masterOrphanIndex[nmKey];
     if (orphan && orphan.cat) {
       return { cat: orphan.cat, detail1: orphan.detail1 || '', detail2: orphan.detail2 || '', factor: orphan.factor ?? null };
+    }
+  }
+
+  // 1.7) 키워드 규칙 — 상품명에 특정 단어가 "포함"되어 있으면 사이즈/세트 구성이
+  // 달라도(=상품코드/사이드상품코드가 계속 바뀌어도) 무조건 이 분류를 적용한다.
+  // 콜라·소스류처럼 변형이 계속 새로 생기는 항목을 한 번에 처리하기 위함. 위의
+  // 구체적인 등록(상품코드/사이드상품코드/상품명 단위)이 없을 때만 적용되는 fallback이다.
+  if (productName) {
+    for (const rule of masterKeywordRules) {
+      if (rule.keyword && productName.includes(rule.keyword)) {
+        return { cat: rule.cat, detail1: rule.detail1 || '', detail2: rule.detail2 || '', factor: rule.factor ?? null };
+      }
     }
   }
 
@@ -1465,6 +1552,10 @@ function anomalyRowHTML(a, date, idx) {
     action = `
       <button class="btn btn-ghost btn-sm" onclick="toggleAddForm('${formId}')">기준표에 추가</button>
       <div class="add-form" id="${formId}" style="display:none;">
+        <input type="hidden" id="${formId}-majorCode" value="${esc(a.majorCode)}">
+        <input type="hidden" id="${formId}-major" value="${esc(a.majorName)}">
+        <input type="hidden" id="${formId}-midCode" value="${esc(a.midCode)}">
+        <input type="hidden" id="${formId}-mid" value="${esc(a.midName)}">
         <label style="display:flex; align-items:center; gap:4px; font-size:12px; color:#374151;">
           <input type="checkbox" id="${formId}-wholeCode" checked style="width:auto;">
           소분류코드(${esc(a.code)}) 전체를 이 분류로 등록
@@ -1537,6 +1628,7 @@ async function addAnomalyToMaster(formId, code) {
   const g = suffix => document.getElementById(formId + suffix).value.trim();
   const wholeCodeCheckbox = document.getElementById(formId + '-wholeCode');
   const wholeCode = wholeCodeCheckbox ? wholeCodeCheckbox.checked : false;
+  const majorCode = g('-majorCode'), majorName = g('-major'), midCode = g('-midCode'), midName = g('-mid');
   const cat = g('-cat');
   if (!cat) { alert('분류를 입력해주세요.'); return; }
   const productName = g('-productName');
@@ -1548,7 +1640,7 @@ async function addAnomalyToMaster(formId, code) {
   // 코드 레벨 등록. 완전히 새로 생긴 코드(재사용 버킷이 아닌 일반 코드)는 이 방식이
   // 가장 간단하고 확실하다 — 상품코드가 계속 바뀌어도 코드 자체로 항상 매칭된다.
   if (wholeCode && code) {
-    const entry = { majorCode: '', majorName: '', midCode: '', midName: '', minorCode: code, minorName: productName, productName, cat, detail1, detail2, factor, orderItem };
+    const entry = { majorCode, majorName, midCode, midName, minorCode: code, minorName: productName, productName, cat, detail1, detail2, factor, orderItem };
     try {
       await withMasterLock(async () => {
         const newMap = { ...masterMap, [code]: entry };
@@ -1572,7 +1664,7 @@ async function addAnomalyToMaster(formId, code) {
     await withMasterLock(async () => {
       const newPcOverrides = { ...masterProductCodeOverrides, [key]: { cat, detail1, detail2, factor, orderItem } };
       const newOrphanEntries = masterOrphanEntries.filter(o => !((o.productCode || '') === productCode && (o.sideProductCode || '') === sideProductCode));
-      newOrphanEntries.push({ majorCode: '', majorName: '', midCode: '', midName: '', productCode, sideProductCode, productName, cat, detail1, detail2, factor, orderItem });
+      newOrphanEntries.push({ majorCode, majorName, midCode, midName, productCode, sideProductCode, productName, cat, detail1, detail2, factor, orderItem });
       await saveMaster(masterMap, masterRowCount, undefined, masterProductOverrides, newOrphanEntries, masterOrphanIndex, newPcOverrides);
     });
   } catch (err) {
@@ -2279,6 +2371,7 @@ Object.assign(window, {
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
   deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable,
+  addKeywordRule, deleteKeywordRule,
 });
 </script>
 </body>
