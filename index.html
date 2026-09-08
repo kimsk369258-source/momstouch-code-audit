@@ -236,12 +236,8 @@
       <h2>코드 수동 추가 / 검색</h2>
       <div class="card-sub">기준표에 코드를 하나만 빠르게 추가하거나, 등록된 코드를 검색합니다.</div>
       <div class="add-form" id="masterAddForm">
-        <input type="text" placeholder="대분류코드" id="mf-majorCode" style="width:80px">
-        <input type="text" placeholder="대분류명" id="mf-majorName">
-        <input type="text" placeholder="중분류코드" id="mf-midCode" style="width:80px">
-        <input type="text" placeholder="중분류명" id="mf-midName">
-        <input type="text" placeholder="소분류코드" id="mf-minorCode" style="width:80px">
-        <input type="text" placeholder="소분류명" id="mf-minorName">
+        <input type="text" placeholder="상품코드" id="mf-productCode" style="width:110px">
+        <input type="text" placeholder="사이드상품코드(선택)" id="mf-sideProductCode" style="width:120px">
         <input type="text" placeholder="상품명(선택)" id="mf-productName">
         <input type="text" placeholder="분류" id="mf-cat" style="width:90px">
         <input type="text" placeholder="세부구분1" id="mf-detail1" style="width:90px">
@@ -788,27 +784,28 @@ function downloadMasterFile(btnEl) {
 
 async function manualAddCode() {
   const g = id => document.getElementById(id).value.trim();
-  const minorCode = normCode(g('mf-minorCode'));
-  if (!minorCode) { alert('소분류코드를 입력해주세요.'); return; }
+  const productCode = normCode(g('mf-productCode'));
+  if (!productCode) { alert('상품코드를 입력해주세요.'); return; }
+  const sideProductCode = normCode(g('mf-sideProductCode'));
   const factorRaw = g('mf-factor');
-  const entry = {
-    majorCode: normCode(g('mf-majorCode')), majorName: g('mf-majorName'),
-    midCode: normCode(g('mf-midCode')), midName: g('mf-midName'),
-    minorCode, minorName: g('mf-minorName'), productName: g('mf-productName'),
-    cat: g('mf-cat'), detail1: g('mf-detail1'), detail2: g('mf-detail2'),
-    factor: factorRaw !== '' && !isNaN(Number(factorRaw)) ? Number(factorRaw) : null,
-    orderItem: g('mf-orderItem'),
-  };
+  const cat = g('mf-cat');
+  if (!cat) { alert('분류를 입력해주세요.'); return; }
+  const productName = g('mf-productName');
+  const detail1 = g('mf-detail1'), detail2 = g('mf-detail2');
+  const factor = factorRaw !== '' && !isNaN(Number(factorRaw)) ? Number(factorRaw) : null;
+  const orderItem = g('mf-orderItem');
   try {
     await withMasterLock(async () => {
-      const newMap = { ...masterMap, [minorCode]: entry };
-      await saveMaster(newMap, Object.keys(newMap).length);
+      const newPcOverrides = { ...masterProductCodeOverrides, [productCode + '|' + sideProductCode]: { cat, detail1, detail2, factor, orderItem } };
+      const newOrphanEntries = masterOrphanEntries.filter(o => !(o.productCode === productCode && (o.sideProductCode || '') === sideProductCode));
+      newOrphanEntries.push({ majorCode: '', majorName: '', midCode: '', midName: '', productCode, sideProductCode, productName, cat, detail1, detail2, factor, orderItem });
+      await saveMaster(masterMap, masterRowCount, undefined, masterProductOverrides, newOrphanEntries, masterOrphanIndex, newPcOverrides);
     });
   } catch (err) {
     alert('저장 실패: ' + err.message);
     return;
   }
-  ['mf-majorCode','mf-majorName','mf-midCode','mf-midName','mf-minorCode','mf-minorName','mf-productName','mf-cat','mf-detail1','mf-detail2','mf-factor','mf-orderItem'].forEach(id => document.getElementById(id).value='');
+  ['mf-productCode','mf-sideProductCode','mf-productName','mf-cat','mf-detail1','mf-detail2','mf-factor','mf-orderItem'].forEach(id => document.getElementById(id).value='');
 }
 
 // Master drop zone
