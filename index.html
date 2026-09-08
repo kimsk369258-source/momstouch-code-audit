@@ -1432,6 +1432,23 @@ function anomalyRowHTML(a, date, idx) {
         <input type="text" id="${formId}-orderItem" placeholder="발주품목">
         <button class="btn btn-primary btn-sm" onclick="addProductOverride('${formId}','${a.code}', ${escJs(a.productName)}, ${escJs(a.productCode || '')})">저장</button>
       </div>`;
+  } else if (a.type === 'category_mismatch' || a.type === 'unclassified') {
+    // 소분류코드는 이미 기준표에 있지만, 그 안의 특정 상품(상품코드)만 분류를 다시
+    // 지정하고 싶을 때 쓰는 폼 — 상품코드 기준 정밀 매칭으로 저장한다.
+    const formId = 'addform-' + date.replace(/-/g,'') + '-' + a.code + '-' + idx;
+    action = `
+      <button class="btn btn-ghost btn-sm" onclick="toggleAddForm('${formId}')">상품코드로 분류 지정</button>
+      <div class="add-form" id="${formId}" style="display:none;">
+        <input type="text" id="${formId}-productCode" placeholder="상품코드" style="width:110px">
+        <input type="text" id="${formId}-sideProductCode" placeholder="사이드상품코드(선택)" style="width:120px">
+        <input type="text" id="${formId}-productName" placeholder="상품명(선택)" value="${esc(a.minorName)}">
+        <input type="text" id="${formId}-cat" placeholder="분류(버거/피자/치킨/비프/사이드 등)" value="${esc(a.assignedCat)}" style="width:170px">
+        <input type="text" id="${formId}-detail1" placeholder="세부구분1">
+        <input type="text" id="${formId}-detail2" placeholder="세부구분2">
+        <input type="text" id="${formId}-factor" placeholder="보정값" style="width:60px">
+        <input type="text" id="${formId}-orderItem" placeholder="발주품목">
+        <button class="btn btn-primary btn-sm" onclick="addAnomalyToMaster('${formId}','${a.code}')">저장</button>
+      </div>`;
   }
 
   return `<tr>
