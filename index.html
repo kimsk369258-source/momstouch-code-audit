@@ -706,12 +706,18 @@ function withMasterLock(fn) {
 
 function renderMasterStatus() {
   const el = document.getElementById('masterStatus');
-  if (masterRowCount === 0) {
+  const pcCount = Object.keys(masterProductCodeOverrides).length;
+  const orphanCount = masterOrphanEntries.length;
+  if (masterRowCount === 0 && pcCount === 0 && orphanCount === 0) {
     el.innerHTML = `<span class="pill pill-warn">⚠ 기준표 없음</span><span>아래에서 상품코드정리.xlsx를 업로드해주세요.</span>`;
     return;
   }
   const dt = masterUpdatedAt ? new Date(masterUpdatedAt).toLocaleString('ko-KR') : '-';
-  el.innerHTML = `<span class="pill pill-ok">✓ 등록됨</span><span><strong>${masterRowCount.toLocaleString()}</strong>개 코드</span><span>· 마지막 갱신: ${esc(dt)}</span>`;
+  const parts = [];
+  if (masterRowCount > 0) parts.push(`소분류코드 <strong>${masterRowCount.toLocaleString()}</strong>개`);
+  if (pcCount > 0) parts.push(`상품코드 정밀 매칭 <strong>${pcCount.toLocaleString()}</strong>건`);
+  if (orphanCount > 0) parts.push(`소분류코드 없는 항목 <strong>${orphanCount.toLocaleString()}</strong>건`);
+  el.innerHTML = `<span class="pill pill-ok">✓ 등록됨</span><span>${parts.join(' · ')}</span><span>· 마지막 갱신: ${esc(dt)}</span>`;
 }
 
 function renderMasterTable(filterText) {
@@ -737,7 +743,7 @@ function renderMasterTable(filterText) {
 document.getElementById('masterSearch').addEventListener('input', e => renderMasterTable(e.target.value));
 
 function downloadMasterFile(btnEl) {
-  if (masterRowCount === 0 && masterOrphanEntries.length === 0) { alert('등록된 기준표가 없습니다. 먼저 상품코드정리.xlsx를 업로드해주세요.'); return; }
+  if (masterRowCount === 0 && masterOrphanEntries.length === 0 && Object.keys(masterProductCodeOverrides).length === 0) { alert('등록된 기준표가 없습니다. 먼저 상품코드정리.xlsx를 업로드해주세요.'); return; }
   const header = ['대분류코드','대분류명','중분류코드','중분류명','소분류코드','상품코드','소분류명','상품명','기준표 분류','세부구분1','세부구분2','세부구분 보정값','발주품목','현재 자동분류','일치 여부'];
   const entries = Object.values(masterMap).sort((a, b) => Number(a.minorCode) - Number(b.minorCode));
   const TRACKED = ['버거','피자','치킨','비프'];
@@ -1281,7 +1287,7 @@ function triggerDownload(blob, filename) {
 
 async function handleDailyFiles(fileList) {
   const statusEl = document.getElementById('dailyUploadStatus');
-  if (masterRowCount === 0) {
+  if (masterRowCount === 0 && Object.keys(masterProductCodeOverrides).length === 0 && masterOrphanEntries.length === 0) {
     statusEl.innerHTML = `<span class="pill pill-warn">⚠ 기준표 먼저 등록 필요</span><span>① 기준코드 관리 탭에서 상품코드정리.xlsx를 먼저 업로드해주세요.</span>`;
     return;
   }
