@@ -1034,19 +1034,25 @@ async function processRawDailyFiles(fileList) {
     const header = json[0].map(String);
     // 이미 이 툴에서 내려받은 "_분류합본" 파일(끝에 분류/세부구분1/세부구분2/사이즈구분/
     // 보정값 컬럼이 이미 있는 파일)을 다시 올린 경우, 컬럼을 중복으로 덧붙이지 않고
-    // 그 자리에서 값만 최신 규칙으로 다시 계산해 덮어쓴다. 원본 파일이면 새로 5개
-    // 컬럼을 추가한다. (예전 4컬럼 형식 파일은 새 5컬럼을 추가로 붙인다 — 과도기 처리)
+    // 그 자리에서 값만 최신 규칙으로 다시 계산해 덮어쓴다. 예전 4컬럼 형식(분류,세부구분,
+    // 사이즈구분,보정값)으로 저장된 파일을 올리면, 그 예전 컬럼들을 그대로 잘라내고
+    // 새 5컬럼으로 교체한다(중복 없이). 원본 파일이면 새로 5개 컬럼을 추가한다.
     const NEW_TAIL = ['분류','세부구분1','세부구분2','사이즈구분','보정값'];
-    const alreadyClassified = header.length >= 5 && header.slice(-5).join('|') === NEW_TAIL.join('|');
-    const catIdx = alreadyClassified ? header.length - 5 : header.length;
+    const OLD_TAIL = ['분류','세부구분','사이즈구분','보정값'];
+    const hasNewTail = header.length >= 5 && header.slice(-5).join('|') === NEW_TAIL.join('|');
+    const hasOldTail = !hasNewTail && header.length >= 4 && header.slice(-4).join('|') === OLD_TAIL.join('|');
+    const alreadyClassified = hasNewTail || hasOldTail;
+    const baseHeader = hasOldTail ? header.slice(0, -4) : header; // 예전 꼬리는 잘라내고 새로 만든다
+    const catIdx = hasNewTail ? header.length - 5 : baseHeader.length;
     const detail1Idx = catIdx + 1, detail2Idx = catIdx + 2, sizeIdx = catIdx + 3, factorIdx = catIdx + 4;
-    if (!outputHeader) outputHeader = alreadyClassified ? header : [...header, ...NEW_TAIL];
-    const cols = resolveRawCols(header);
+    if (!outputHeader) outputHeader = hasNewTail ? header : [...baseHeader, ...NEW_TAIL];
+    const cols = resolveRawCols(baseHeader);
     if (cols.date < 0 || cols.minorCode < 0) {
       throw new Error(`"${file.name}" 파일에서 "매출일자" 또는 "소분류코드" 컬럼을 찾을 수 없습니다. 일별상품매출현황(매장별) 원본 파일이 맞는지 확인해주세요.`);
     }
 
-    json.slice(1).forEach(r => {
+    json.slice(1).forEach(rFull => {
+      const r = hasOldTail ? rFull.slice(0, -4) : rFull;
       const dv = r[cols.date];
       // 숨은 합계(소계) 행 제외 — 매출일자가 비어있는 행은 그 파일 전체 합계를
       // 담은 유령 행으로, 그대로 합치면 매출이 중복 집계됩니다.
