@@ -595,7 +595,7 @@ function buildMasterMapFromRows(json) {
         majorName: cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '',
         midCode: normCode(cols.midCode >= 0 ? r[cols.midCode] : ''),
         midName: cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '',
-        productCode, productName, cat, detail1, detail2, factor, orderItem,
+        productCode, sideProductCode, productName, cat, detail1, detail2, factor, orderItem,
       };
       orphanEntries.push(entry);
       if (cat || orderItem) {
@@ -744,7 +744,7 @@ document.getElementById('masterSearch').addEventListener('input', e => renderMas
 
 function downloadMasterFile(btnEl) {
   if (masterRowCount === 0 && masterOrphanEntries.length === 0 && Object.keys(masterProductCodeOverrides).length === 0) { alert('등록된 기준표가 없습니다. 먼저 상품코드정리.xlsx를 업로드해주세요.'); return; }
-  const header = ['대분류코드','대분류명','중분류코드','중분류명','소분류코드','상품코드','소분류명','상품명','기준표 분류','세부구분1','세부구분2','세부구분 보정값','발주품목','현재 자동분류','일치 여부'];
+  const header = ['대분류코드','대분류명','중분류코드','중분류명','소분류코드','상품코드','사이드상품코드','상품명','기준표 분류','세부구분1','세부구분2','세부구분 보정값','발주품목','현재 자동분류','일치 여부'];
   const entries = Object.values(masterMap).sort((a, b) => Number(a.minorCode) - Number(b.minorCode));
   const TRACKED = ['버거','피자','치킨','비프'];
 
@@ -770,15 +770,15 @@ function downloadMasterFile(btnEl) {
       const nameForClassify = o.name || e.minorName;
       const { cat: liveCat } = classifyRow(e.majorName, e.midName, nameForClassify, e.minorName);
       const match = !TRACKED.includes(o.cat) ? '(추적 대상 아님)' : (liveCat === o.cat ? '일치' : '불일치');
-      rows.push([e.majorCode, e.majorName, e.midCode, e.midName, e.minorCode, '', e.minorName, o.name, o.cat, o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '', liveCat, match]);
+      rows.push([e.majorCode, e.majorName, e.midCode, e.midName, e.minorCode, '', '', o.name, o.cat, o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '', liveCat, match]);
     });
   });
 
-  // 소분류코드 자체가 없는 거래(상품코드/상품명으로만 등록된 항목)도 별도 행으로 내보낸다.
+  // 소분류코드 자체가 없는 거래(상품코드/사이드상품코드로만 등록된 항목)도 별도 행으로 내보낸다.
   masterOrphanEntries.forEach(o => {
     const { cat: liveCat } = classifyRow(o.majorName, o.midName, o.productName, '');
     const match = !TRACKED.includes(o.cat) ? '(추적 대상 아님)' : (liveCat === o.cat ? '일치' : '불일치');
-    rows.push([o.majorCode, o.majorName, o.midCode, o.midName, '', o.productCode, '', o.productName, o.cat, o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '', liveCat, match]);
+    rows.push([o.majorCode, o.majorName, o.midCode, o.midName, '', o.productCode, o.sideProductCode || '', o.productName, o.cat, o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '', liveCat, match]);
   });
 
   const blob = buildExportBlob(header, rows);
@@ -1170,15 +1170,34 @@ function buildDateReport(date, itemsForDate) {
       // '붐바타' 브랜드는 통째로 제외 대상이라 기준표에 등록 안 해도 "미등록 코드"로
       // 잡지 않는다 (classifyRow가 이미 '제외'로 분류하므로 별도 등록이 필요 없음).
       if (item.majorName === '붐바타') return;
-      anomalies.push({
-        code: item.code, type: 'new_code',
-        majorCode: item.majorCode, majorName: item.majorName,
-        midCode: item.midCode, midName: item.midName,
-        minorName: item.minorName,
-        revenue: item.revenue, rowCount: item.rowCount,
-        assignedCat: assignedCats.join(', '),
-        master: null,
-      });
+      // 소분류코드 자체는 기준표에 없어도, 상품코드 정밀 매칭 등으로 이미 정상
+      // 분류되고 있으면(assignedCats.length > 0) "미등록 코드"로 새로 잡지 않는다.
+      // 남아있는 진짜 미분류 상품명만 짚어준다.
+      if (assignedCats.length === 0) {
+        anomalies.push({
+          code: item.code, type: 'new_code',
+          majorCode: item.majorCode, majorName: item.majorName,
+          midCode: item.midCode, midName: item.midName,
+          minorName: item.minorName,
+          revenue: item.revenue, rowCount: item.rowCount,
+          assignedCat: assignedCats.join(', '),
+          master: null,
+        });
+      } else {
+        Object.keys(item.blankByName).forEach(pname => {
+          const info = item.blankByName[pname];
+          anomalies.push({
+            code: item.code, productCode: info.productCode, type: 'bucket_unclassified',
+            majorCode: item.majorCode, majorName: item.majorName,
+            midCode: item.midCode, midName: item.midName,
+            minorName: item.minorName,
+            productName: pname,
+            revenue: info.revenue, rowCount: info.rowCount,
+            assignedCat: '',
+            master: null,
+          });
+        });
+      }
       return;
     }
     // Name/category consistency checks are only meaningful for codes the master
@@ -1392,12 +1411,9 @@ function anomalyRowHTML(a, date, idx) {
     action = `
       <button class="btn btn-ghost btn-sm" onclick="toggleAddForm('${formId}')">기준표에 추가</button>
       <div class="add-form" id="${formId}" style="display:none;">
-        <input type="text" id="${formId}-majorCode" placeholder="대분류코드" value="${esc(a.majorCode)}" style="width:80px">
-        <input type="text" id="${formId}-major" placeholder="대분류명" value="${esc(a.majorName)}">
-        <input type="text" id="${formId}-midCode" placeholder="중분류코드" value="${esc(a.midCode)}" style="width:80px">
-        <input type="text" id="${formId}-mid" placeholder="중분류명" value="${esc(a.midName)}">
-        <input type="text" id="${formId}-minor" placeholder="소분류명" value="${esc(a.minorName)}">
-        <input type="text" id="${formId}-productName" placeholder="상품명(선택)">
+        <input type="text" id="${formId}-productCode" placeholder="상품코드" style="width:110px">
+        <input type="text" id="${formId}-sideProductCode" placeholder="사이드상품코드(선택)" style="width:120px">
+        <input type="text" id="${formId}-productName" placeholder="상품명(선택)" value="${esc(a.minorName)}">
         <input type="text" id="${formId}-cat" placeholder="분류(버거/피자/치킨/비프/사이드 등)" value="${esc(a.assignedCat)}" style="width:170px">
         <input type="text" id="${formId}-detail1" placeholder="세부구분1">
         <input type="text" id="${formId}-detail2" placeholder="세부구분2">
@@ -1447,23 +1463,27 @@ function readFactorInput(g, suffix) {
 
 async function addAnomalyToMaster(formId, code) {
   const g = suffix => document.getElementById(formId + suffix).value.trim();
-  const entry = {
-    majorCode: g('-majorCode'), majorName: g('-major'),
-    midCode: g('-midCode'), midName: g('-mid'),
-    minorCode: code, minorName: g('-minor'), productName: g('-productName'),
-    cat: g('-cat'), detail1: g('-detail1'), detail2: g('-detail2'),
-    factor: readFactorInput(g, '-factor'), orderItem: g('-orderItem'),
-  };
+  const productCode = normCode(g('-productCode'));
+  if (!productCode) { alert('상품코드를 입력해주세요.'); return; }
+  const sideProductCode = normCode(g('-sideProductCode'));
+  const productName = g('-productName');
+  const cat = g('-cat');
+  if (!cat) { alert('분류를 입력해주세요.'); return; }
+  const detail1 = g('-detail1'), detail2 = g('-detail2');
+  const factor = readFactorInput(g, '-factor');
+  const orderItem = g('-orderItem');
   try {
     await withMasterLock(async () => {
-      const newMap = { ...masterMap, [code]: entry };
-      await saveMaster(newMap, Object.keys(newMap).length);
+      const newPcOverrides = { ...masterProductCodeOverrides, [productCode + '|' + sideProductCode]: { cat, detail1, detail2, factor, orderItem } };
+      const newOrphanEntries = masterOrphanEntries.filter(o => !(o.productCode === productCode && (o.sideProductCode || '') === sideProductCode));
+      newOrphanEntries.push({ majorCode: '', majorName: '', midCode: '', midName: '', productCode, sideProductCode, productName, cat, detail1, detail2, factor, orderItem });
+      await saveMaster(masterMap, masterRowCount, undefined, masterProductOverrides, newOrphanEntries, masterOrphanIndex, newPcOverrides);
     });
   } catch (err) {
     alert('저장 실패: ' + err.message);
     return;
   }
-  alert(`코드 ${code} 를(을) 기준표에 추가했습니다. 대조 결과를 다시 확인해 보세요.`);
+  alert(`상품코드 ${productCode}${sideProductCode ? '/' + sideProductCode : ''} 를(을) 기준표에 추가했습니다. 대조 결과를 다시 확인해 보세요.`);
 }
 
 // 버킷 코드(프로모션/매장행사)에서 특정 상품명 하나에만 분류를 지정한다.
