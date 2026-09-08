@@ -1373,7 +1373,7 @@ function dayCardHTML(report, showSaveBtn) {
       ${report.anomalies.length === 0
         ? `<div class="empty">기준표와 대조한 결과 이상이 없습니다. 👍</div>`
         : `<div class="table-wrap"><table>
-             <thead><tr><th>유형</th><th>대분류코드</th><th>대분류명</th><th>중분류코드</th><th>중분류명</th><th>소분류코드</th><th>소분류명</th><th>기준표 분류</th><th>현재 분류</th><th class="num">매출</th><th class="num">건수</th><th></th></tr></thead>
+             <thead><tr><th>유형</th><th>상품코드</th><th>사이드상품코드</th><th>소분류명(참고)</th><th>기준표 분류</th><th>현재 분류</th><th class="num">매출</th><th class="num">건수</th><th></th></tr></thead>
              <tbody>${anomalyRows}</tbody>
            </table></div>`
       }
@@ -1453,11 +1453,8 @@ function anomalyRowHTML(a, date, idx) {
 
   return `<tr>
     <td>${badge}</td>
-    <td>${esc(a.majorCode || '-')}</td>
-    <td>${esc(a.majorName || '-')}</td>
-    <td>${esc(a.midCode || '-')}</td>
-    <td>${esc(a.midName || '-')}</td>
-    <td>${a.code ? esc(a.code) : (a.productCode ? `<em style="color:#9ca3af;">코드없음</em> (상품코드 ${esc(a.productCode)})` : '<em style="color:#9ca3af;">코드없음</em>')}</td>
+    <td>${esc(a.productCode || '-')}</td>
+    <td>${esc(a.sideProductCode || '-')}</td>
     <td>${minorNameCell}</td>
     <td>${masterCol}</td>
     <td>${currentCol}</td>
