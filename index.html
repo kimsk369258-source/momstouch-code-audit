@@ -213,7 +213,7 @@
       <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">
         <div>
           <h2>기준코드 현황</h2>
-          <div class="card-sub">상품코드정리.xlsx (대분류/중분류/소분류코드 · 분류 · 세부구분) 기준표</div>
+          <div class="card-sub">상품코드정리.xlsx (대분류/중분류/소분류코드 · 분류 · 세부구분1/2 · 보정값) 기준표</div>
         </div>
         <button class="btn btn-ghost btn-sm" onclick="downloadMasterFile(this)">📥 기준표 다운로드</button>
       </div>
@@ -244,7 +244,10 @@
         <input type="text" placeholder="소분류명" id="mf-minorName">
         <input type="text" placeholder="상품명(선택)" id="mf-productName">
         <input type="text" placeholder="분류" id="mf-cat" style="width:90px">
-        <input type="text" placeholder="세부구분" id="mf-detail" style="width:90px">
+        <input type="text" placeholder="세부구분1" id="mf-detail1" style="width:90px">
+        <input type="text" placeholder="세부구분2" id="mf-detail2" style="width:90px">
+        <input type="text" placeholder="보정값" id="mf-factor" style="width:70px">
+        <input type="text" placeholder="발주품목" id="mf-orderItem" style="width:100px">
         <button class="btn btn-primary btn-sm" onclick="manualAddCode()">추가</button>
       </div>
       <div class="toolbar" style="margin-top:14px;">
@@ -394,14 +397,18 @@ function exportStorageRef(date) { return ref(storage, `exports/${date}.csv`); }
 // ==========================================================================
 // State
 // ==========================================================================
-let masterMap = {};      // { normCode: { majorCode,majorName,midCode,midName,minorCode,minorName,cat,detail } }
+let masterMap = {};      // { normCode: { majorCode,majorName,midCode,midName,minorCode,minorName,cat,detail1,detail2,factor,orderItem } }
 // 코드 하나가 여러 실제 상품(프로모션 버킷 코드 등)을 공유할 때, 상품명별로 다른 분류를
 // 지정하기 위한 보조 테이블. 키는 "코드|상품명". 코드 자체의 masterMap 분류보다 우선한다.
-let masterProductOverrides = {}; // { "code|productName": {cat, detail} }
+let masterProductOverrides = {}; // { "code|productName": {cat, detail1, detail2, factor, orderItem} }
 // 원본 POS 데이터에 소분류코드 자체가 비어있는 거래가 있다(제휴/이벤트 메뉴 등).
 // 이런 경우 상품코드(각 상품마다 고유) 또는 상품명을 대신 키로 써서 분류를 저장한다.
-let masterOrphanEntries = []; // [{majorCode,majorName,midCode,midName,productCode,productName,cat,detail}]
-let masterOrphanIndex = {};   // "PC:상품코드" 또는 "NM:상품명" -> {cat, detail}
+let masterOrphanEntries = []; // [{majorCode,majorName,midCode,midName,productCode,productName,cat,detail1,detail2,factor,orderItem}]
+let masterOrphanIndex = {};   // "PC:상품코드" 또는 "NM:상품명" -> {cat, detail1, detail2, factor, orderItem}
+// 상품코드(+사이드상품코드) 단위 개별 값 — 이 두 코드는 거래마다 부여되는 가장 정밀한
+// 식별자라, 소분류코드/상품명보다도 먼저 확인한다. 키는 "상품코드|사이드상품코드"
+// (사이드상품코드 없으면 "상품코드|").
+let masterProductCodeOverrides = {};
 let masterUpdatedAt = null;
 let masterRowCount = 0;
 let dailyIndex = [];     // [{date, fileName, uploadedAt, totalRows, totalRevenue, uniqueCodes, anomalyCount, status}]
@@ -513,48 +520,71 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 function findMasterHeaderRow(rows) {
   for (let i = 0; i < Math.min(rows.length, 15); i++) {
     const r = rows[i];
-    if (r && r.some(v => String(v).trim() === '대분류코드')) return i;
+    if (r && r.some(v => ['대분류코드', '소분류코드', '코드'].includes(String(v).trim()))) return i;
   }
   return -1;
 }
 
 function resolveMasterCols(header) {
-  const idx = name => header.findIndex(v => String(v).trim() === name);
-  // idxAny: 여러 후보 이름 중 먼저 찾은 것을 사용. 이 도구에서 내려받은
-  // 기준표 파일(다시 올릴 때 '기준표 분류'라는 이름으로 되어 있음)도 그대로 인식하기 위함.
+  // 헤더 이름에 공백이 섞여 있어도(예: "구 분1") 인식할 수 있도록 공백 제거 후 비교한다.
+  const clean = s => String(s).replace(/\s+/g, '');
+  const idx = name => header.findIndex(v => clean(v) === clean(name));
+  // idxAny: 여러 후보 이름 중 먼저 찾은 것을 사용. 이 도구에서 내려받은 기준표 파일이나,
+  // 새로 재정리한 형식(코드/코드2/구분1/구분2 등)도 그대로 인식하기 위함.
   const idxAny = names => { for (const n of names) { const i = idx(n); if (i >= 0) return i; } return -1; };
   return {
     majorCode: idx('대분류코드'), majorName: idx('대분류명'),
     midCode: idx('중분류코드'), midName: idx('중분류명'),
-    minorCode: idx('소분류코드'), minorName: idx('소분류명'),
-    productCode: idx('상품코드'), productName: idx('상품명'),
-    cat: idxAny(['분류', '기준표 분류']), detail: idx('세부구분'),
+    minorCode: idx('소분류코드'),
+    minorName: idx('소분류명'),
+    // '코드'/'코드2'는 상품코드/사이드상품코드를 가리키는 표기다(소분류코드 아님) —
+    // 거래마다 부여되는 가장 정밀한 식별자.
+    productCode: idxAny(['상품코드', '코드']),
+    sideProductCode: idxAny(['사이드상품코드', '코드2']),
+    gubun: idxAny(['구분', '구분1']),
+    productName: idxAny(['상품명', '구분2']),
+    cat: idxAny(['분류', '기준표 분류']),
+    detail1: idxAny(['세부구분1', '세부구분']),
+    detail2: idx('세부구분2'),
+    factor: idxAny(['세부구분보정값', '보정값']),
     orderItem: idx('발주품목'),
   };
 }
 
 function buildMasterMapFromRows(json) {
   const headerRowIdx = findMasterHeaderRow(json);
-  if (headerRowIdx < 0) throw new Error('"대분류코드" 헤더를 찾을 수 없습니다. 파일 형식을 확인해주세요.');
+  if (headerRowIdx < 0) throw new Error('"대분류코드"(또는 "코드") 헤더를 찾을 수 없습니다. 파일 형식을 확인해주세요.');
   const header = json[headerRowIdx].map(v => String(v).trim());
   const cols = resolveMasterCols(header);
-  if (cols.minorCode < 0) throw new Error('"소분류코드" 컬럼을 찾을 수 없습니다.');
+  if (cols.minorCode < 0 && cols.productCode < 0) throw new Error('"소분류코드" 또는 "상품코드"(코드) 컬럼 중 하나는 있어야 합니다.');
 
   const map = {};
   const productOverrides = {};
+  const productCodeOverrides = {}; // "상품코드|사이드상품코드" -> {cat, detail1, detail2, factor, orderItem}
   const orphanEntries = [];
   const orphanIndex = {};
-  const namesByCode = {}; // code -> [{name, cat}]
+  const namesByCode = {}; // code -> [{name, cat, detail1, detail2, factor, orderItem}]
   let count = 0;
   for (let i = headerRowIdx + 1; i < json.length; i++) {
     const r = json[i];
     const rawMinor = cols.minorCode >= 0 ? r[cols.minorCode] : '';
     const code = normCode(rawMinor);
     const productCode = cols.productCode >= 0 ? normCode(r[cols.productCode]) : '';
+    const sideProductCode = cols.sideProductCode >= 0 ? normCode(r[cols.sideProductCode]) : '';
     const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '').trim() : '';
     const cat = cols.cat >= 0 ? String(r[cols.cat] ?? '').trim() : '';
-    const detail = cols.detail >= 0 ? String(r[cols.detail] ?? '').trim() : '';
+    const detail1 = cols.detail1 >= 0 ? String(r[cols.detail1] ?? '').trim() : '';
+    const detail2 = cols.detail2 >= 0 ? String(r[cols.detail2] ?? '').trim() : '';
+    const factorRaw = cols.factor >= 0 ? String(r[cols.factor] ?? '').trim() : '';
+    const factor = factorRaw !== '' && !isNaN(Number(factorRaw)) ? Number(factorRaw) : null;
     const orderItem = cols.orderItem >= 0 ? String(r[cols.orderItem] ?? '').trim() : '';
+
+    // 상품코드(거래마다 부여되는 가장 정밀한 식별자)가 있으면, 소분류코드 유무와
+    // 무관하게 "상품코드|사이드상품코드" 단위로도 값을 저장한다. 실제 판매 데이터
+    // 처리 시 이 값이 소분류코드/상품명 기반 매칭보다 최우선으로 적용된다.
+    if (productCode && (cat || orderItem || factor != null)) {
+      productCodeOverrides[productCode + '|' + sideProductCode] = { cat, detail1, detail2, factor, orderItem };
+    }
 
     // 소분류코드가 비어있는 행: 원본 POS 데이터에 소분류코드 자체가 없는 거래(제휴/이벤트
     // 메뉴 등)를 위한 것. 상품코드(없으면 상품명)를 키로 별도 저장한다.
@@ -565,12 +595,12 @@ function buildMasterMapFromRows(json) {
         majorName: cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '',
         midCode: normCode(cols.midCode >= 0 ? r[cols.midCode] : ''),
         midName: cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '',
-        productCode, productName, cat, detail, orderItem,
+        productCode, productName, cat, detail1, detail2, factor, orderItem,
       };
       orphanEntries.push(entry);
       if (cat || orderItem) {
         const key = productCode ? ('PC:' + productCode) : ('NM:' + productName);
-        orphanIndex[key] = { cat, detail, orderItem };
+        orphanIndex[key] = { cat, detail1, detail2, factor, orderItem };
       }
       continue;
     }
@@ -582,67 +612,80 @@ function buildMasterMapFromRows(json) {
       midName: cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '',
       minorCode: code,
       minorName: cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '',
-      productName, cat, detail, orderItem,
+      productName, cat, detail1, detail2, factor, orderItem,
     };
 
     // 같은 코드가 여러 줄로 올라온 경우(상품명별로 분류를 따로 지정한 파일) — 코드 레벨
     // 대표값은 처음 나온 값을 쓰고, 나머지는 상품명별 개별 오버라이드로만 쌓는다.
     if (!(code in map)) { map[code] = rowEntry; count++; }
     if (!namesByCode[code]) namesByCode[code] = [];
-    namesByCode[code].push({ name: rowEntry.productName, cat: rowEntry.cat, detail: rowEntry.detail, orderItem: rowEntry.orderItem });
+    namesByCode[code].push({
+      name: rowEntry.productName, cat: rowEntry.cat,
+      detail1: rowEntry.detail1, detail2: rowEntry.detail2, factor: rowEntry.factor,
+      orderItem: rowEntry.orderItem,
+    });
 
-    // 상품명이 있고(공백 제외) 분류 또는 발주품목이 지정된 모든 행은 "코드|상품명" 단위
-    // 개별 값으로 저장. 나중에 실제 거래의 상품명이 정확히 일치하면 코드 레벨 값보다
-    // 이 값을 우선 적용한다.
-    if (rowEntry.productName && (rowEntry.cat || rowEntry.orderItem)) {
-      productOverrides[code + '|' + rowEntry.productName] = { cat: rowEntry.cat, detail: rowEntry.detail, orderItem: rowEntry.orderItem };
+    // 상품명이 있고(공백 제외) 분류/보정값/발주품목 중 하나라도 지정된 모든 행은
+    // "코드|상품명" 단위 개별 값으로 저장. 나중에 실제 거래의 상품명이 정확히
+    // 일치하면 코드 레벨 값보다 이 값을 우선 적용한다.
+    if (rowEntry.productName && (rowEntry.cat || rowEntry.orderItem || rowEntry.factor != null)) {
+      productOverrides[code + '|' + rowEntry.productName] = {
+        cat: rowEntry.cat, detail1: rowEntry.detail1, detail2: rowEntry.detail2,
+        factor: rowEntry.factor, orderItem: rowEntry.orderItem,
+      };
     }
   }
 
-  // 코드당 상품명이 여러 개인데 전부 분류와 발주품목이 같으면(=진짜 다품종이 아니라
-  // 단순 여러 이름), 굳이 여러 줄로 나눠 저장할 필요 없이 상품명만 "/"로 합쳐
-  // 코드 레벨 entry에 채워 넣는다.
+  // 코드당 상품명이 여러 개인데 전부 분류/세부구분/보정값/발주품목이 같으면(=진짜
+  // 다품종이 아니라 단순 여러 이름), 굳이 여러 줄로 나눠 저장할 필요 없이 상품명만
+  // "/"로 합쳐 코드 레벨 entry에 채워 넣는다.
   Object.keys(namesByCode).forEach(code => {
     const list = namesByCode[code].filter(x => x.name);
     if (list.length <= 1) { if (list.length === 1) map[code].productName = list[0].name; return; }
     const cats = new Set(list.map(x => x.cat));
+    const detail1s = new Set(list.map(x => x.detail1));
+    const detail2s = new Set(list.map(x => x.detail2));
+    const factors = new Set(list.map(x => x.factor));
     const orderItems = new Set(list.map(x => x.orderItem));
-    if (cats.size <= 1 && orderItems.size <= 1) {
+    if (cats.size <= 1 && detail1s.size <= 1 && detail2s.size <= 1 && factors.size <= 1 && orderItems.size <= 1) {
       map[code].productName = [...new Set(list.map(x => x.name))].join(' / ');
     }
-    // cats.size > 1(진짜 상품명별로 분류가 다른 경우)이면 productOverrides가 이미 개별
-    // 처리하므로, 코드 레벨 productName은 그대로 대표 상품명 1개만 남겨둔다.
+    // 상품명별로 값이 다른 경우면 productOverrides가 이미 개별 처리하므로,
+    // 코드 레벨 productName은 그대로 대표 상품명 1개만 남겨둔다.
   });
 
-  return { map, productOverrides, orphanEntries, orphanIndex, count };
+  return { map, productOverrides, productCodeOverrides, orphanEntries, orphanIndex, count };
 }
 
 async function loadMaster() {
   const raw = await storageGet('master');
-  if (!raw) { masterMap = {}; masterProductOverrides = {}; masterOrphanEntries = []; masterOrphanIndex = {}; masterRowCount = 0; masterUpdatedAt = null; renderMasterStatus(); renderMasterTable(); return; }
+  if (!raw) { masterMap = {}; masterProductOverrides = {}; masterProductCodeOverrides = {}; masterOrphanEntries = []; masterOrphanIndex = {}; masterRowCount = 0; masterUpdatedAt = null; renderMasterStatus(); renderMasterTable(); return; }
   try {
     const obj = JSON.parse(raw);
     masterMap = obj.map || {};
     masterProductOverrides = obj.productOverrides || {};
+    masterProductCodeOverrides = obj.productCodeOverrides || {};
     masterOrphanEntries = obj.orphanEntries || [];
     masterOrphanIndex = obj.orphanIndex || {};
     masterRowCount = obj.count || Object.keys(masterMap).length;
     masterUpdatedAt = obj.updatedAt || null;
-  } catch (e) { masterMap = {}; masterProductOverrides = {}; masterOrphanEntries = []; masterOrphanIndex = {}; masterRowCount = 0; masterUpdatedAt = null; }
+  } catch (e) { masterMap = {}; masterProductOverrides = {}; masterProductCodeOverrides = {}; masterOrphanEntries = []; masterOrphanIndex = {}; masterRowCount = 0; masterUpdatedAt = null; }
   renderMasterStatus();
   renderMasterTable();
 }
 
-async function saveMaster(map, count, sourceFileName, productOverrides, orphanEntries, orphanIndex) {
+async function saveMaster(map, count, sourceFileName, productOverrides, orphanEntries, orphanIndex, productCodeOverrides) {
   const updatedAt = nowISO();
   const overrides = productOverrides || masterProductOverrides || {};
+  const pcOverrides = productCodeOverrides || masterProductCodeOverrides || {};
   const orphans = orphanEntries || masterOrphanEntries || [];
   const orphanIdx = orphanIndex || masterOrphanIndex || {};
-  const payload = JSON.stringify({ map, count, updatedAt, sourceFileName: sourceFileName || null, productOverrides: overrides, orphanEntries: orphans, orphanIndex: orphanIdx });
+  const payload = JSON.stringify({ map, count, updatedAt, sourceFileName: sourceFileName || null, productOverrides: overrides, productCodeOverrides: pcOverrides, orphanEntries: orphans, orphanIndex: orphanIdx });
   const ok = await storageSet('master', payload);
   if (!ok) throw new Error('Firebase에 저장하지 못했습니다. 브라우저 개발자 도구(F12) 콘솔에서 에러 메시지를 확인해주세요.');
   masterMap = map;
   masterProductOverrides = overrides;
+  masterProductCodeOverrides = pcOverrides;
   masterOrphanEntries = orphans;
   masterOrphanIndex = orphanIdx;
   masterRowCount = count;
@@ -675,17 +718,17 @@ function renderMasterTable(filterText) {
   const table = document.getElementById('masterTable');
   const entries = Object.values(masterMap).sort((a,b) => Number(a.minorCode) - Number(b.minorCode));
   const filtered = filterText
-    ? entries.filter(e => (e.minorCode+e.minorName+(e.productName||'')+e.majorName+e.midName+e.cat+e.detail).toLowerCase().includes(filterText.toLowerCase()))
+    ? entries.filter(e => (e.minorCode+e.minorName+(e.productName||'')+e.majorName+e.midName+e.cat+(e.detail1||'')+(e.detail2||'')).toLowerCase().includes(filterText.toLowerCase()))
     : entries;
 
-  let html = '<thead><tr><th>소분류코드</th><th>소분류명</th><th>상품명</th><th>대분류명</th><th>중분류명</th><th>분류</th><th>세부구분</th></tr></thead><tbody>';
+  let html = '<thead><tr><th>소분류코드</th><th>소분류명</th><th>상품명</th><th>대분류명</th><th>중분류명</th><th>분류</th><th>세부구분1</th><th>세부구분2</th><th>보정값</th><th>발주품목</th></tr></thead><tbody>';
   if (filtered.length === 0) {
-    html += `<tr><td colspan="7"><div class="empty">${entries.length === 0 ? '등록된 코드가 없습니다.' : '검색 결과가 없습니다.'}</div></td></tr>`;
+    html += `<tr><td colspan="10"><div class="empty">${entries.length === 0 ? '등록된 코드가 없습니다.' : '검색 결과가 없습니다.'}</div></td></tr>`;
   } else {
     filtered.slice(0, 500).forEach(e => {
-      html += `<tr><td>${esc(e.minorCode)}</td><td>${esc(e.minorName)}</td><td>${esc(e.productName||'')}</td><td>${esc(e.majorName)}</td><td>${esc(e.midName)}</td><td>${esc(e.cat)}</td><td>${esc(e.detail)}</td></tr>`;
+      html += `<tr><td>${esc(e.minorCode)}</td><td>${esc(e.minorName)}</td><td>${esc(e.productName||'')}</td><td>${esc(e.majorName)}</td><td>${esc(e.midName)}</td><td>${esc(e.cat)}</td><td>${esc(e.detail1||'')}</td><td>${esc(e.detail2||'')}</td><td class="num">${e.factor!=null?esc(e.factor):''}</td><td>${esc(e.orderItem||'')}</td></tr>`;
     });
-    if (filtered.length > 500) html += `<tr><td colspan="7" class="note">... 외 ${filtered.length-500}개 (검색으로 좁혀보세요)</td></tr>`;
+    if (filtered.length > 500) html += `<tr><td colspan="10" class="note">... 외 ${filtered.length-500}개 (검색으로 좁혀보세요)</td></tr>`;
   }
   html += '</tbody>';
   table.innerHTML = html;
@@ -695,11 +738,11 @@ document.getElementById('masterSearch').addEventListener('input', e => renderMas
 
 function downloadMasterFile(btnEl) {
   if (masterRowCount === 0 && masterOrphanEntries.length === 0) { alert('등록된 기준표가 없습니다. 먼저 상품코드정리.xlsx를 업로드해주세요.'); return; }
-  const header = ['대분류코드','대분류명','중분류코드','중분류명','소분류코드','상품코드','소분류명','상품명','기준표 분류','세부구분','발주품목','현재 자동분류','일치 여부'];
+  const header = ['대분류코드','대분류명','중분류코드','중분류명','소분류코드','상품코드','소분류명','상품명','기준표 분류','세부구분1','세부구분2','세부구분 보정값','발주품목','현재 자동분류','일치 여부'];
   const entries = Object.values(masterMap).sort((a, b) => Number(a.minorCode) - Number(b.minorCode));
   const TRACKED = ['버거','피자','치킨','비프'];
 
-  // 코드별로 상품명 단위 개별 분류(masterProductOverrides)를 모은다.
+  // 코드별로 상품명 단위 개별 값(masterProductOverrides)을 모은다.
   const overridesByCode = {};
   Object.keys(masterProductOverrides).forEach(key => {
     const sep = key.indexOf('|');
@@ -711,17 +754,17 @@ function downloadMasterFile(btnEl) {
   const rows = [];
   entries.forEach(e => {
     const codeOverrides = overridesByCode[e.minorCode] || [];
-    // 상품명별 개별 분류가 있으면 그걸 그대로 한 줄씩, 없으면 코드의 상품명 필드를
-    // "/"로 나눠서 각각 코드 레벨 분류로 한 줄씩 만든다.
+    // 상품명별 개별 값이 있으면 그걸 그대로 한 줄씩, 없으면 코드의 상품명 필드를
+    // "/"로 나눠서 각각 코드 레벨 값으로 한 줄씩 만든다.
     const nameEntries = codeOverrides.length > 0
       ? codeOverrides
-      : (e.productName ? e.productName.split(' / ').filter(Boolean).map(name => ({ name, cat: e.cat, detail: e.detail, orderItem: e.orderItem })) : [{ name: '', cat: e.cat, detail: e.detail, orderItem: e.orderItem }]);
+      : (e.productName ? e.productName.split(' / ').filter(Boolean).map(name => ({ name, cat: e.cat, detail1: e.detail1, detail2: e.detail2, factor: e.factor, orderItem: e.orderItem })) : [{ name: '', cat: e.cat, detail1: e.detail1, detail2: e.detail2, factor: e.factor, orderItem: e.orderItem }]);
 
     nameEntries.forEach(o => {
       const nameForClassify = o.name || e.minorName;
       const { cat: liveCat } = classifyRow(e.majorName, e.midName, nameForClassify, e.minorName);
       const match = !TRACKED.includes(o.cat) ? '(추적 대상 아님)' : (liveCat === o.cat ? '일치' : '불일치');
-      rows.push([e.majorCode, e.majorName, e.midCode, e.midName, e.minorCode, '', e.minorName, o.name, o.cat, o.detail || '', o.orderItem || '', liveCat, match]);
+      rows.push([e.majorCode, e.majorName, e.midCode, e.midName, e.minorCode, '', e.minorName, o.name, o.cat, o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '', liveCat, match]);
     });
   });
 
@@ -729,7 +772,7 @@ function downloadMasterFile(btnEl) {
   masterOrphanEntries.forEach(o => {
     const { cat: liveCat } = classifyRow(o.majorName, o.midName, o.productName, '');
     const match = !TRACKED.includes(o.cat) ? '(추적 대상 아님)' : (liveCat === o.cat ? '일치' : '불일치');
-    rows.push([o.majorCode, o.majorName, o.midCode, o.midName, '', o.productCode, '', o.productName, o.cat, o.detail || '', o.orderItem || '', liveCat, match]);
+    rows.push([o.majorCode, o.majorName, o.midCode, o.midName, '', o.productCode, '', o.productName, o.cat, o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '', liveCat, match]);
   });
 
   const blob = buildExportBlob(header, rows);
@@ -741,11 +784,14 @@ async function manualAddCode() {
   const g = id => document.getElementById(id).value.trim();
   const minorCode = normCode(g('mf-minorCode'));
   if (!minorCode) { alert('소분류코드를 입력해주세요.'); return; }
+  const factorRaw = g('mf-factor');
   const entry = {
     majorCode: normCode(g('mf-majorCode')), majorName: g('mf-majorName'),
     midCode: normCode(g('mf-midCode')), midName: g('mf-midName'),
     minorCode, minorName: g('mf-minorName'), productName: g('mf-productName'),
-    cat: g('mf-cat'), detail: g('mf-detail'),
+    cat: g('mf-cat'), detail1: g('mf-detail1'), detail2: g('mf-detail2'),
+    factor: factorRaw !== '' && !isNaN(Number(factorRaw)) ? Number(factorRaw) : null,
+    orderItem: g('mf-orderItem'),
   };
   try {
     await withMasterLock(async () => {
@@ -756,7 +802,7 @@ async function manualAddCode() {
     alert('저장 실패: ' + err.message);
     return;
   }
-  ['mf-majorCode','mf-majorName','mf-midCode','mf-midName','mf-minorCode','mf-minorName','mf-productName','mf-cat','mf-detail'].forEach(id => document.getElementById(id).value='');
+  ['mf-majorCode','mf-majorName','mf-midCode','mf-midName','mf-minorCode','mf-minorName','mf-productName','mf-cat','mf-detail1','mf-detail2','mf-factor','mf-orderItem'].forEach(id => document.getElementById(id).value='');
 }
 
 // Master drop zone
@@ -765,12 +811,14 @@ setupDropZone('masterDropZone', 'masterFileInput', async (file) => {
   preview.innerHTML = `<div class="note">읽는 중...</div>`;
   try {
     const json = await readWorkbook(file);
-    const { map, count, productOverrides, orphanEntries, orphanIndex } = buildMasterMapFromRows(json);
+    const { map, count, productOverrides, productCodeOverrides, orphanEntries, orphanIndex } = buildMasterMapFromRows(json);
     const overrideCount = Object.keys(productOverrides).length;
-    await withMasterLock(() => saveMaster(map, count, file.name, productOverrides, orphanEntries, orphanIndex));
+    const pcOverrideCount = Object.keys(productCodeOverrides).length;
+    await withMasterLock(() => saveMaster(map, count, file.name, productOverrides, orphanEntries, orphanIndex, productCodeOverrides));
     const overrideNote = overrideCount > count ? ` (상품명별 개별 분류 ${overrideCount.toLocaleString()}건 포함)` : '';
+    const pcNote = pcOverrideCount > 0 ? ` · 상품코드 기준 정밀 매칭 ${pcOverrideCount.toLocaleString()}건 포함` : '';
     const orphanNote = orphanEntries.length > 0 ? ` · 소분류코드 없이 상품코드로만 등록된 항목 ${orphanEntries.length.toLocaleString()}건 포함` : '';
-    preview.innerHTML = `<div class="status-line" style="margin-top:10px;"><span class="pill pill-ok">✓ 완료</span><span>${esc(file.name)} 에서 ${count.toLocaleString()}개 코드를 불러와 저장했습니다.${overrideNote}${orphanNote}</span></div>`;
+    preview.innerHTML = `<div class="status-line" style="margin-top:10px;"><span class="pill pill-ok">✓ 완료</span><span>${esc(file.name)} 에서 ${count.toLocaleString()}개 코드를 불러와 저장했습니다.${overrideNote}${pcNote}${orphanNote}</span></div>`;
   } catch (err) {
     preview.innerHTML = `<div class="status-line" style="margin-top:10px;"><span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span></div>`;
   }
@@ -844,13 +892,24 @@ function classifyRow(majorName, midName, productName, minorName) {
 // 기준표(masterMap)에 등록된 코드는 기준표의 분류값을 그대로 쓰고, 등록되지 않은
 // (아직 기준표에 없는) 코드만 classifyRow의 이름 기반 추론 규칙으로 분류한다.
 // 이렇게 해야 "① 기준코드 관리"에서 코드를 추가/수정하면 실제 분류 결과에도 반영된다.
-function classifyForRow(minorCode, majorName, midName, productName, minorName, productCode) {
-  // 1) 상품명 단위로 개별 지정된 분류가 있으면 최우선으로 사용한다 (프로모션 버킷처럼
-  // 코드 하나가 여러 실제 상품을 공유할 때, 기준표에서 상품명별로 직접 지정한 값).
+// 반환값: { cat, detail1, detail2, factor } — factor는 기준표에 명시된 값이 있으면
+// 그 값을, 없으면 null을 반환한다(호출쪽에서 이름 기반 추정값으로 대체해야 함).
+function classifyForRow(minorCode, majorName, midName, productName, minorName, productCode, sideProductCode) {
+  // 0) 상품코드(+사이드상품코드) 단위 정밀 매칭 — 거래마다 부여되는 가장 구체적인
+  // 식별자라 소분류코드/상품명보다도 먼저 확인한다.
+  if (productCode) {
+    const pcOverride = masterProductCodeOverrides[productCode + '|' + (sideProductCode || '')];
+    if (pcOverride && pcOverride.cat) {
+      return { cat: pcOverride.cat, detail1: pcOverride.detail1 || '', detail2: pcOverride.detail2 || '', factor: pcOverride.factor ?? null };
+    }
+  }
+
+  // 1) 상품명 단위로 개별 지정된 분류가 있으면 그 다음 우선순위로 사용한다 (프로모션
+  // 버킷처럼 코드 하나가 여러 실제 상품을 공유할 때, 기준표에서 상품명별로 직접 지정한 값).
   const overrideKey = minorCode + '|' + (productName || '').trim();
   const override = masterProductOverrides[overrideKey];
   if (override && override.cat) {
-    return { cat: override.cat, detail: override.detail || '' };
+    return { cat: override.cat, detail1: override.detail1 || '', detail2: override.detail2 || '', factor: override.factor ?? null };
   }
 
   // 1.5) 원본 데이터에 소분류코드 자체가 없는 거래(제휴/이벤트 메뉴 등) — 상품코드나
@@ -860,7 +919,7 @@ function classifyForRow(minorCode, majorName, midName, productName, minorName, p
     const nmKey = 'NM:' + (productName || '').trim();
     const orphan = (pcKey && masterOrphanIndex[pcKey]) || masterOrphanIndex[nmKey];
     if (orphan && orphan.cat) {
-      return { cat: orphan.cat, detail: orphan.detail || '' };
+      return { cat: orphan.cat, detail1: orphan.detail1 || '', detail2: orphan.detail2 || '', factor: orphan.factor ?? null };
     }
   }
 
@@ -871,14 +930,38 @@ function classifyForRow(minorCode, majorName, midName, productName, minorName, p
   // 건별로 판단해야 조각피자 등 실제 내용을 놓치지 않는다.
   const isReusedBucket = master && (master.majorName === '프로모션' || master.midName === '매장행사');
   if (master && master.cat && !isReusedBucket) {
-    return { cat: master.cat, detail: master.detail || '' };
+    return { cat: master.cat, detail1: master.detail1 || '', detail2: master.detail2 || '', factor: master.factor ?? null };
   }
-  return classifyRow(majorName, midName, productName, minorName);
+  const heuristic = classifyRow(majorName, midName, productName, minorName);
+  return { cat: heuristic.cat, detail1: heuristic.detail || '', detail2: '', factor: null };
 }
 
 // 발주품목 매칭 — cat/detail과 같은 우선순위로 찾되, 분류와는 독립적으로 조회한다
 // (예: 아직 기준표 분류는 안 정했어도 발주품목만 먼저 지정해둔 경우도 지원).
-function orderItemForRow(minorCode, productName, productCode) {
+// 발주품목 매칭 — 세부구분1/세부구분2 값 자체가 곧 발주품목(원재료)이다.
+// 예: "더블불고기버거"는 세부구분1="불고기패티", 보정값=2 → 불고기패티 2개 소진.
+// "새우불고기버거" 같은 복합패티 메뉴는 세부구분1="새우패티", 세부구분2="불고기패티"처럼
+// 서로 다른 두 원재료를 쓸 수 있어, 그 경우 둘 다 각각 소진량으로 잡는다
+// (세부구분1은 보정값만큼, 세부구분2는 기본 1개로 계산 — 필요시 조정 가능).
+// 예전 방식으로 별도 "발주품목" 필드를 채워둔 기준표도 하위 호환으로 계속 인식한다.
+// 반환값: [{ name, qtyPerUnit }, ...] — 상품 1개 판매당 소진되는 발주품목 목록.
+function orderItemsForRow(minorCode, majorName, midName, productName, minorName, productCode, sideProductCode) {
+  const { detail1, detail2, factor } = classifyForRow(minorCode, majorName, midName, productName, minorName, productCode, sideProductCode);
+  const f = factor != null ? factor : 1;
+  const items = [];
+  if (detail1) items.push({ name: detail1, qtyPerUnit: f });
+  if (detail2 && detail2 !== detail1) items.push({ name: detail2, qtyPerUnit: 1 });
+
+  // 하위 호환: 예전 방식대로 별도 "발주품목" 필드를 채워둔 경우도 포함한다
+  // (세부구분1/2와 겹치지 않을 때만 추가).
+  const legacy = legacyOrderItemForRow(minorCode, productName, productCode);
+  if (legacy && legacy !== detail1 && legacy !== detail2) {
+    items.push({ name: legacy, qtyPerUnit: f });
+  }
+  return items;
+}
+
+function legacyOrderItemForRow(minorCode, productName, productCode) {
   const overrideKey = minorCode + '|' + (productName || '').trim();
   const override = masterProductOverrides[overrideKey];
   if (override && override.orderItem) return override.orderItem;
@@ -901,7 +984,7 @@ function resolveRawCols(header) {
     majorCode: idx('대분류코드'), majorName: idx('대분류명'),
     midCode: idx('중분류코드'), midName: idx('중분류명'),
     minorCode: idx('소분류코드'), minorName: idx('소분류명'),
-    productCode: idx('상품코드'), productName: idx('상품명'),
+    productCode: idx('상품코드'), sideProductCode: idx('사이드상품코드'), productName: idx('상품명'),
     qty: idx('3 단품/세트/구성'),
     totalSales: idx('총매출액'),
     realSales3: idx('3 실매출액'),
@@ -911,7 +994,7 @@ function resolveRawCols(header) {
 // 여러 개의 원본 파일을 읽어서: ① 숨은 합계행 제외 ② 자동 분류 ③ 매출일자별로 그룹화.
 // 매출일자별로 "분류 포함 전체 행" 도 함께 만들어 currentMergedRowsByDate 에 보관한다
 // (다운로드용 — Firebase Storage 업로드 및 즉시 다운로드에 사용).
-let currentMergedHeader = null; // 원본 컬럼 + [분류, 세부구분, 사이즈구분, 보정값]
+let currentMergedHeader = null; // 원본 컬럼 + [분류, 세부구분1, 세부구분2, 사이즈구분, 보정값]
 let currentMergedRowsByDate = {}; // { date: [row, row, ...] }
 
 async function processRawDailyFiles(fileList) {
@@ -928,14 +1011,15 @@ async function processRawDailyFiles(fileList) {
     fileNames.push(file.name);
 
     const header = json[0].map(String);
-    // 이미 이 툴에서 내려받은 "_분류합본" 파일(끝에 분류/세부구분/사이즈구분/보정값 컬럼이
-    // 이미 있는 파일)을 다시 올린 경우, 컬럼을 중복으로 덧붙이지 않고 그 자리에서 값만
-    // 최신 규칙으로 다시 계산해 덮어쓴다. 원본 파일이면 새로 4개 컬럼을 추가한다.
-    const alreadyClassified = header.length >= 4 &&
-      header.slice(-4).join('|') === ['분류','세부구분','사이즈구분','보정값'].join('|');
-    const catIdx = alreadyClassified ? header.length - 4 : header.length;
-    const detailIdx = catIdx + 1, sizeIdx = catIdx + 2, factorIdx = catIdx + 3;
-    if (!outputHeader) outputHeader = alreadyClassified ? header : [...header, '분류', '세부구분', '사이즈구분', '보정값'];
+    // 이미 이 툴에서 내려받은 "_분류합본" 파일(끝에 분류/세부구분1/세부구분2/사이즈구분/
+    // 보정값 컬럼이 이미 있는 파일)을 다시 올린 경우, 컬럼을 중복으로 덧붙이지 않고
+    // 그 자리에서 값만 최신 규칙으로 다시 계산해 덮어쓴다. 원본 파일이면 새로 5개
+    // 컬럼을 추가한다. (예전 4컬럼 형식 파일은 새 5컬럼을 추가로 붙인다 — 과도기 처리)
+    const NEW_TAIL = ['분류','세부구분1','세부구분2','사이즈구분','보정값'];
+    const alreadyClassified = header.length >= 5 && header.slice(-5).join('|') === NEW_TAIL.join('|');
+    const catIdx = alreadyClassified ? header.length - 5 : header.length;
+    const detail1Idx = catIdx + 1, detail2Idx = catIdx + 2, sizeIdx = catIdx + 3, factorIdx = catIdx + 4;
+    if (!outputHeader) outputHeader = alreadyClassified ? header : [...header, ...NEW_TAIL];
     const cols = resolveRawCols(header);
     if (cols.date < 0 || cols.minorCode < 0) {
       throw new Error(`"${file.name}" 파일에서 "매출일자" 또는 "소분류코드" 컬럼을 찾을 수 없습니다. 일별상품매출현황(매장별) 원본 파일이 맞는지 확인해주세요.`);
@@ -954,11 +1038,14 @@ async function processRawDailyFiles(fileList) {
       const minorCodeVal = normCode(r[cols.minorCode]);
       const minorNameRaw = cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '';
       const productCodeVal = cols.productCode >= 0 ? normCode(r[cols.productCode]) : '';
+      const sideProductCodeVal = cols.sideProductCode >= 0 ? normCode(r[cols.sideProductCode]) : '';
       const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '') : '';
       const storeCodeVal = cols.storeCode >= 0 ? String(r[cols.storeCode] ?? '').trim() : '';
       const storeNameVal = cols.storeName >= 0 ? String(r[cols.storeName] ?? '').trim() : '';
-      const { cat, detail } = classifyForRow(minorCodeVal, majorName, midName, productName, minorNameRaw, productCodeVal);
-      const { size, factor } = sizeInfo(productName, minorNameRaw);
+      const { cat, detail1, detail2, factor: masterFactor } = classifyForRow(minorCodeVal, majorName, midName, productName, minorNameRaw, productCodeVal, sideProductCodeVal);
+      const { size, factor: guessedFactor } = sizeInfo(productName, minorNameRaw);
+      // 보정값은 기준표에 명시된 값을 최우선으로 쓰고, 없을 때만 이름 기반 추정치를 쓴다.
+      const factor = masterFactor != null ? masterFactor : guessedFactor;
       const dk = dateKeyOf(dv);
 
       if (!byDate[dk]) byDate[dk] = [];
@@ -971,26 +1058,30 @@ async function processRawDailyFiles(fileList) {
         cat,
       });
 
-      // 발주품목이 매칭되는 상품이면, 매장별 판매(소진)량을 누적 추적한다.
-      // 소진량 = 판매수량(3 단품/세트/구성) × 보정값(사이즈 환산 배수).
-      const orderItem = orderItemForRow(minorCodeVal, productName, productCodeVal);
-      if (orderItem && storeCodeVal) {
+      // 세부구분1/2(=발주품목)이 매칭되는 상품이면, 매장별 판매(소진)량을 누적 추적한다.
+      // 소진량 = 판매수량(3 단품/세트/구성) × 발주품목별 개당 소진량(보정값 등).
+      // 복합패티 메뉴(예: 새우불고기버거)는 세부구분1/2 두 원재료 모두 각각 소진 처리된다.
+      if (storeCodeVal) {
         const qtySold = cols.qty >= 0 ? toNum(r[cols.qty]) : 0;
         if (qtySold) {
-          if (!consumptionByDate[dk]) consumptionByDate[dk] = {};
-          const key = storeCodeVal + '|' + orderItem;
-          if (!consumptionByDate[dk][key]) consumptionByDate[dk][key] = { storeCode: storeCodeVal, storeName: storeNameVal, orderItem, qty: 0 };
-          consumptionByDate[dk][key].qty += qtySold * factor;
+          const orderItems = orderItemsForRow(minorCodeVal, majorName, midName, productName, minorNameRaw, productCodeVal, sideProductCodeVal);
+          orderItems.forEach(oi => {
+            if (!consumptionByDate[dk]) consumptionByDate[dk] = {};
+            const key = storeCodeVal + '|' + oi.name;
+            if (!consumptionByDate[dk][key]) consumptionByDate[dk][key] = { storeCode: storeCodeVal, storeName: storeNameVal, orderItem: oi.name, qty: 0 };
+            consumptionByDate[dk][key].qty += qtySold * oi.qtyPerUnit;
+          });
         }
       }
 
       if (!rowsByDate[dk]) rowsByDate[dk] = [];
       if (alreadyClassified) {
         const newRow = r.slice();
-        newRow[catIdx] = cat; newRow[detailIdx] = detail; newRow[sizeIdx] = size; newRow[factorIdx] = factor;
+        newRow[catIdx] = cat; newRow[detail1Idx] = detail1; newRow[detail2Idx] = detail2;
+        newRow[sizeIdx] = size; newRow[factorIdx] = factor;
         rowsByDate[dk].push(newRow);
       } else {
-        rowsByDate[dk].push([...r, cat, detail, size, factor]);
+        rowsByDate[dk].push([...r, cat, detail1, detail2, size, factor]);
       }
     });
   }
@@ -1302,7 +1393,10 @@ function anomalyRowHTML(a, date, idx) {
         <input type="text" id="${formId}-minor" placeholder="소분류명" value="${esc(a.minorName)}">
         <input type="text" id="${formId}-productName" placeholder="상품명(선택)">
         <input type="text" id="${formId}-cat" placeholder="분류(버거/피자/치킨/비프/사이드 등)" value="${esc(a.assignedCat)}" style="width:170px">
-        <input type="text" id="${formId}-detail" placeholder="세부구분">
+        <input type="text" id="${formId}-detail1" placeholder="세부구분1">
+        <input type="text" id="${formId}-detail2" placeholder="세부구분2">
+        <input type="text" id="${formId}-factor" placeholder="보정값" style="width:60px">
+        <input type="text" id="${formId}-orderItem" placeholder="발주품목">
         <button class="btn btn-primary btn-sm" onclick="addAnomalyToMaster('${formId}','${a.code}')">저장</button>
       </div>`;
   } else if (a.type === 'name_mismatch') {
@@ -1313,7 +1407,10 @@ function anomalyRowHTML(a, date, idx) {
       <button class="btn btn-ghost btn-sm" onclick="toggleAddForm('${formId}')">상품 분류 추가</button>
       <div class="add-form" id="${formId}" style="display:none;">
         <input type="text" id="${formId}-cat" placeholder="분류(버거/피자/치킨/비프/사이드 등)" style="width:170px">
-        <input type="text" id="${formId}-detail" placeholder="세부구분">
+        <input type="text" id="${formId}-detail1" placeholder="세부구분1">
+        <input type="text" id="${formId}-detail2" placeholder="세부구분2">
+        <input type="text" id="${formId}-factor" placeholder="보정값" style="width:60px">
+        <input type="text" id="${formId}-orderItem" placeholder="발주품목">
         <button class="btn btn-primary btn-sm" onclick="addProductOverride('${formId}','${a.code}', ${escJs(a.productName)}, ${escJs(a.productCode || '')})">저장</button>
       </div>`;
   }
@@ -1337,13 +1434,19 @@ function anomalyRowHTML(a, date, idx) {
 function toggleDay(id) { document.getElementById(id).classList.toggle('open'); }
 function toggleAddForm(id) { const el = document.getElementById(id); el.style.display = el.style.display === 'none' ? 'flex' : 'none'; }
 
+function readFactorInput(g, suffix) {
+  const raw = g(suffix);
+  return raw !== '' && !isNaN(Number(raw)) ? Number(raw) : null;
+}
+
 async function addAnomalyToMaster(formId, code) {
   const g = suffix => document.getElementById(formId + suffix).value.trim();
   const entry = {
     majorCode: g('-majorCode'), majorName: g('-major'),
     midCode: g('-midCode'), midName: g('-mid'),
     minorCode: code, minorName: g('-minor'), productName: g('-productName'),
-    cat: g('-cat'), detail: g('-detail'),
+    cat: g('-cat'), detail1: g('-detail1'), detail2: g('-detail2'),
+    factor: readFactorInput(g, '-factor'), orderItem: g('-orderItem'),
   };
   try {
     await withMasterLock(async () => {
@@ -1363,21 +1466,24 @@ async function addProductOverride(formId, code, productName, productCode) {
   const g = suffix => document.getElementById(formId + suffix).value.trim();
   const cat = g('-cat');
   if (!cat) { alert('분류를 입력해주세요.'); return; }
-  const detail = g('-detail');
+  const detail1 = g('-detail1');
+  const detail2 = g('-detail2');
+  const factor = readFactorInput(g, '-factor');
+  const orderItem = g('-orderItem');
   try {
     if (code) {
       // 정상적으로 소분류코드가 있는 버킷 코드 — "코드|상품명" 단위로 저장
       await withMasterLock(async () => {
-        const newOverrides = { ...masterProductOverrides, [code + '|' + productName]: { cat, detail } };
+        const newOverrides = { ...masterProductOverrides, [code + '|' + productName]: { cat, detail1, detail2, factor, orderItem } };
         await saveMaster(masterMap, masterRowCount, undefined, newOverrides);
       });
     } else {
       // 소분류코드 자체가 없는 거래 — 상품코드(없으면 상품명)로 별도 저장
       const key = productCode ? 'PC:' + productCode : 'NM:' + productName;
       await withMasterLock(async () => {
-        const newOrphanIndex = { ...masterOrphanIndex, [key]: { cat, detail } };
+        const newOrphanIndex = { ...masterOrphanIndex, [key]: { cat, detail1, detail2, factor, orderItem } };
         const newOrphanEntries = masterOrphanEntries.filter(o => !(productCode ? o.productCode === productCode : o.productName === productName));
-        newOrphanEntries.push({ majorCode: '', majorName: '', midCode: '', midName: '', productCode: productCode || '', productName, cat, detail });
+        newOrphanEntries.push({ majorCode: '', majorName: '', midCode: '', midName: '', productCode: productCode || '', productName, cat, detail1, detail2, factor, orderItem });
         await saveMaster(masterMap, masterRowCount, undefined, masterProductOverrides, newOrphanEntries, newOrphanIndex);
       });
     }
@@ -1505,7 +1611,10 @@ async function reclassifyAndRedownload(date, btnEl) {
     const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: true });
     const header = json[0].map(String);
     const cols = resolveRawCols(header);
-    const catIdx = header.indexOf('분류'), detailIdx = header.indexOf('세부구분');
+    const catIdx = header.indexOf('분류');
+    // 예전(세부구분 1개) 형식으로 저장된 합본을 재분류할 수도 있으니 둘 다 인식한다.
+    const detail1Idx = header.indexOf('세부구분1') >= 0 ? header.indexOf('세부구분1') : header.indexOf('세부구분');
+    const detail2Idx = header.indexOf('세부구분2'); // 예전 형식이면 -1 (그 경우 세부구분2는 저장 못 함)
     const sizeIdx = header.indexOf('사이즈구분'), factorIdx = header.indexOf('보정값');
     if (catIdx < 0 || cols.minorCode < 0) throw new Error('합본 파일 형식을 알아볼 수 없습니다.');
 
@@ -1519,10 +1628,14 @@ async function reclassifyAndRedownload(date, btnEl) {
       const minorCodeVal = normCode(r[cols.minorCode]);
       const minorNameRaw = cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '';
       const productCodeVal = cols.productCode >= 0 ? normCode(r[cols.productCode]) : '';
+      const sideProductCodeVal = cols.sideProductCode >= 0 ? normCode(r[cols.sideProductCode]) : '';
       const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '') : '';
-      const { cat, detail } = classifyForRow(minorCodeVal, majorName, midName, productName, minorNameRaw, productCodeVal);
-      const { size, factor } = sizeInfo(productName, minorNameRaw);
-      r[catIdx] = cat; r[detailIdx] = detail;
+      const { cat, detail1, detail2, factor: masterFactor } = classifyForRow(minorCodeVal, majorName, midName, productName, minorNameRaw, productCodeVal, sideProductCodeVal);
+      const { size, factor: guessedFactor } = sizeInfo(productName, minorNameRaw);
+      const factor = masterFactor != null ? masterFactor : guessedFactor;
+      r[catIdx] = cat;
+      if (detail1Idx >= 0) r[detail1Idx] = detail1;
+      if (detail2Idx >= 0) r[detail2Idx] = detail2;
       if (sizeIdx >= 0) r[sizeIdx] = size;
       if (factorIdx >= 0) r[factorIdx] = factor;
       items.push({
