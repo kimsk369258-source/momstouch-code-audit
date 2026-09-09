@@ -926,16 +926,21 @@ function downloadMasterFile(btnEl) {
   const lookups = buildOrphanLookups();
   const seenOrphanRows = new Set();
   masterOrphanEntries.forEach(o => {
-    const rowKey = (o.productCode||'') + '|' + (o.sideProductCode||'') + '|' + o.productName;
-    if (seenOrphanRows.has(rowKey)) return;
-    seenOrphanRows.add(rowKey);
     const ref = lookupOrphanRef(lookups, o.productCode, o.sideProductCode);
     const majorCode = o.majorCode || ref.majorCode || '', majorName = o.majorName || ref.majorName || '';
     const midCode = o.midCode || ref.midCode || '', midName = o.midName || ref.midName || '';
     const gubunGuess = o.sideProductCode ? '사이드상품' : '';
-    const { cat: liveCat } = classifyRow(majorName, midName, o.productName, '');
-    const match = !TRACKED.includes(o.cat) ? '(추적 대상 아님)' : (liveCat === o.cat ? '일치' : '불일치');
-    rows.push(['등록됨(상품코드)', majorCode, majorName, midCode, midName, '', o.productCode, o.sideProductCode || '', gubunGuess, o.productName, o.cat, o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '', liveCat, match]);
+    // 상품명이 "이름1 / 이름2"처럼 여러 개 합쳐져 있으면(예전 방식으로 저장된 데이터),
+    // 나중에 상품명 기준으로 집계할 수 있도록 한 줄씩 세로로 풀어서 내보낸다.
+    const names = o.productName ? o.productName.split(' / ').filter(Boolean) : [''];
+    names.forEach(name => {
+      const rowKey = (o.productCode||'') + '|' + (o.sideProductCode||'') + '|' + name;
+      if (seenOrphanRows.has(rowKey)) return;
+      seenOrphanRows.add(rowKey);
+      const { cat: liveCat } = classifyRow(majorName, midName, name, '');
+      const match = !TRACKED.includes(o.cat) ? '(추적 대상 아님)' : (liveCat === o.cat ? '일치' : '불일치');
+      rows.push(['등록됨(상품코드)', majorCode, majorName, midCode, midName, '', o.productCode, o.sideProductCode || '', gubunGuess, name, o.cat, o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '', liveCat, match]);
+    });
   });
 
   // masterProductCodeOverrides 중 masterOrphanEntries에 대응하는 행이 없는 것들도
@@ -1255,7 +1260,9 @@ async function processRawDailyFiles(fileList) {
       // 세트(사이드모상품/일반판매상품)의 이름을 상품코드 기준으로 기록해둔다 —
       // 나중에 같은 상품코드의 사이드상품(구성품)을 수기 입력할 때, 위에 참고용
       // 행으로 세트명을 같이 보여주기 위함.
-      if (productCodeVal && (gubunVal === '사이드모상품' || gubunVal === '일반판매상품')) {
+      // 세트(사이드모상품)만 참고용 부모 정보로 기록한다 — 일반판매상품은 단독 판매라
+      // 하위 구성품 자체가 없으므로, 그 이름을 "세트명"처럼 노출할 필요가 없다.
+      if (productCodeVal && gubunVal === '사이드모상품') {
         if (!parentNameByDate[dk]) parentNameByDate[dk] = {};
         if (!parentNameByDate[dk][productCodeVal]) parentNameByDate[dk][productCodeVal] = productName;
       }
