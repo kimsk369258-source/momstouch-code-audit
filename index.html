@@ -844,7 +844,7 @@ document.getElementById('masterSearch').addEventListener('input', e => renderMas
 
 function downloadMasterFile(btnEl) {
   if (masterRowCount === 0 && masterOrphanEntries.length === 0 && Object.keys(masterProductCodeOverrides).length === 0) { alert('등록된 기준표가 없습니다. 먼저 상품코드정리.xlsx를 업로드해주세요.'); return; }
-  const header = ['대분류코드','대분류명','중분류코드','중분류명','소분류코드','상품코드','사이드상품코드','상품명','기준표 분류','세부구분1','세부구분2','세부구분 보정값','발주품목','현재 자동분류','일치 여부'];
+  const header = [...COMBINED_HEADER, '발주품목', '현재 자동분류', '일치 여부'];
   const entries = Object.values(masterMap).sort((a, b) => Number(a.minorCode) - Number(b.minorCode));
   const TRACKED = ['버거','피자','치킨','비프'];
 
@@ -870,15 +870,29 @@ function downloadMasterFile(btnEl) {
       const nameForClassify = o.name || e.minorName;
       const { cat: liveCat } = classifyRow(e.majorName, e.midName, nameForClassify, e.minorName);
       const match = !TRACKED.includes(o.cat) ? '(추적 대상 아님)' : (liveCat === o.cat ? '일치' : '불일치');
-      rows.push([e.majorCode, e.majorName, e.midCode, e.midName, e.minorCode, '', '', o.name, o.cat, o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '', liveCat, match]);
+      rows.push(['등록됨(소분류코드)', e.majorCode, e.majorName, e.midCode, e.midName, e.minorCode, '', '', '', o.name, o.cat, o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '', liveCat, match]);
     });
   });
 
   // 소분류코드 자체가 없는 거래(상품코드/사이드상품코드로만 등록된 항목)도 별도 행으로 내보낸다.
   masterOrphanEntries.forEach(o => {
+    const gubunGuess = o.sideProductCode ? '사이드상품' : '';
     const { cat: liveCat } = classifyRow(o.majorName, o.midName, o.productName, '');
     const match = !TRACKED.includes(o.cat) ? '(추적 대상 아님)' : (liveCat === o.cat ? '일치' : '불일치');
-    rows.push([o.majorCode, o.majorName, o.midCode, o.midName, '', o.productCode, o.sideProductCode || '', o.productName, o.cat, o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '', liveCat, match]);
+    rows.push(['등록됨(상품코드)', o.majorCode, o.majorName, o.midCode, o.midName, '', o.productCode, o.sideProductCode || '', gubunGuess, o.productName, o.cat, o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '', liveCat, match]);
+  });
+
+  // masterProductCodeOverrides 중 masterOrphanEntries에 대응하는 행이 없는 것들도
+  // (예: 자동 와일드카드 승격 등으로 orphanEntry 없이 등록된 것) 빠짐없이 내보낸다.
+  const orphanKeys = new Set(masterOrphanEntries.map(o => (o.productCode||'') + '|' + (o.sideProductCode||'')));
+  Object.keys(masterProductCodeOverrides).forEach(key => {
+    if (orphanKeys.has(key)) return; // 이미 위에서 내보냄
+    const sep = key.indexOf('|');
+    const pc = key.slice(0, sep), sc = key.slice(sep + 1);
+    const o = masterProductCodeOverrides[key];
+    const gubunGuess = sc ? '사이드상품' : '';
+    const label = pc === '*' ? '등록됨(사이드상품코드 와일드카드)' : '등록됨(상품코드)';
+    rows.push([label, '', '', '', '', '', pc === '*' ? '' : pc, sc, gubunGuess, '', o.cat || '', o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '', '', '(참고용)']);
   });
 
   const blob = buildExportBlob(header, rows);
@@ -1355,7 +1369,13 @@ function buildDateReport(date, itemsForDate) {
     // (버거/치킨/피자 items sharing one 매장행사 코드), each governed by its own
     // product-name override, so comparing them against one code-level master
     // category would falsely flag every non-matching category as an anomaly.
-    const isReusedBucket = master.majorName === '프로모션' || master.midName === '매장행사';
+    // '프로모션/매장행사'처럼 이름으로 알 수 있는 버킷 코드 외에도, 실제로 등록된
+    // 4대 추적 분류(버거/피자/치킨/비프) 중 서로 다른 게 2개 이상 섞여 나오는 코드는
+    // 이름과 무관하게 "사실상 재사용 버킷"으로 취급한다 — 상품코드 정밀 매칭이
+    // 이미 각 상품을 올바르게 구분해 분류하고 있는데, 코드 레벨 대표값 하나와
+    // 비교해서 나머지를 전부 "불일치"로 잘못 잡는 것을 막기 위함.
+    const distinctTrackedCats = new Set(assignedCats.filter(ac => TRACKED.includes(ac)));
+    const isReusedBucket = master.majorName === '프로모션' || master.midName === '매장행사' || distinctTrackedCats.size > 1;
     if (TRACKED.includes(master.cat) && !isReusedBucket) {
       // name mismatch (minor name changed)
       if (master.minorName && item.minorName && master.minorName !== item.minorName) {
@@ -1488,9 +1508,9 @@ function renderDailyResults(reports) {
 
 // 다운로드 파일들의 공통 컬럼 순서 — "상품코드정리" 기준표 파일과 동일한 순서로
 // 맞춰서(유형 컬럼만 맨 앞에 추가) 눈에 익은 형태로 만든다.
-// A유형 B대분류코드 C대분류명 D중분류코드 E중분류명 F상품코드 G사이드상품코드
-// H구분1 I구분2 J기준표분류 K세부구분1 L세부구분2 M세부구분보정값 N매출 O건수 P소분류코드(참고)
-const COMBINED_HEADER = ['유형','대분류코드','대분류명','중분류코드','중분류명','상품코드','사이드상품코드','구분1','구분2','기준표 분류','세부구분1','세부구분2','세부구분 보정값','매출','건수','소분류코드'];
+// A유형 B대분류코드 C대분류명 D중분류코드 E중분류명 F소분류코드 G상품코드 H사이드상품코드
+// I구분1 J구분2 K기준표분류 L세부구분1 M세부구분2 N세부구분보정값
+const COMBINED_HEADER = ['유형','대분류코드','대분류명','중분류코드','중분류명','소분류코드','상품코드','사이드상품코드','구분1','구분2','기준표 분류','세부구분1','세부구분2','세부구분 보정값'];
 
 // 이상 항목을 엑셀에서 채워 넣기 좋은 형태로 내려받는다. 다운로드 → 분류/세부구분1/2/
 // 보정값 칸을 채워서 → 아래 "기준코드에 저장" 버튼으로 다시 올리면 한 번에 반영된다.
@@ -1500,13 +1520,12 @@ function exportAnomaliesFile(date) {
   const rows = anomalies.map(a => [
     anomalyTypeLabel(a.type),
     a.majorCode || '', a.majorName || '', a.midCode || '', a.midName || '',
+    a.code || '',
     a.productCode || '', a.sideProductCode || '',
     a.gubun || '', // 구분1(일반판매상품/사이드모상품/사이드상품) — 원본 데이터에서 그대로 가져옴
     a.productName || a.minorName || '',
     '', '', '', // 기준표 분류, 세부구분1, 세부구분2 — 채워 넣을 빈 칸
     '', // 세부구분 보정값
-    a.revenue, a.rowCount,
-    a.code || '',
   ]);
   const blob = buildExportBlob(COMBINED_HEADER, rows);
   triggerDownload(blob, `이상항목_${date}.csv`);
@@ -1522,7 +1541,7 @@ function exportCombinedFile(date) {
   // 1) 소분류코드 레벨 등록(masterMap) — 코드 전체가 하나의 분류로 등록된 것.
   // 구분1은 알 수 없어(코드 전체 등록이라 특정 거래 유형에 묶이지 않음) 빈 칸으로 둔다.
   Object.values(masterMap).forEach(e => {
-    rows.push(['등록됨(소분류코드)', e.majorCode || '', e.majorName || '', e.midCode || '', e.midName || '', '', '', '', e.productName || e.minorName || '', e.cat || '', e.detail1 || '', e.detail2 || '', e.factor != null ? e.factor : '', '', '', e.minorCode]);
+    rows.push(['등록됨(소분류코드)', e.majorCode || '', e.majorName || '', e.midCode || '', e.midName || '', e.minorCode, '', '', '', e.productName || e.minorName || '', e.cat || '', e.detail1 || '', e.detail2 || '', e.factor != null ? e.factor : '']);
   });
 
   // 2) 소분류코드+상품명 단위 등록(masterProductOverrides)
@@ -1530,7 +1549,7 @@ function exportCombinedFile(date) {
     const sep = key.indexOf('|');
     const code = key.slice(0, sep), name = key.slice(sep + 1);
     const o = masterProductOverrides[key];
-    rows.push(['등록됨(소분류코드+상품명)', '', '', '', '', '', '', '', name, o.cat || '', o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', '', '', code]);
+    rows.push(['등록됨(소분류코드+상품명)', '', '', '', '', code, '', '', '', name, o.cat || '', o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '']);
   });
 
   // 3) 상품코드(+사이드상품코드) 단위 등록(masterProductCodeOverrides) — 와일드카드('*')는
@@ -1545,7 +1564,7 @@ function exportCombinedFile(date) {
     const ref = orphanByKey[key] || {};
     const label = pc === '*' ? '등록됨(사이드상품코드 와일드카드)' : '등록됨(상품코드)';
     const gubunGuess = sc ? '사이드상품' : '';
-    rows.push([label, ref.majorCode || '', ref.majorName || '', ref.midCode || '', ref.midName || '', pc === '*' ? '' : pc, sc, gubunGuess, ref.productName || '', o.cat || '', o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', '', '', '']);
+    rows.push([label, ref.majorCode || '', ref.majorName || '', ref.midCode || '', ref.midName || '', '', pc === '*' ? '' : pc, sc, gubunGuess, ref.productName || '', o.cat || '', o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '']);
   });
 
   // 4) 이 날짜의 이상 항목(아직 분류가 없거나 확인이 필요한 것들)
@@ -1553,10 +1572,10 @@ function exportCombinedFile(date) {
   anomalies.forEach(a => {
     rows.push([
       anomalyTypeLabel(a.type), a.majorCode || '', a.majorName || '', a.midCode || '', a.midName || '',
+      a.code || '',
       a.productCode || '', a.sideProductCode || '', a.gubun || '',
       a.productName || a.minorName || '',
       '', '', '', '', // 기준표 분류, 세부구분1, 세부구분2, 보정값 — 채워 넣을 빈 칸
-      a.revenue, a.rowCount, a.code || '',
     ]);
   });
 
@@ -1564,7 +1583,7 @@ function exportCombinedFile(date) {
   // 뒤로 보낸다. 상품코드는 숫자로 변환해 정렬한다(문자열 정렬 시 "10"이 "9"보다
   // 앞에 오는 문제를 피하기 위함).
   rows.sort((a, b) => {
-    const pcA = a[5], pcB = b[5];
+    const pcA = a[6], pcB = b[6];
     if (!pcA && !pcB) return 0;
     if (!pcA) return 1;
     if (!pcB) return -1;
