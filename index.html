@@ -423,6 +423,7 @@ let masterProductCodeOverrides = {};
 // 무조건 이 분류를 적용한다. 콜라/소스류처럼 계속 새 변형(새 상품코드)이 생기는
 // 항목을 매번 정확히 등록할 필요 없이 한 번에 처리하기 위함.
 let masterKeywordRules = []; // [{keyword, cat, detail1, detail2, factor}]
+let anomaliesCache = {}; // date -> anomalies[] (이상 항목 다운로드 버튼이 참조)
 let masterUpdatedAt = null;
 let masterRowCount = 0;
 let dailyIndex = [];     // [{date, fileName, uploadedAt, totalRows, totalRevenue, uniqueCodes, anomalyCount, status}]
@@ -1200,7 +1201,7 @@ async function processRawDailyFiles(fileList) {
         minorCode: minorCodeVal,
         minorName: minorNameRaw,
         majorCode, majorName, midCode, midName,
-        productCode: productCodeVal, productName,
+        productCode: productCodeVal, sideProductCode: sideProductCodeVal, productName,
         revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
         cat,
       });
@@ -1275,7 +1276,7 @@ function buildDateReport(date, itemsForDate) {
     } else {
       const key = item.productName || item.minorName || '(상품명 없음)';
       const bucket = agg[groupKey].blankByName;
-      if (!bucket[key]) bucket[key] = { revenue: 0, rowCount: 0, productCode: item.productCode || '' };
+      if (!bucket[key]) bucket[key] = { revenue: 0, rowCount: 0, productCode: item.productCode || '', sideProductCode: item.sideProductCode || '' };
       bucket[key].revenue += item.revenue;
       bucket[key].rowCount += 1;
     }
@@ -1293,7 +1294,7 @@ function buildDateReport(date, itemsForDate) {
       Object.keys(item.blankByName).forEach(pname => {
         const info = item.blankByName[pname];
         anomalies.push({
-          code: '', productCode: info.productCode, type: 'bucket_unclassified',
+          code: '', productCode: info.productCode, sideProductCode: info.sideProductCode, type: 'bucket_unclassified',
           majorCode: item.majorCode, majorName: item.majorName,
           midCode: item.midCode, midName: item.midName,
           minorName: item.minorName || '(소분류코드 없음)',
@@ -1328,7 +1329,7 @@ function buildDateReport(date, itemsForDate) {
         Object.keys(item.blankByName).forEach(pname => {
           const info = item.blankByName[pname];
           anomalies.push({
-            code: item.code, productCode: info.productCode, type: 'bucket_unclassified',
+            code: item.code, productCode: info.productCode, sideProductCode: info.sideProductCode, type: 'bucket_unclassified',
             majorCode: item.majorCode, majorName: item.majorName,
             midCode: item.midCode, midName: item.midName,
             minorName: item.minorName,
@@ -1400,7 +1401,7 @@ function buildDateReport(date, itemsForDate) {
       Object.keys(item.blankByName).forEach(pname => {
         const info = item.blankByName[pname];
         anomalies.push({
-          code: item.code, type: 'bucket_unclassified',
+          code: item.code, productCode: info.productCode, sideProductCode: info.sideProductCode, type: 'bucket_unclassified',
           majorCode: item.majorCode, majorName: item.majorName,
           midCode: item.midCode, midName: item.midName,
           minorName: item.minorName,
@@ -1482,11 +1483,81 @@ function renderDailyResults(reports) {
   container.innerHTML = dates.map(dk => dayCardHTML(reports[dk], true)).join('');
 }
 
+// 이상 항목을 엑셀에서 채워 넣기 좋은 형태로 내려받는다. 다운로드 → 분류/세부구분1/2/
+// 보정값 칸을 채워서 → 아래 "기준코드에 저장" 버튼으로 다시 올리면 한 번에 반영된다.
+function exportAnomaliesFile(date) {
+  const anomalies = anomaliesCache[date] || [];
+  if (anomalies.length === 0) { alert('내려받을 이상 항목이 없습니다.'); return; }
+  const header = ['유형','소분류코드','상품코드','사이드상품코드','구분2','대분류코드','대분류명','중분류코드','중분류명','매출','건수','기준표 분류','세부구분1','세부구분2','세부구분 보정값'];
+  const rows = anomalies.map(a => [
+    anomalyTypeLabel(a.type),
+    a.code || '',
+    a.productCode || '',
+    a.sideProductCode || '',
+    a.productName || a.minorName || '',
+    a.majorCode || '', a.majorName || '',
+    a.midCode || '', a.midName || '',
+    a.revenue, a.rowCount,
+    '', '', '', '', // 여기부터 채워 넣을 빈 칸: 기준표 분류, 세부구분1, 세부구분2, 보정값
+  ]);
+  const blob = buildExportBlob(header, rows);
+  triggerDownload(blob, `이상항목_${date}.csv`);
+}
+
+// "기준코드에 저장" — exportAnomaliesFile로 내려받아 분류를 채운 파일을 다시 올리면,
+// 기존 기준표를 통째로 대체하지 않고 새로 채운 값만 추가/병합한다 (① 기준코드 관리의
+// "새 파일 업로드"는 전체 교체이지만, 이건 이어붙이기라는 점이 다르다).
+async function applyAnomalyClassificationFile(file, cardId) {
+  const statusEl = document.getElementById('kwStatus-' + cardId);
+  statusEl.innerHTML = `<div class="note">읽는 중...</div>`;
+  try {
+    const json = await readWorkbook(file);
+    const { map, productOverrides, productCodeOverrides, orphanEntries, orphanIndex } = buildMasterMapFromRows(json);
+
+    // 소분류코드 레벨 등록(map)은 분류가 실제로 채워진 것만 반영한다 — 빈칸으로 둔
+    // 행까지 등록해버리면 안 되기 때문.
+    const filteredMap = {};
+    Object.keys(map).forEach(code => { if (map[code].cat) filteredMap[code] = map[code]; });
+    const pcCount = Object.keys(productCodeOverrides).length;
+    const overrideCount = Object.keys(productOverrides).length;
+    const mapCount = Object.keys(filteredMap).length;
+    const filledOrphans = orphanEntries.filter(o => o.cat);
+
+    if (pcCount === 0 && overrideCount === 0 && mapCount === 0) {
+      statusEl.innerHTML = `<div class="status-line"><span class="pill pill-warn">⚠ 반영할 내용 없음</span><span>"기준표 분류" 칸이 채워진 행이 없습니다.</span></div>`;
+      return;
+    }
+
+    await withMasterLock(async () => {
+      const mergedMap = { ...masterMap, ...filteredMap };
+      const mergedOverrides = { ...masterProductOverrides, ...productOverrides };
+      const mergedPcOverrides = { ...masterProductCodeOverrides, ...productCodeOverrides };
+      const newOrphanKeys = new Set(filledOrphans.map(o => (o.productCode||'') + '|' + (o.sideProductCode||'')));
+      const mergedOrphans = masterOrphanEntries
+        .filter(o => !newOrphanKeys.has((o.productCode||'') + '|' + (o.sideProductCode||'')))
+        .concat(filledOrphans);
+      const mergedOrphanIndex = { ...masterOrphanIndex, ...orphanIndex };
+      await saveMaster(mergedMap, Object.keys(mergedMap).length, undefined, mergedOverrides, mergedOrphans, mergedOrphanIndex, mergedPcOverrides);
+    });
+
+    statusEl.innerHTML = `<div class="status-line"><span class="pill pill-ok">✓ 완료</span><span>기준표에 ${(pcCount + mapCount).toLocaleString()}건 반영했습니다. 대조 결과를 다시 확인해 보세요.</span></div>`;
+  } catch (err) {
+    statusEl.innerHTML = `<div class="status-line"><span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span></div>`;
+  }
+}
+
 function dayCardHTML(report, showSaveBtn) {
   const id = 'day-' + report.date.replace(/-/g,'');
+  anomaliesCache[report.date] = report.anomalies; // 이상목록 다운로드 버튼이 참조할 수 있도록 캐시
   const statusPill = report.status === 'ok'
     ? `<span class="pill pill-ok">✓ 이상 없음</span>`
     : `<span class="pill pill-bad">⚠ 이상 ${report.anomalies.length}건</span>`;
+
+  const anomalyToolBtns = report.anomalies.length > 0
+    ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); exportAnomaliesFile('${report.date}')">📋 이상 항목 다운로드</button>
+       <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); document.getElementById('kwUpload-${id}').click()">📤 기준코드에 저장</button>
+       <input type="file" id="kwUpload-${id}" accept=".xlsx,.xls,.csv" style="display:none;" onclick="event.stopPropagation()" onchange="if(this.files[0]) applyAnomalyClassificationFile(this.files[0], '${id}'); this.value='';">`
+    : '';
 
   const saveBtn = showSaveBtn
     ? `<button class="btn btn-ghost btn-sm" onclick="downloadMergedFile('${report.date}', this)">📥 다운로드</button>
@@ -1514,6 +1585,7 @@ function dayCardHTML(report, showSaveBtn) {
         <div class="stat-box"><div class="stat-label">이상 건수</div><div class="stat-value">${report.anomalies.length}</div></div>
         <div class="stat-box"><div class="stat-label">매출 합계(참고용)</div><div class="stat-value">${fmtNum(report.totalRevenue)}</div></div>
       </div>
+      ${anomalyToolBtns ? `<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:6px;">${anomalyToolBtns}</div><div id="kwStatus-${id}" style="margin-bottom:12px;"></div>` : ''}
       ${report.anomalies.length === 0
         ? `<div class="empty">기준표와 대조한 결과 이상이 없습니다. 👍</div>`
         : `<div class="table-wrap"><table>
@@ -2371,7 +2443,7 @@ Object.assign(window, {
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
   deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable,
-  addKeywordRule, deleteKeywordRule,
+  addKeywordRule, deleteKeywordRule, exportAnomaliesFile, applyAnomalyClassificationFile,
 });
 </script>
 </body>
