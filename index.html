@@ -657,8 +657,11 @@ function buildMasterMapFromRows(json) {
     };
 
     // 같은 코드가 여러 줄로 올라온 경우(상품명별로 분류를 따로 지정한 파일) — 코드 레벨
-    // 대표값은 처음 나온 값을 쓰고, 나머지는 상품명별 개별 오버라이드로만 쌓는다.
+    // 대표값은 분류(cat)가 채워진 첫 번째 행을 쓴다. 분류가 빈칸인 행이 먼저 등록되면
+    // "코드는 있는데 분류가 없는" 상태가 되어 이상 탐지가 새는 원인이 되므로, 나중에
+    // 분류가 채워진 행이 나오면 그걸로 갱신한다.
     if (!(code in map)) { map[code] = rowEntry; count++; }
+    else if (!map[code].cat && rowEntry.cat) { map[code] = rowEntry; }
     if (!namesByCode[code]) namesByCode[code] = [];
     namesByCode[code].push({
       name: rowEntry.productName, cat: rowEntry.cat,
@@ -1380,7 +1383,11 @@ function buildDateReport(date, itemsForDate, parentNameByCode) {
       return;
     }
 
-    const master = masterMap[item.code];
+    // 분류(cat)가 빈칸인 채로 저장된 소분류코드 등록은, 실제로는 등록이 안 된 것과
+    // 똑같이 취급한다 — 그래야 이상 탐지에서 안 새고 제대로 잡힌다. (예: 아직 분류를
+    // 채우기 전 파일을 실수로 "① 기준코드 관리"에 업로드한 경우 등)
+    const masterRaw = masterMap[item.code];
+    const master = (masterRaw && masterRaw.cat) ? masterRaw : null;
     if (!master) {
       // '붐바타' 브랜드는 통째로 제외 대상이라 기준표에 등록 안 해도 "미등록 코드"로
       // 잡지 않는다 (classifyRow가 이미 '제외'로 분류하므로 별도 등록이 필요 없음).
