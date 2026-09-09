@@ -960,6 +960,9 @@ function downloadMasterFile(btnEl) {
     rows.push([label, ref.majorCode || '', ref.majorName || '', ref.midCode || '', ref.midName || '', '', pc === '*' ? '' : pc, sc, gubunGuess, ref.productName || '', o.cat || '', o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '', '', '(참고용)']);
   });
 
+  // 유형별로 묶고, 같은 유형 안에서는 상품코드 순으로 정렬한다.
+  sortByProductCode(rows);
+
   const blob = buildExportBlob(header, rows);
   const dateStr = nowISO().slice(0, 10);
   triggerDownload(blob, `상품코드정리_${dateStr}.csv`);
@@ -1594,8 +1597,19 @@ function buildParentRefRows(anomalies) {
 }
 // 상품코드 기준으로 정렬한다 — 상품코드가 없는 행은 뒤로 보낸다. 같은 상품코드끼리는
 // 원래 순서(세트 참고 행이 먼저 들어갔으면 먼저)를 그대로 유지한다(안정 정렬).
+// 유형별로 먼저 묶고, 같은 유형 안에서는 상품코드 순으로 정렬한다. 유형 순서는
+// 검토하기 편한 순서(코드 레벨 → 이름별 → 상품코드별 → 와일드카드 → 참고 → 이상)로 고정한다.
+const TYPE_ORDER = [
+  '등록됨(소분류코드)', '등록됨(소분류코드+상품명)', '등록됨(상품코드)',
+  '등록됨(사이드상품코드 와일드카드)', '세트(참고)',
+  '미등록 코드', '버킷코드 내 미분류 상품', '분류 불일치', '미분류', '상품명 변경',
+];
 function sortByProductCode(rows) {
   rows.sort((a, b) => {
+    const typeIdxA = TYPE_ORDER.indexOf(a[0]), typeIdxB = TYPE_ORDER.indexOf(b[0]);
+    const orderA = typeIdxA === -1 ? TYPE_ORDER.length : typeIdxA;
+    const orderB = typeIdxB === -1 ? TYPE_ORDER.length : typeIdxB;
+    if (orderA !== orderB) return orderA - orderB;
     const pcA = a[6], pcB = b[6];
     if (!pcA && !pcB) return 0;
     if (!pcA) return 1;
@@ -1674,16 +1688,8 @@ function exportCombinedFile(date) {
     ]);
   });
 
-  // 상품코드 기준 정렬 — 상품코드가 없는 행(소분류코드 전체 등록, 와일드카드 등)은
-  // 뒤로 보낸다. 상품코드는 숫자로 변환해 정렬한다(문자열 정렬 시 "10"이 "9"보다
-  // 앞에 오는 문제를 피하기 위함).
-  rows.sort((a, b) => {
-    const pcA = a[6], pcB = b[6];
-    if (!pcA && !pcB) return 0;
-    if (!pcA) return 1;
-    if (!pcB) return -1;
-    return Number(pcA) - Number(pcB);
-  });
+  // 유형별로 묶고, 같은 유형 안에서는 상품코드 순으로 정렬한다.
+  sortByProductCode(rows);
 
   const blob = buildExportBlob(COMBINED_HEADER, rows);
   triggerDownload(blob, `기준표_이상항목_통합_${date}.csv`);
