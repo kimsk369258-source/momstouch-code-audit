@@ -861,6 +861,33 @@ function renderMasterTable(filterText) {
 
 document.getElementById('masterSearch').addEventListener('input', e => renderMasterTable(e.target.value));
 
+// masterOrphanEntries에서 참고 정보를 찾기 위한 조회 테이블을 만든다. 정확히 같은
+// (상품코드,사이드상품코드) 조합에 대분류/중분류/상품명 정보가 없어도, 같은
+// 사이드상품코드(재료가 같음)나 같은 상품코드의 다른 기록에 있으면 그걸로 채운다 —
+// 이래야 "같은 사이드상품코드인데 이 조합에만 정보가 비어있는" 문제가 없어진다.
+// 대분류/중분류(majorRef)와 상품명(nameRef)을 따로 조회한다 — 어느 한쪽만 있는
+// 기록이 다른 쪽 조회를 막지 않도록 하기 위함.
+function buildOrphanLookups() {
+  const bySideCode = {}, byProductCode = {};
+  const nameBySideCode = {}, nameByProductCode = {};
+  masterOrphanEntries.forEach(o => {
+    if (o.majorCode || o.majorName) {
+      if (o.sideProductCode && !bySideCode[o.sideProductCode]) bySideCode[o.sideProductCode] = o;
+      if (o.productCode && !byProductCode[o.productCode]) byProductCode[o.productCode] = o;
+    }
+    if (o.productName) {
+      if (o.sideProductCode && !nameBySideCode[o.sideProductCode]) nameBySideCode[o.sideProductCode] = o.productName;
+      if (o.productCode && !nameByProductCode[o.productCode]) nameByProductCode[o.productCode] = o.productName;
+    }
+  });
+  return { bySideCode, byProductCode, nameBySideCode, nameByProductCode };
+}
+function lookupOrphanRef(lookups, pc, sc) {
+  const majorRef = (sc && lookups.bySideCode[sc]) || (pc && lookups.byProductCode[pc]) || {};
+  const productName = (sc && lookups.nameBySideCode[sc]) || (pc && lookups.nameByProductCode[pc]) || '';
+  return { majorCode: majorRef.majorCode || '', majorName: majorRef.majorName || '', midCode: majorRef.midCode || '', midName: majorRef.midName || '', productName };
+}
+
 function downloadMasterFile(btnEl) {
   if (masterRowCount === 0 && masterOrphanEntries.length === 0 && Object.keys(masterProductCodeOverrides).length === 0) { alert('등록된 기준표가 없습니다. 먼저 상품코드정리.xlsx를 업로드해주세요.'); return; }
   const header = [...COMBINED_HEADER, '발주품목', '현재 자동분류', '일치 여부'];
@@ -893,12 +920,22 @@ function downloadMasterFile(btnEl) {
     });
   });
 
-  // 소분류코드 자체가 없는 거래(상품코드/사이드상품코드로만 등록된 항목)도 별도 행으로 내보낸다.
+  // 소분류코드 자체가 없는 거래(상품코드/사이드상품코드로만 등록된 항목)도 별도 행으로
+  // 내보낸다. 같은 사이드상품코드/상품코드를 가진 다른 기록에 대분류/중분류/상품명
+  // 정보가 있으면 그걸로 빈 칸을 채운다(재료가 같으면 분류 맥락도 같기 때문).
+  const lookups = buildOrphanLookups();
+  const seenOrphanRows = new Set();
   masterOrphanEntries.forEach(o => {
+    const rowKey = (o.productCode||'') + '|' + (o.sideProductCode||'') + '|' + o.productName;
+    if (seenOrphanRows.has(rowKey)) return;
+    seenOrphanRows.add(rowKey);
+    const ref = lookupOrphanRef(lookups, o.productCode, o.sideProductCode);
+    const majorCode = o.majorCode || ref.majorCode || '', majorName = o.majorName || ref.majorName || '';
+    const midCode = o.midCode || ref.midCode || '', midName = o.midName || ref.midName || '';
     const gubunGuess = o.sideProductCode ? '사이드상품' : '';
-    const { cat: liveCat } = classifyRow(o.majorName, o.midName, o.productName, '');
+    const { cat: liveCat } = classifyRow(majorName, midName, o.productName, '');
     const match = !TRACKED.includes(o.cat) ? '(추적 대상 아님)' : (liveCat === o.cat ? '일치' : '불일치');
-    rows.push(['등록됨(상품코드)', o.majorCode, o.majorName, o.midCode, o.midName, '', o.productCode, o.sideProductCode || '', gubunGuess, o.productName, o.cat, o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '', liveCat, match]);
+    rows.push(['등록됨(상품코드)', majorCode, majorName, midCode, midName, '', o.productCode, o.sideProductCode || '', gubunGuess, o.productName, o.cat, o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '', liveCat, match]);
   });
 
   // masterProductCodeOverrides 중 masterOrphanEntries에 대응하는 행이 없는 것들도
@@ -909,9 +946,10 @@ function downloadMasterFile(btnEl) {
     const sep = key.indexOf('|');
     const pc = key.slice(0, sep), sc = key.slice(sep + 1);
     const o = masterProductCodeOverrides[key];
+    const ref = lookupOrphanRef(lookups, pc === '*' ? '' : pc, sc);
     const gubunGuess = sc ? '사이드상품' : '';
     const label = pc === '*' ? '등록됨(사이드상품코드 와일드카드)' : '등록됨(상품코드)';
-    rows.push([label, '', '', '', '', '', pc === '*' ? '' : pc, sc, gubunGuess, '', o.cat || '', o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '', '', '(참고용)']);
+    rows.push([label, ref.majorCode || '', ref.majorName || '', ref.midCode || '', ref.midName || '', '', pc === '*' ? '' : pc, sc, gubunGuess, ref.productName || '', o.cat || '', o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '', '', '(참고용)']);
   });
 
   const blob = buildExportBlob(header, rows);
@@ -1555,13 +1593,14 @@ function exportCombinedFile(date) {
   // 3) 상품코드(+사이드상품코드) 단위 등록(masterProductCodeOverrides) — 와일드카드('*')는
   // 상품코드 칸을 비워서 "사이드상품코드만으로 매칭"임을 알아볼 수 있게 한다. 사이드상품코드가
   // 있으면 구분1은 확실히 "사이드상품"이다(세트 구성품일 때만 사이드상품코드가 존재하므로).
-  const orphanByKey = {};
-  masterOrphanEntries.forEach(o => { orphanByKey[(o.productCode||'') + '|' + (o.sideProductCode||'')] = o; });
+  // 같은 사이드상품코드/상품코드를 가진 다른 기록의 대분류/중분류/상품명 정보로
+  // 빈 칸을 채운다(재료가 같으면 분류 맥락도 같기 때문) — buildOrphanLookups() 참고.
+  const lookups = buildOrphanLookups();
   Object.keys(masterProductCodeOverrides).forEach(key => {
     const sep = key.indexOf('|');
     const pc = key.slice(0, sep), sc = key.slice(sep + 1);
     const o = masterProductCodeOverrides[key];
-    const ref = orphanByKey[key] || {};
+    const ref = lookupOrphanRef(lookups, pc === '*' ? '' : pc, sc);
     const label = pc === '*' ? '등록됨(사이드상품코드 와일드카드)' : '등록됨(상품코드)';
     const gubunGuess = sc ? '사이드상품' : '';
     rows.push([label, ref.majorCode || '', ref.majorName || '', ref.midCode || '', ref.midName || '', '', pc === '*' ? '' : pc, sc, gubunGuess, ref.productName || '', o.cat || '', o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '']);
