@@ -505,16 +505,35 @@ function resolveDocRef(key) {
 async function storageGet(key) {
   try {
     const snap = await getDoc(resolveDocRef(key));
-    return snap.exists() ? JSON.stringify(snap.data()) : null;
+    if (!snap.exists()) return null;
+    const data = snap.data();
+    // 데이터를 문자열 하나로 통째로 저장한다("__blob" 필드 하나). 값 안의 항목(상품코드,
+    // 소분류코드 등) 하나하나가 Firestore 문서의 실제 필드가 되면, 항목 수가 많아질수록
+    // Firestore가 자동으로 만드는 색인 항목 수도 같이 늘어나 결국 "too many index
+    // entries" 에러로 저장이 막힌다. 문자열 하나로 저장하면 색인은 그 필드 하나로
+    // 끝나서 이 문제가 아예 생기지 않는다. 예전 방식(값을 그대로 문서 필드로 풀어서
+    // 저장)으로 이미 저장된 문서도 계속 읽을 수 있도록 하위 호환을 유지한다.
+    if (typeof data.__blob === 'string') return data.__blob;
+    return JSON.stringify(data);
   } catch (e) { console.error('storage get failed', key, e); return null; }
 }
 async function storageSet(key, value) {
-  try { await setDoc(resolveDocRef(key), JSON.parse(value)); return true; }
+  try { await setDoc(resolveDocRef(key), { __blob: value }); return true; }
   catch (e) { console.error('storage set failed', key, e); return false; }
 }
 async function storageDelete(key) {
   try { await deleteDoc(resolveDocRef(key)); return true; }
   catch (e) { console.error('storage delete failed', key, e); return false; }
+}
+
+// 컬렉션을 통째로 조회할 때(getDocs) 쓰는 헬퍼 — storageSet으로 저장된 문서는
+// { __blob: "JSON문자열" } 형태이므로 그 안의 실제 데이터를 꺼내 돌려준다.
+// 예전 방식(값을 그대로 문서 필드로 풀어서 저장)으로 저장된 문서도 계속 지원한다.
+function unwrapDoc(data) {
+  if (data && typeof data.__blob === 'string') {
+    try { return JSON.parse(data.__blob); } catch (e) { return data; }
+  }
+  return data;
 }
 
 // ==========================================================================
@@ -2063,7 +2082,7 @@ async function loadDailyIndex() {
   try {
     const snap = await getDocs(collection(db, 'daily'));
     snap.forEach(d => {
-      const data = d.data();
+      const data = unwrapDoc(d.data());
       dailyIndex.push({
         date: data.date, fileName: data.fileName, uploadedAt: data.uploadedAt,
         totalRows: data.totalRows, totalRevenue: data.totalRevenue,
@@ -2308,7 +2327,7 @@ async function loadOrdersIndex() {
   try {
     const snap = await getDocs(collection(db, 'orders'));
     snap.forEach(d => {
-      const data = d.data();
+      const data = unwrapDoc(d.data());
       const entries = data.entries || [];
       ordersIndex.push({
         date: data.date, fileName: data.fileName, uploadedAt: data.uploadedAt,
@@ -2376,8 +2395,8 @@ async function loadStockData() {
       getDocs(collection(db, 'orders')),
       getDocs(collection(db, 'consumption')),
     ]);
-    stockOrderDocs = []; orderSnap.forEach(d => stockOrderDocs.push(d.data()));
-    stockConsumptionDocs = []; consumeSnap.forEach(d => stockConsumptionDocs.push(d.data()));
+    stockOrderDocs = []; orderSnap.forEach(d => stockOrderDocs.push(unwrapDoc(d.data())));
+    stockConsumptionDocs = []; consumeSnap.forEach(d => stockConsumptionDocs.push(unwrapDoc(d.data())));
 
     const stores = {}; // storeCode -> storeName
     stockOrderDocs.forEach(doc => (doc.entries||[]).forEach(e => { if (e.storeCode) stores[e.storeCode] = e.storeName || stores[e.storeCode] || ''; }));
