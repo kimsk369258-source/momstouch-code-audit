@@ -1196,7 +1196,8 @@ function classifyForRowInner(minorCode, majorName, midName, productName, minorNa
 // 예전 방식으로 별도 "발주품목" 필드를 채워둔 기준표도 하위 호환으로 계속 인식한다.
 // 반환값: [{ name, qtyPerUnit }, ...] — 상품 1개 판매당 소진되는 발주품목 목록.
 function orderItemsForRow(minorCode, majorName, midName, productName, minorName, productCode, sideProductCode) {
-  const { detail1, detail2, factor } = classifyForRow(minorCode, majorName, midName, productName, minorName, productCode, sideProductCode);
+  const { cat, detail1, detail2, factor } = classifyForRow(minorCode, majorName, midName, productName, minorName, productCode, sideProductCode);
+  if (cat === '제외') return []; // 제외 상품은 재고 소진량 추적 대상이 아니다.
   const f = factor != null ? factor : 1;
   const items = [];
   if (detail1) items.push({ name: detail1, qtyPerUnit: f });
@@ -1305,7 +1306,8 @@ async function processRawDailyFiles(fileList) {
       const { cat, detail1, detail2, factor: masterFactor } = classifyForRow(minorCodeVal, majorName, midName, productName, minorNameRaw, productCodeVal, sideProductCodeVal);
       const { size, factor: guessedFactor } = sizeInfo(productName, minorNameRaw);
       // 보정값은 기준표에 명시된 값을 최우선으로 쓰고, 없을 때만 이름 기반 추정치를 쓴다.
-      const factor = masterFactor != null ? masterFactor : guessedFactor;
+      // '제외' 상품은 소진량 추적 대상이 아니므로 보정값을 항상 빈 값으로 둔다.
+      const factor = cat === '제외' ? '' : (masterFactor != null ? masterFactor : guessedFactor);
       const dk = dateKeyOf(dv);
 
       // 세트(사이드모상품/일반판매상품)의 이름을 상품코드 기준으로 기록해둔다 —
@@ -2160,7 +2162,8 @@ async function reclassifyAndRedownload(date, btnEl) {
       const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '') : '';
       const { cat, detail1, detail2, factor: masterFactor } = classifyForRow(minorCodeVal, majorName, midName, productName, minorNameRaw, productCodeVal, sideProductCodeVal);
       const { size, factor: guessedFactor } = sizeInfo(productName, minorNameRaw);
-      const factor = masterFactor != null ? masterFactor : guessedFactor;
+      // '제외' 상품은 소진량 추적 대상이 아니므로 보정값을 항상 빈 값으로 둔다.
+      const factor = cat === '제외' ? '' : (masterFactor != null ? masterFactor : guessedFactor);
       r[catIdx] = cat;
       if (detail1Idx >= 0) r[detail1Idx] = detail1;
       if (detail2Idx >= 0) r[detail2Idx] = detail2;
