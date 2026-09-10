@@ -1402,7 +1402,10 @@ function buildDateReport(date, itemsForDate, parentNameByCode) {
     } else {
       const key = item.productName || item.minorName || '(상품명 없음)';
       const bucket = agg[groupKey].blankByName;
-      if (!bucket[key]) bucket[key] = { revenue: 0, rowCount: 0, productCode: item.productCode || '', sideProductCode: item.sideProductCode || '', gubun: item.gubun || '', parentName: (item.productCode && parentNameByCode[item.productCode]) || '' };
+      // 세트 자체(사이드모상품)가 미분류로 잡힌 경우엔 parentName을 채우지 않는다 —
+      // 그렇지 않으면 "자기 자신"을 참고용 부모로 또 표시해서 같은 상품코드가
+      // 이상 목록에 중복으로 나오게 된다(자기 참조).
+      if (!bucket[key]) bucket[key] = { revenue: 0, rowCount: 0, productCode: item.productCode || '', sideProductCode: item.sideProductCode || '', gubun: item.gubun || '', parentName: (item.gubun !== '사이드모상품' && item.productCode && parentNameByCode[item.productCode]) || '' };
       bucket[key].revenue += item.revenue;
       bucket[key].rowCount += 1;
     }
