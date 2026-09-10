@@ -1078,6 +1078,15 @@ function classifyRow(majorName, midName, productName, minorName) {
 // 반환값: { cat, detail1, detail2, factor } — factor는 기준표에 명시된 값이 있으면
 // 그 값을, 없으면 null을 반환한다(호출쪽에서 이름 기반 추정값으로 대체해야 함).
 function classifyForRow(minorCode, majorName, midName, productName, minorName, productCode, sideProductCode) {
+  const result = classifyForRowInner(minorCode, majorName, midName, productName, minorName, productCode, sideProductCode);
+  // '제외' 상품은 소진량 추적 대상이 아니므로, 어디서 등록했든(상품코드/와일드카드/
+  // 키워드 규칙/소분류코드 등) 보정값은 항상 빈 값으로 강제한다 — 그래야 다운로드
+  // 파일에도 "제외 상품엔 보정값 없음"이 항상 일관되게 유지된다.
+  if (result.cat === '제외') return { ...result, factor: null };
+  return result;
+}
+
+function classifyForRowInner(minorCode, majorName, midName, productName, minorName, productCode, sideProductCode) {
   // 0) 상품코드(+사이드상품코드) 단위 정밀 매칭 — 거래마다 부여되는 가장 구체적인
   // 식별자라 소분류코드/상품명보다도 먼저 확인한다.
   if (productCode) {
