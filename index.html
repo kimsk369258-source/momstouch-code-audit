@@ -1046,14 +1046,9 @@ function isSlicePizzaName(name) {
 
 // ── 사이즈구분 + 보정값 ──
 function sizeInfo(productName, minorName) {
-  const name = productName || '';
-  const minor = minorName || '';
-  // 소분류명이 '반반치킨'이면 상품명 표기와 무관하게 한마리 취급(보정값 2)
-  if (minor === '반반치킨') return { size: '한마리', factor: 2 };
-  if (/한마리/.test(name)) return { size: '한마리', factor: 2 };
-  if (/반마리/.test(name)) return { size: '반마리', factor: 1 };
-  if (/MAX/i.test(name)) return { size: 'Max', factor: 2 };
-  if (/순살/.test(name) && /R\s*(\(|$)/.test(name.trim())) return { size: 'R', factor: 1 };
+  // 예전에 있던 이름 기반 자동 보정값 추측(한마리/반마리/MAX 등)은 없앴다(사용자 요청) —
+  // 이제 보정값은 기준표에 명시적으로 등록된 값만 쓰고, 등록이 없으면 기본값 1(추정 없음)로
+  // 둔다. classifyForRow에서 기준표 값이 있으면 이 기본값을 무시하고 그 값을 우선한다.
   return { size: '', factor: 1 };
 }
 
