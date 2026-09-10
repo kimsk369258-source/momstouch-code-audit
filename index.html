@@ -630,18 +630,25 @@ function buildMasterMapFromRows(json) {
       }
     }
 
-    // 소분류코드가 비어있는 행: 원본 POS 데이터에 소분류코드 자체가 없는 거래(제휴/이벤트
-    // 메뉴 등)를 위한 것. 상품코드(없으면 상품명)를 키로 별도 저장한다.
-    if (!code) {
-      if (!productCode && !productName) continue;
-      const entry = {
+    // 상품코드가 있으면(거래마다 부여되는 정밀 식별자), 소분류코드가 함께 있든 없든
+    // 항상 "참고용 기록"을 만든다 — 대분류/중분류/상품명 정보를 이 정확한 (상품코드,
+    // 사이드상품코드) 조합에 묶어 저장해 두어야, 나중에 다운로드할 때 이 조합의
+    // 맥락 정보를 다시 찾아 보여줄 수 있다. 분류 매칭 자체는 이미 위에서 처리했으므로,
+    // 여기서는 orphanIndex(소분류코드 없는 거래의 분류 fallback)에는 넣지 않는다.
+    if (productCode) {
+      orphanEntries.push({
         majorCode: normCode(cols.majorCode >= 0 ? r[cols.majorCode] : ''),
         majorName: cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '',
         midCode: normCode(cols.midCode >= 0 ? r[cols.midCode] : ''),
         midName: cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '',
         productCode, sideProductCode, productName, cat, detail1, detail2, factor, orderItem,
-      };
-      orphanEntries.push(entry);
+      });
+    }
+
+    // 소분류코드가 비어있는 행: 원본 POS 데이터에 소분류코드 자체가 없는 거래(제휴/이벤트
+    // 메뉴 등)를 위한 것. 상품코드(없으면 상품명)를 키로 별도 저장한다.
+    if (!code) {
+      if (!productCode && !productName) continue;
       if (cat || orderItem) {
         const key = productCode ? ('PC:' + productCode) : ('NM:' + productName);
         orphanIndex[key] = { cat, detail1, detail2, factor, orderItem };
