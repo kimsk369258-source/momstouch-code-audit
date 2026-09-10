@@ -973,6 +973,27 @@ function downloadMasterFile(btnEl) {
   triggerDownload(blob, `상품코드정리_${dateStr}.csv`);
 }
 
+// COMBINED_HEADER 기준 "기준표 분류"/"세부구분 보정값" 컬럼 위치. 스냅샷을 저장하는
+// 모든 경로에서 공통으로 써서, "제외"로 분류된 행은 보정값을 항상 비워둔다.
+// 다운로드 파일들의 공통 컬럼 순서 — "상품코드정리" 기준표 파일과 동일한 순서로
+// 맞춰서(유형 컬럼만 맨 앞에 추가) 눈에 익은 형태로 만든다.
+// A유형 B대분류코드 C대분류명 D중분류코드 E중분류명 F소분류코드 G상품코드 H사이드상품코드
+// I구분1 J구분2 K기준표분류 L세부구분1 M세부구분2 N세부구분보정값
+const COMBINED_HEADER = ['대분류코드','대분류명','중분류코드','중분류명','소분류코드','소분류명','상품코드','사이드상품코드','구분','상품명','기준표 분류','세부구분1','세부구분2','세부구분 보정값','발주품목'];
+
+const CH_CAT_IDX = COMBINED_HEADER.indexOf('기준표 분류');
+const CH_FACTOR_IDX = COMBINED_HEADER.indexOf('세부구분 보정값');
+function clearFactorIfExcluded(row) {
+  if (CH_CAT_IDX >= 0 && CH_FACTOR_IDX >= 0 && row[CH_CAT_IDX] === '제외' && row[CH_FACTOR_IDX]) {
+    row = row.slice();
+    row[CH_FACTOR_IDX] = '';
+  }
+  return row;
+}
+function cleanSnapshotRows(rows) {
+  return rows.map(clearFactorIfExcluded);
+}
+
 // 원본 스냅샷(masterRawSnapshot)에 행 하나를 이어붙인다. 스냅샷이 COMBINED_HEADER
 // 형식이 아니거나 아직 없으면 새로 COMBINED_HEADER로 시작한다. 수동 등록/개별 저장
 // 기능들이 공통으로 써서, "기준표 다운로드" 결과에 누락되지 않도록 한다.
@@ -980,7 +1001,7 @@ function appendToSnapshot(row) {
   const base = (masterRawSnapshot && masterRawSnapshot.header && masterRawSnapshot.header.length === COMBINED_HEADER.length && masterRawSnapshot.header.every((h,i)=>h===COMBINED_HEADER[i]))
     ? masterRawSnapshot
     : { header: COMBINED_HEADER, rows: [] };
-  return { header: base.header, rows: [...base.rows, row] };
+  return { header: base.header, rows: [...base.rows, clearFactorIfExcluded(row)] };
 }
 
 async function manualAddCode() {
@@ -1020,7 +1041,11 @@ setupDropZone('masterDropZone', 'masterFileInput', async (file) => {
     const { map, count, productOverrides, productCodeOverrides, orphanEntries, orphanIndex, rawHeader, rawRows } = buildMasterMapFromRows(json);
     const overrideCount = Object.keys(productOverrides).length;
     const pcOverrideCount = Object.keys(productCodeOverrides).length;
-    const rawSnapshot = { header: rawHeader, rows: rawRows };
+    // 업로드한 파일의 헤더가 COMBINED_HEADER와 같으면, 저장 전에 "제외" 행의
+    // 보정값을 미리 비워둔다(업로드 원본에 실수로 값이 남아있는 경우 대비).
+    const headerMatchesCombined = rawHeader.length === COMBINED_HEADER.length && rawHeader.every((h,i) => h === COMBINED_HEADER[i]);
+    const cleanedRows = headerMatchesCombined ? cleanSnapshotRows(rawRows) : rawRows;
+    const rawSnapshot = { header: rawHeader, rows: cleanedRows };
     await withMasterLock(() => saveMaster(rawSnapshot));
     const overrideNote = overrideCount > count ? ` (상품명별 개별 분류 ${overrideCount.toLocaleString()}건 포함)` : '';
     const pcNote = pcOverrideCount > 0 ? ` · 상품코드 기준 정밀 매칭 ${pcOverrideCount.toLocaleString()}건 포함` : '';
@@ -1591,12 +1616,6 @@ function renderDailyResults(reports) {
   container.innerHTML = dates.map(dk => dayCardHTML(reports[dk], true)).join('');
 }
 
-// 다운로드 파일들의 공통 컬럼 순서 — "상품코드정리" 기준표 파일과 동일한 순서로
-// 맞춰서(유형 컬럼만 맨 앞에 추가) 눈에 익은 형태로 만든다.
-// A유형 B대분류코드 C대분류명 D중분류코드 E중분류명 F소분류코드 G상품코드 H사이드상품코드
-// I구분1 J구분2 K기준표분류 L세부구분1 M세부구분2 N세부구분보정값
-const COMBINED_HEADER = ['대분류코드','대분류명','중분류코드','중분류명','소분류코드','소분류명','상품코드','사이드상품코드','구분','상품명','기준표 분류','세부구분1','세부구분2','세부구분 보정값','발주품목'];
-
 // 이상 항목을 엑셀에서 채워 넣기 좋은 형태로 내려받는다. 다운로드 → 분류/세부구분1/2/
 // 보정값 칸을 채워서 → 아래 "기준코드에 저장" 버튼으로 다시 올리면 한 번에 반영된다.
 // 사이드상품(구성품) 이상 항목의 상품코드마다, 그 세트(사이드모상품)의 이름을
@@ -1749,7 +1768,7 @@ async function applyAnomalyClassificationFile(file, cardId) {
       const baseSnapshot = (masterRawSnapshot && masterRawSnapshot.header && masterRawSnapshot.header.length === COMBINED_HEADER.length && masterRawSnapshot.header.every((h,i)=>h===COMBINED_HEADER[i]))
         ? masterRawSnapshot
         : { header: COMBINED_HEADER, rows: [] };
-      const mergedSnapshot = { header: baseSnapshot.header, rows: [...baseSnapshot.rows, ...newSnapshotRows] };
+      const mergedSnapshot = { header: baseSnapshot.header, rows: [...baseSnapshot.rows, ...cleanSnapshotRows(newSnapshotRows)] };
       await saveMaster(mergedSnapshot);
     });
 
