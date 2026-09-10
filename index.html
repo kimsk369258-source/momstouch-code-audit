@@ -1141,7 +1141,7 @@ function classifyForRow(minorCode, majorName, midName, productName, minorName, p
   // "재사용 버킷" 코드다(아이스아메리카노, 오렌지에이드, 불고기조각피자 등이 한 코드에 섞여있음).
   // 이런 코드는 기준표의 단일 분류값을 통째로 씌우면 안 되고, 예전처럼 상품명 기준으로
   // 건별로 판단해야 조각피자 등 실제 내용을 놓치지 않는다.
-  const isReusedBucket = master && (master.majorName === '프로모션' || master.midName === '매장행사');
+  const isReusedBucket = master && (master.majorName === '프로모션' || master.midName === '매장행사' || master.majorName === '옵션');
   if (master && master.cat && !isReusedBucket) {
     return { cat: master.cat, detail1: master.detail1 || '', detail2: master.detail2 || '', factor: master.factor ?? null };
   }
@@ -1456,7 +1456,7 @@ function buildDateReport(date, itemsForDate, parentNameByCode) {
     // 이름과 무관하게 "사실상 재사용 버킷"으로 취급한다 — 상품코드 정밀 매칭이
     // 이미 각 상품을 올바르게 구분해 분류하고 있는데, 코드 레벨 대표값 하나와
     // 비교해서 나머지를 전부 "불일치"로 잘못 잡는 것을 막기 위함.
-    const isReusedBucket = master.majorName === '프로모션' || master.midName === '매장행사';
+    const isReusedBucket = master.majorName === '프로모션' || master.midName === '매장행사' || master.majorName === '옵션';
     if (TRACKED.includes(master.cat) && !isReusedBucket) {
       // name mismatch (minor name changed)
       if (master.minorName && item.minorName && master.minorName !== item.minorName) {
