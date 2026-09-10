@@ -714,21 +714,32 @@ function buildMasterMapFromRows(json) {
   return { map, productOverrides, productCodeOverrides, orphanEntries, orphanIndex, count, rawHeader: header, rawRows: json.slice(headerRowIdx + 1).map(r => r.map(v => v == null ? '' : String(v))) };
 }
 
+// 저장된 원본 스냅샷으로부터 분류 매칭에 쓰는 자료구조(masterMap 등)를 다시 계산한다.
+// 이 값들은 더 이상 Firestore에 따로 저장하지 않는다 — 스냅샷 하나만 저장하고
+// 필요할 때마다 여기서 즉석으로 만들어 쓴다(저장 용량을 절반 이하로 줄이기 위함).
+function recomputeMasterFromSnapshot() {
+  if (masterRawSnapshot && masterRawSnapshot.header && masterRawSnapshot.rows) {
+    try {
+      const json = [masterRawSnapshot.header, ...masterRawSnapshot.rows];
+      const { map, productOverrides, productCodeOverrides, orphanEntries, orphanIndex, count } = buildMasterMapFromRows(json);
+      masterMap = map; masterProductOverrides = productOverrides; masterProductCodeOverrides = productCodeOverrides;
+      masterOrphanEntries = orphanEntries; masterOrphanIndex = orphanIndex; masterRowCount = count;
+      return;
+    } catch (e) { console.error('스냅샷에서 기준표 재계산 실패', e); }
+  }
+  masterMap = {}; masterProductOverrides = {}; masterProductCodeOverrides = {}; masterOrphanEntries = []; masterOrphanIndex = {}; masterRowCount = 0;
+}
+
 async function loadMaster() {
   const raw = await storageGet('master');
-  if (!raw) { masterMap = {}; masterProductOverrides = {}; masterProductCodeOverrides = {}; masterOrphanEntries = []; masterOrphanIndex = {}; masterKeywordRules = []; masterRawSnapshot = null; masterRowCount = 0; masterUpdatedAt = null; renderMasterStatus(); renderMasterTable(); renderKeywordRules(); return; }
+  if (!raw) { masterRawSnapshot = null; masterKeywordRules = []; masterUpdatedAt = null; recomputeMasterFromSnapshot(); renderMasterStatus(); renderMasterTable(); renderKeywordRules(); return; }
   try {
     const obj = JSON.parse(raw);
-    masterMap = obj.map || {};
-    masterProductOverrides = obj.productOverrides || {};
-    masterProductCodeOverrides = obj.productCodeOverrides || {};
-    masterOrphanEntries = obj.orphanEntries || [];
-    masterOrphanIndex = obj.orphanIndex || {};
-    masterKeywordRules = obj.keywordRules || [];
     masterRawSnapshot = obj.rawSnapshot || null;
-    masterRowCount = obj.count || Object.keys(masterMap).length;
+    masterKeywordRules = obj.keywordRules || [];
     masterUpdatedAt = obj.updatedAt || null;
-  } catch (e) { masterMap = {}; masterProductOverrides = {}; masterProductCodeOverrides = {}; masterOrphanEntries = []; masterOrphanIndex = {}; masterKeywordRules = []; masterRawSnapshot = null; masterRowCount = 0; masterUpdatedAt = null; }
+  } catch (e) { masterRawSnapshot = null; masterKeywordRules = []; masterUpdatedAt = null; }
+  recomputeMasterFromSnapshot();
   renderMasterStatus();
   renderMasterTable();
   renderKeywordRules();
@@ -738,33 +749,27 @@ async function resetAllMaster() {
   if (!confirm('기준표 전체(소분류코드/상품코드/사이드상품코드 등록, 키워드 규칙 포함)를 완전히 초기화할까요?\n이 작업은 되돌릴 수 없습니다. 일별 대조 이력·발주 이력은 그대로 남습니다.')) return;
   if (!confirm('정말로 초기화하시겠습니까? 지금까지 등록한 모든 분류가 사라집니다.')) return;
   try {
-    await withMasterLock(() => saveMaster({}, 0, undefined, {}, [], {}, {}, [], null));
+    await withMasterLock(() => saveMaster(null, []));
     alert('기준표를 초기화했습니다. 처음부터 새로 등록해주세요.');
   } catch (err) {
     alert('초기화 실패: ' + err.message);
   }
 }
 
-async function saveMaster(map, count, sourceFileName, productOverrides, orphanEntries, orphanIndex, productCodeOverrides, keywordRules, rawSnapshot) {
+// 원본 스냅샷 하나만 저장한다 — 분류 매칭용 자료구조는 저장하지 않고, 로드/저장
+// 시점에 recomputeMasterFromSnapshot()으로 즉석에서 다시 만든다. 저장 용량을
+// 크게 줄여서 Firestore 필드 용량 한도(약 1MB) 문제를 근본적으로 없앤다.
+async function saveMaster(rawSnapshot, keywordRules) {
   const updatedAt = nowISO();
-  const overrides = productOverrides || masterProductOverrides || {};
-  const pcOverrides = productCodeOverrides || masterProductCodeOverrides || {};
-  const orphans = orphanEntries || masterOrphanEntries || [];
-  const orphanIdx = orphanIndex || masterOrphanIndex || {};
-  const rules = keywordRules || masterKeywordRules || [];
   const snapshot = rawSnapshot !== undefined ? rawSnapshot : masterRawSnapshot;
-  const payload = JSON.stringify({ map, count, updatedAt, sourceFileName: sourceFileName || null, productOverrides: overrides, productCodeOverrides: pcOverrides, orphanEntries: orphans, orphanIndex: orphanIdx, keywordRules: rules, rawSnapshot: snapshot });
+  const rules = keywordRules !== undefined ? keywordRules : masterKeywordRules;
+  const payload = JSON.stringify({ updatedAt, rawSnapshot: snapshot, keywordRules: rules });
   const ok = await storageSet('master', payload);
   if (!ok) throw new Error('Firebase에 저장하지 못했습니다. 브라우저 개발자 도구(F12) 콘솔에서 에러 메시지를 확인해주세요.');
-  masterMap = map;
-  masterProductOverrides = overrides;
-  masterProductCodeOverrides = pcOverrides;
-  masterOrphanEntries = orphans;
-  masterOrphanIndex = orphanIdx;
-  masterKeywordRules = rules;
   masterRawSnapshot = snapshot;
-  masterRowCount = count;
+  masterKeywordRules = rules;
   masterUpdatedAt = updatedAt;
+  recomputeMasterFromSnapshot();
   renderMasterStatus();
   renderMasterTable();
   renderKeywordRules();
@@ -783,7 +788,7 @@ async function addKeywordRule() {
     await withMasterLock(async () => {
       const newRules = masterKeywordRules.filter(r => r.keyword !== keyword);
       newRules.push({ keyword, cat, detail1, detail2, factor });
-      await saveMaster(masterMap, masterRowCount, undefined, masterProductOverrides, masterOrphanEntries, masterOrphanIndex, masterProductCodeOverrides, newRules);
+      await saveMaster(undefined, newRules);
     });
   } catch (err) {
     alert('저장 실패: ' + err.message);
@@ -797,7 +802,7 @@ async function deleteKeywordRule(keyword) {
   try {
     await withMasterLock(async () => {
       const newRules = masterKeywordRules.filter(r => r.keyword !== keyword);
-      await saveMaster(masterMap, masterRowCount, undefined, masterProductOverrides, masterOrphanEntries, masterOrphanIndex, masterProductCodeOverrides, newRules);
+      await saveMaster(undefined, newRules);
     });
   } catch (err) {
     alert('삭제 실패: ' + err.message);
@@ -997,7 +1002,7 @@ async function manualAddCode() {
       const newOrphanEntries = masterOrphanEntries.filter(o => !((o.productCode || '') === productCode && (o.sideProductCode || '') === sideProductCode));
       newOrphanEntries.push({ majorCode: '', majorName: '', midCode: '', midName: '', productCode, sideProductCode, productName, cat, detail1, detail2, factor, orderItem });
       const newSnapshot = appendToSnapshot(['', '', '', '', '', '', productCode === '*' ? '' : productCode, sideProductCode, '', productName, cat, detail1 || '', detail2 || '', factor != null ? factor : '', orderItem || '']);
-      await saveMaster(masterMap, masterRowCount, undefined, masterProductOverrides, newOrphanEntries, masterOrphanIndex, newPcOverrides, undefined, newSnapshot);
+      await saveMaster(newSnapshot);
     });
   } catch (err) {
     alert('저장 실패: ' + err.message);
@@ -1016,7 +1021,7 @@ setupDropZone('masterDropZone', 'masterFileInput', async (file) => {
     const overrideCount = Object.keys(productOverrides).length;
     const pcOverrideCount = Object.keys(productCodeOverrides).length;
     const rawSnapshot = { header: rawHeader, rows: rawRows };
-    await withMasterLock(() => saveMaster(map, count, file.name, productOverrides, orphanEntries, orphanIndex, productCodeOverrides, undefined, rawSnapshot));
+    await withMasterLock(() => saveMaster(rawSnapshot));
     const overrideNote = overrideCount > count ? ` (상품명별 개별 분류 ${overrideCount.toLocaleString()}건 포함)` : '';
     const pcNote = pcOverrideCount > 0 ? ` · 상품코드 기준 정밀 매칭 ${pcOverrideCount.toLocaleString()}건 포함` : '';
     const orphanNote = orphanEntries.length > 0 ? ` · 소분류코드 없이 상품코드로만 등록된 항목 ${orphanEntries.length.toLocaleString()}건 포함` : '';
@@ -1741,7 +1746,7 @@ async function applyAnomalyClassificationFile(file, cardId) {
         ? masterRawSnapshot
         : { header: COMBINED_HEADER, rows: [] };
       const mergedSnapshot = { header: baseSnapshot.header, rows: [...baseSnapshot.rows, ...newSnapshotRows] };
-      await saveMaster(mergedMap, Object.keys(mergedMap).length, undefined, mergedOverrides, mergedOrphans, mergedOrphanIndex, mergedPcOverrides, undefined, mergedSnapshot);
+      await saveMaster(mergedSnapshot);
     });
 
     const skipNote = (skippedNoName > 0 || skippedPcCount > 0) ? ` (상품명이 빈칸이라 건너뛴 행 ${Math.max(skippedNoName, skippedPcCount)}건 — 상품명 채워서 다시 올리면 반영됩니다)` : '';
@@ -1923,7 +1928,7 @@ async function addAnomalyToMaster(formId, code) {
       await withMasterLock(async () => {
         const newMap = { ...masterMap, [code]: entry };
         const newSnapshot = appendToSnapshot([majorCode, majorName, midCode, midName, code, '', '', '', '', productName, cat, detail1 || '', detail2 || '', factor != null ? factor : '', orderItem || '']);
-        await saveMaster(newMap, Object.keys(newMap).length, undefined, undefined, undefined, undefined, undefined, undefined, newSnapshot);
+        await saveMaster(newSnapshot);
       });
     } catch (err) {
       alert('저장 실패: ' + err.message);
@@ -1945,7 +1950,7 @@ async function addAnomalyToMaster(formId, code) {
       const newOrphanEntries = masterOrphanEntries.filter(o => !((o.productCode || '') === productCode && (o.sideProductCode || '') === sideProductCode));
       newOrphanEntries.push({ majorCode, majorName, midCode, midName, productCode, sideProductCode, productName, cat, detail1, detail2, factor, orderItem });
       const newSnapshot = appendToSnapshot([majorCode, majorName, midCode, midName, '', '', productCode === '*' ? '' : productCode, sideProductCode, '', productName, cat, detail1 || '', detail2 || '', factor != null ? factor : '', orderItem || '']);
-      await saveMaster(masterMap, masterRowCount, undefined, masterProductOverrides, newOrphanEntries, masterOrphanIndex, newPcOverrides, undefined, newSnapshot);
+      await saveMaster(newSnapshot);
     });
   } catch (err) {
     alert('저장 실패: ' + err.message);
@@ -1968,17 +1973,14 @@ async function addProductOverride(formId, code, productName, productCode) {
     if (code) {
       // 정상적으로 소분류코드가 있는 버킷 코드 — "코드|상품명" 단위로 저장
       await withMasterLock(async () => {
-        const newOverrides = { ...masterProductOverrides, [code + '|' + productName]: { cat, detail1, detail2, factor, orderItem } };
-        await saveMaster(masterMap, masterRowCount, undefined, newOverrides);
+        const newSnapshot = appendToSnapshot(['', '', '', '', code, '', '', '', '', productName, cat, detail1 || '', detail2 || '', factor != null ? factor : '', orderItem || '']);
+        await saveMaster(newSnapshot);
       });
     } else {
       // 소분류코드 자체가 없는 거래 — 상품코드(없으면 상품명)로 별도 저장
-      const key = productCode ? 'PC:' + productCode : 'NM:' + productName;
       await withMasterLock(async () => {
-        const newOrphanIndex = { ...masterOrphanIndex, [key]: { cat, detail1, detail2, factor, orderItem } };
-        const newOrphanEntries = masterOrphanEntries.filter(o => !(productCode ? o.productCode === productCode : o.productName === productName));
-        newOrphanEntries.push({ majorCode: '', majorName: '', midCode: '', midName: '', productCode: productCode || '', productName, cat, detail1, detail2, factor, orderItem });
-        await saveMaster(masterMap, masterRowCount, undefined, masterProductOverrides, newOrphanEntries, newOrphanIndex);
+        const newSnapshot = appendToSnapshot(['', '', '', '', '', '', productCode || '', '', '', productName, cat, detail1 || '', detail2 || '', factor != null ? factor : '', orderItem || '']);
+        await saveMaster(newSnapshot);
       });
     }
   } catch (err) {
@@ -1992,9 +1994,18 @@ async function updateMasterName(code, newName) {
   if (!masterMap[code]) return;
   try {
     await withMasterLock(async () => {
-      if (!masterMap[code]) return;
-      const newMap = { ...masterMap, [code]: { ...masterMap[code], minorName: newName } };
-      await saveMaster(newMap, Object.keys(newMap).length);
+      if (!masterMap[code] || !masterRawSnapshot) return;
+      // 스냅샷 안에서 이 소분류코드(상품코드 없이)로 된 행들의 소분류명을 갱신한다.
+      const hIdx = { minor: masterRawSnapshot.header.indexOf('소분류코드'), minorName: masterRawSnapshot.header.indexOf('소분류명'), pc: masterRawSnapshot.header.indexOf('상품코드') };
+      const newRows = masterRawSnapshot.rows.map(r => {
+        if (hIdx.minor >= 0 && normCode(r[hIdx.minor]) === code && (hIdx.pc < 0 || !r[hIdx.pc])) {
+          const copy = r.slice();
+          if (hIdx.minorName >= 0) copy[hIdx.minorName] = newName;
+          return copy;
+        }
+        return r;
+      });
+      await saveMaster({ header: masterRawSnapshot.header, rows: newRows });
     });
   } catch (err) {
     alert('저장 실패: ' + err.message);
