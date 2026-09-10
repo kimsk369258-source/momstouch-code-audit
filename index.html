@@ -1258,6 +1258,8 @@ async function processRawDailyFiles(fileList) {
   let outputHeader = null;
   const parentNameByDate = {}; // date -> {상품코드: 사이드모상품/일반판매상품 이름} — 구성품(사이드상품) 옆에
   // 세트명을 같이 보여줘서, 수기 입력할 때 사이드모상품을 따로 찾아다닐 필요가 없게 하기 위함.
+  const childrenByDate = {}; // date -> {상품코드: Map("사이드상품코드|상품명" -> {sideProductCode,productName,cat,detail1,detail2})}
+  // — 반대 경우(부모 자체가 미분류)일 때 참고용으로 자식들을 같이 보여주기 위함.
 
   for (const file of fileList) {
     const json = await readWorkbook(file);
@@ -1319,6 +1321,16 @@ async function processRawDailyFiles(fileList) {
         if (!parentNameByDate[dk]) parentNameByDate[dk] = {};
         if (!parentNameByDate[dk][productCodeVal]) parentNameByDate[dk][productCodeVal] = productName;
       }
+      // 반대 방향도 기록해둔다 — 부모(사이드모상품) 자체가 미분류로 잡혔을 때, 그
+      // 자식(사이드상품)들을 참고용으로 바로 아래에 같이 보여주기 위함. 이미 분류가
+      // 끝난 자식이어도(이상 목록엔 안 나오는 것들도) 여기서는 전부 모아둔다.
+      if (productCodeVal && gubunVal === '사이드상품') {
+        if (!childrenByDate[dk]) childrenByDate[dk] = {};
+        if (!childrenByDate[dk][productCodeVal]) childrenByDate[dk][productCodeVal] = new Map();
+        if (!childrenByDate[dk][productCodeVal].has(sideProductCodeVal + '|' + productName)) {
+          childrenByDate[dk][productCodeVal].set(sideProductCodeVal + '|' + productName, { sideProductCode: sideProductCodeVal, productName, cat, detail1, detail2 });
+        }
+      }
 
       if (!byDate[dk]) byDate[dk] = [];
       byDate[dk].push({
@@ -1361,7 +1373,7 @@ async function processRawDailyFiles(fileList) {
 
   const reports = {};
   Object.keys(byDate).forEach(dk => {
-    reports[dk] = buildDateReport(dk, byDate[dk], parentNameByDate[dk] || {});
+    reports[dk] = buildDateReport(dk, byDate[dk], parentNameByDate[dk] || {}, childrenByDate[dk] || {});
   });
 
   currentMergedHeader = outputHeader;
@@ -1372,8 +1384,9 @@ async function processRawDailyFiles(fileList) {
   return { reports, fileNames, totalRemovedSummary, totalRows };
 }
 
-function buildDateReport(date, itemsForDate, parentNameByCode) {
+function buildDateReport(date, itemsForDate, parentNameByCode, childrenByCode) {
   parentNameByCode = parentNameByCode || {};
+  childrenByCode = childrenByCode || {};
   // aggregate per minorCode (또는 소분류코드가 없는 거래는 상품코드/상품명으로 대체 그룹핑)
   const agg = {}; // groupKey -> {code, productCode, majorCode, majorName, midCode, midName, minorName, revenue, rowCount, catAssignedSet, blankByName, hasCode}
   let totalRevenue = 0;
@@ -1405,7 +1418,13 @@ function buildDateReport(date, itemsForDate, parentNameByCode) {
       // 세트 자체(사이드모상품)가 미분류로 잡힌 경우엔 parentName을 채우지 않는다 —
       // 그렇지 않으면 "자기 자신"을 참고용 부모로 또 표시해서 같은 상품코드가
       // 이상 목록에 중복으로 나오게 된다(자기 참조).
-      if (!bucket[key]) bucket[key] = { revenue: 0, rowCount: 0, productCode: item.productCode || '', sideProductCode: item.sideProductCode || '', gubun: item.gubun || '', parentName: (item.gubun !== '사이드모상품' && item.productCode && parentNameByCode[item.productCode]) || '' };
+      if (!bucket[key]) bucket[key] = {
+        revenue: 0, rowCount: 0, productCode: item.productCode || '', sideProductCode: item.sideProductCode || '', gubun: item.gubun || '',
+        parentName: (item.gubun !== '사이드모상품' && item.productCode && parentNameByCode[item.productCode]) || '',
+        // 부모(사이드모상품) 자체가 미분류로 잡힌 경우엔, 이미 분류가 끝난 것까지 포함해
+        // 그 자식(사이드상품)들을 참고용으로 같이 담아둔다.
+        children: (item.gubun === '사이드모상품' && item.productCode && childrenByCode[item.productCode]) ? [...childrenByCode[item.productCode].values()] : null,
+      };
       bucket[key].revenue += item.revenue;
       bucket[key].rowCount += 1;
     }
@@ -1423,7 +1442,7 @@ function buildDateReport(date, itemsForDate, parentNameByCode) {
       Object.keys(item.blankByName).forEach(pname => {
         const info = item.blankByName[pname];
         anomalies.push({
-          code: '', productCode: info.productCode, sideProductCode: info.sideProductCode, gubun: info.gubun, parentName: info.parentName, type: 'bucket_unclassified',
+          code: '', productCode: info.productCode, sideProductCode: info.sideProductCode, gubun: info.gubun, parentName: info.parentName, children: info.children, type: 'bucket_unclassified',
           majorCode: item.majorCode, majorName: item.majorName,
           midCode: item.midCode, midName: item.midName,
           minorName: item.minorName || '(소분류코드 없음)',
@@ -1462,7 +1481,7 @@ function buildDateReport(date, itemsForDate, parentNameByCode) {
         Object.keys(item.blankByName).forEach(pname => {
           const info = item.blankByName[pname];
           anomalies.push({
-            code: item.code, productCode: info.productCode, sideProductCode: info.sideProductCode, gubun: info.gubun, parentName: info.parentName, type: 'bucket_unclassified',
+            code: item.code, productCode: info.productCode, sideProductCode: info.sideProductCode, gubun: info.gubun, parentName: info.parentName, children: info.children, type: 'bucket_unclassified',
             majorCode: item.majorCode, majorName: item.majorName,
             midCode: item.midCode, midName: item.midName,
             minorName: item.minorName,
@@ -1539,7 +1558,7 @@ function buildDateReport(date, itemsForDate, parentNameByCode) {
       Object.keys(item.blankByName).forEach(pname => {
         const info = item.blankByName[pname];
         anomalies.push({
-          code: item.code, productCode: info.productCode, sideProductCode: info.sideProductCode, gubun: info.gubun, parentName: info.parentName, type: 'bucket_unclassified',
+          code: item.code, productCode: info.productCode, sideProductCode: info.sideProductCode, gubun: info.gubun, parentName: info.parentName, children: info.children, type: 'bucket_unclassified',
           majorCode: item.majorCode, majorName: item.majorName,
           midCode: item.midCode, midName: item.midName,
           minorName: item.minorName,
@@ -1641,6 +1660,22 @@ function buildParentRefRows(anomalies) {
   });
   return rows;
 }
+// 부모(사이드모상품) 자체가 미분류로 잡힌 경우, 그 자식(사이드상품)들을 참고용으로
+// 바로 아래에 같이 보여준다 — 이미 분류가 끝난 자식이어도 전부 포함한다(부모를 수기
+// 입력할 때 세트 구성 전체를 한눈에 볼 수 있도록).
+function buildChildRefRows(anomalies) {
+  const rows = [];
+  const seen = new Set();
+  anomalies.forEach(a => {
+    if (a.productCode && a.children && a.children.length && !seen.has(a.productCode)) {
+      seen.add(a.productCode);
+      a.children.forEach(c => {
+        rows.push([a.majorCode || '', a.majorName || '', a.midCode || '', a.midName || '', '', '', a.productCode, c.sideProductCode || '', '사이드상품', c.productName || '', c.cat || '', c.detail1 || '', c.detail2 || '', '', '']);
+      });
+    }
+  });
+  return rows;
+}
 // 상품코드 기준으로 정렬한다 — 상품코드가 없는 행(소분류코드 전체 등록 등)은 뒤로 보낸다.
 function sortByProductCode(rows) {
   rows.sort((a, b) => {
@@ -1656,6 +1691,7 @@ function exportAnomaliesFile(date) {
   const anomalies = anomaliesCache[date] || [];
   if (anomalies.length === 0) { alert('내려받을 이상 항목이 없습니다.'); return; }
   const rows = buildParentRefRows(anomalies);
+  rows.push(...buildChildRefRows(anomalies));
   anomalies.forEach(a => rows.push([
     a.majorCode || '', a.majorName || '', a.midCode || '', a.midName || '',
     a.code || '', '', // 소분류코드, 소분류명
@@ -1686,6 +1722,7 @@ function exportCombinedFile(date) {
   // 이상 항목이 있으면, 그 세트(사이드모상품) 이름을 참고용 행으로 먼저 넣어준다.
   const anomalies = anomaliesCache[date] || [];
   rows.push(...buildParentRefRows(anomalies));
+  rows.push(...buildChildRefRows(anomalies));
   anomalies.forEach(a => {
     rows.push([
       a.majorCode || '', a.majorName || '', a.midCode || '', a.midName || '',
