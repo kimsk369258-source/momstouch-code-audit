@@ -955,12 +955,14 @@ function buildMasterRows() {
 }
 
 function downloadMasterFile(btnEl) {
-  // 업로드한 원본 파일을 그대로 저장해뒀다가(masterRawSnapshot) 그대로 돌려준다 —
-  // 재구성하지 않으므로 "올린 그대로 다시 나온다"가 항상 보장된다. 아직 파일을
-  // 올린 적이 없어서 스냅샷이 없으면(수동 등록만 한 경우), 기존 방식대로 현재
-  // 등록된 내용을 조합해서 만든다.
+  // 업로드한 원본 파일을 기반으로 하되(masterRawSnapshot), 같은 상품코드의
+  // 사이드모상품/사이드상품끼리는 항상 붙어서 나오도록 정렬은 적용한다("있는 그대로"
+  // 는 값 자체에 대해서만 보장하고, 줄 순서는 보기 편하게 정리한다). 컬럼 구성이
+  // COMBINED_HEADER와 같을 때만 정렬하고, 다르면 원본 순서를 그대로 둔다.
   if (masterRawSnapshot && masterRawSnapshot.header && masterRawSnapshot.rows) {
-    const blob = buildExportBlob(masterRawSnapshot.header, masterRawSnapshot.rows);
+    const headerMatches = masterRawSnapshot.header.length === COMBINED_HEADER.length && masterRawSnapshot.header.every((h,i) => h === COMBINED_HEADER[i]);
+    const rows = headerMatches ? (() => { const r = masterRawSnapshot.rows.map(x => x.slice()); sortByProductCode(r); return r; })() : masterRawSnapshot.rows;
+    const blob = buildExportBlob(masterRawSnapshot.header, rows);
     const dateStr = nowISO().slice(0, 10);
     triggerDownload(blob, `상품코드정리_${dateStr}.csv`);
     return;
@@ -1677,13 +1679,29 @@ function buildChildRefRows(anomalies) {
   return rows;
 }
 // 상품코드 기준으로 정렬한다 — 상품코드가 없는 행(소분류코드 전체 등록 등)은 뒤로 보낸다.
+// 상품코드 기준으로 정렬한다 — 상품코드가 없는 행(소분류코드 전체 등록 등)은 뒤로
+// 보낸다. 같은 상품코드끼리는 항상 사이드모상품/일반판매상품(부모)이 먼저 오고
+// 사이드상품(자식)이 그 다음에 오도록 한다 — 이렇게 정렬 규칙 자체에 반영해야
+// 어떤 다운로드(기준표/이상항목/통합)든 항상 일관되게 부모-자식이 붙어서 나온다.
 function sortByProductCode(rows) {
+  const CH_GUBUN_IDX = COMBINED_HEADER.indexOf('구분');
+  const gubunRank = g => (g === '사이드상품') ? 1 : 0;
+  // "0ADLVFEE0000"(배달비 등) 같은 숫자가 아닌 상품코드도 안정적으로 처리한다 —
+  // 숫자로 못 바꾸는 값은 상품코드 있는 것들 중 맨 뒤로 보낸다(상품코드 자체가
+  // 없는 행보다는 앞, 숫자 상품코드보다는 뒤).
+  const sortValue = pc => {
+    if (!pc) return Infinity;
+    const n = Number(pc);
+    return isNaN(n) ? Number.MAX_SAFE_INTEGER : n;
+  };
   rows.sort((a, b) => {
     const pcA = a[6], pcB = b[6];
     if (!pcA && !pcB) return 0;
     if (!pcA) return 1;
     if (!pcB) return -1;
-    return Number(pcA) - Number(pcB);
+    const pcDiff = sortValue(pcA) - sortValue(pcB);
+    if (pcDiff !== 0) return pcDiff;
+    return gubunRank(a[CH_GUBUN_IDX]) - gubunRank(b[CH_GUBUN_IDX]);
   });
 }
 
