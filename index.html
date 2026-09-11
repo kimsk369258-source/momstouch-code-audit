@@ -588,6 +588,7 @@ function resolveMasterCols(header) {
     detail2: idx('세부구분2'),
     factor: idxAny(['세부구분보정값', '보정값']),
     orderItem: idx('발주품목'),
+    salesCat: idxAny(['매출분류', '매출 분류']),
   };
 }
 
@@ -618,6 +619,7 @@ function buildMasterMapFromRows(json) {
     const factorRaw = cols.factor >= 0 ? String(r[cols.factor] ?? '').trim() : '';
     const factor = factorRaw !== '' && !isNaN(Number(factorRaw)) ? Number(factorRaw) : null;
     const orderItem = cols.orderItem >= 0 ? String(r[cols.orderItem] ?? '').trim() : '';
+    const salesCat = cols.salesCat >= 0 ? String(r[cols.salesCat] ?? '').trim() : '';
 
     // 상품코드(거래마다 부여되는 가장 정밀한 식별자)가 있으면, 소분류코드 유무와
     // 무관하게 "상품코드|사이드상품코드" 단위로도 값을 저장한다. 실제 판매 데이터
@@ -627,9 +629,9 @@ function buildMasterMapFromRows(json) {
     // 어느 세트에 들어있든 사이드상품코드 자체는 고정이기 때문.
     if (cat || orderItem || factor != null) {
       if (productCode) {
-        productCodeOverrides[productCode + '|' + sideProductCode] = { cat, detail1, detail2, factor, orderItem };
+        productCodeOverrides[productCode + '|' + sideProductCode] = { cat, detail1, detail2, factor, orderItem, salesCat };
       } else if (sideProductCode) {
-        productCodeOverrides['*|' + sideProductCode] = { cat, detail1, detail2, factor, orderItem };
+        productCodeOverrides['*|' + sideProductCode] = { cat, detail1, detail2, factor, orderItem, salesCat };
       }
     }
 
@@ -644,7 +646,7 @@ function buildMasterMapFromRows(json) {
         majorName: cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '',
         midCode: normCode(cols.midCode >= 0 ? r[cols.midCode] : ''),
         midName: cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '',
-        productCode, sideProductCode, productName, cat, detail1, detail2, factor, orderItem,
+        productCode, sideProductCode, productName, cat, detail1, detail2, factor, orderItem, salesCat,
       });
     }
 
@@ -654,7 +656,7 @@ function buildMasterMapFromRows(json) {
       if (!productCode && !productName) continue;
       if (cat || orderItem) {
         const key = productCode ? ('PC:' + productCode) : ('NM:' + productName);
-        orphanIndex[key] = { cat, detail1, detail2, factor, orderItem };
+        orphanIndex[key] = { cat, detail1, detail2, factor, orderItem, salesCat };
       }
       continue;
     }
@@ -666,7 +668,7 @@ function buildMasterMapFromRows(json) {
       midName: cols.midName >= 0 ? String(r[cols.midName] ?? '').trim() : '',
       minorCode: code,
       minorName: cols.minorName >= 0 ? String(r[cols.minorName] ?? '').trim() : '',
-      productName, cat, detail1, detail2, factor, orderItem,
+      productName, cat, detail1, detail2, factor, orderItem, salesCat,
     };
 
     // 같은 코드가 여러 줄로 올라온 경우(상품명별로 분류를 따로 지정한 파일) — 코드 레벨
@@ -679,7 +681,7 @@ function buildMasterMapFromRows(json) {
     namesByCode[code].push({
       name: rowEntry.productName, cat: rowEntry.cat,
       detail1: rowEntry.detail1, detail2: rowEntry.detail2, factor: rowEntry.factor,
-      orderItem: rowEntry.orderItem,
+      orderItem: rowEntry.orderItem, salesCat: rowEntry.salesCat,
     });
 
     // 상품명이 있고(공백 제외) 분류/보정값/발주품목 중 하나라도 지정된 모든 행은
@@ -688,7 +690,7 @@ function buildMasterMapFromRows(json) {
     if (rowEntry.productName && (rowEntry.cat || rowEntry.orderItem || rowEntry.factor != null)) {
       productOverrides[code + '|' + rowEntry.productName] = {
         cat: rowEntry.cat, detail1: rowEntry.detail1, detail2: rowEntry.detail2,
-        factor: rowEntry.factor, orderItem: rowEntry.orderItem,
+        factor: rowEntry.factor, orderItem: rowEntry.orderItem, salesCat: rowEntry.salesCat,
       };
     }
   }
@@ -1120,7 +1122,7 @@ function classifyForRowInner(minorCode, majorName, midName, productName, minorNa
   if (productCode) {
     const pcOverride = masterProductCodeOverrides[productCode + '|' + (sideProductCode || '')];
     if (pcOverride && pcOverride.cat) {
-      return { cat: pcOverride.cat, detail1: pcOverride.detail1 || '', detail2: pcOverride.detail2 || '', factor: pcOverride.factor ?? null };
+      return { cat: pcOverride.cat, detail1: pcOverride.detail1 || '', detail2: pcOverride.detail2 || '', factor: pcOverride.factor ?? null, salesCat: pcOverride.salesCat || '' };
     }
   }
   // 0.5) 사이드상품코드 단독 매칭 — 세트 구성품(사이드상품)은 어느 세트에 들어가느냐에
@@ -1130,7 +1132,7 @@ function classifyForRowInner(minorCode, majorName, midName, productName, minorNa
   if (sideProductCode) {
     const scOverride = masterProductCodeOverrides['*|' + sideProductCode];
     if (scOverride && scOverride.cat) {
-      return { cat: scOverride.cat, detail1: scOverride.detail1 || '', detail2: scOverride.detail2 || '', factor: scOverride.factor ?? null };
+      return { cat: scOverride.cat, detail1: scOverride.detail1 || '', detail2: scOverride.detail2 || '', factor: scOverride.factor ?? null, salesCat: scOverride.salesCat || '' };
     }
   }
 
@@ -1142,7 +1144,7 @@ function classifyForRowInner(minorCode, majorName, midName, productName, minorNa
   const overrideKey = minorCode + '|' + (productName || '').trim();
   const override = masterProductOverrides[overrideKey];
   if (override && override.cat) {
-    return { cat: override.cat, detail1: override.detail1 || '', detail2: override.detail2 || '', factor: override.factor ?? null };
+    return { cat: override.cat, detail1: override.detail1 || '', detail2: override.detail2 || '', factor: override.factor ?? null, salesCat: override.salesCat || '' };
   }
 
   // 1.5) 원본 데이터에 소분류코드 자체가 없는 거래(제휴/이벤트 메뉴 등) — 상품코드나
@@ -1152,7 +1154,7 @@ function classifyForRowInner(minorCode, majorName, midName, productName, minorNa
     const nmKey = 'NM:' + (productName || '').trim();
     const orphan = (pcKey && masterOrphanIndex[pcKey]) || masterOrphanIndex[nmKey];
     if (orphan && orphan.cat) {
-      return { cat: orphan.cat, detail1: orphan.detail1 || '', detail2: orphan.detail2 || '', factor: orphan.factor ?? null };
+      return { cat: orphan.cat, detail1: orphan.detail1 || '', detail2: orphan.detail2 || '', factor: orphan.factor ?? null, salesCat: orphan.salesCat || '' };
     }
   }
 
@@ -1163,7 +1165,7 @@ function classifyForRowInner(minorCode, majorName, midName, productName, minorNa
   if (productName) {
     for (const rule of masterKeywordRules) {
       if (rule.keyword && productName.includes(rule.keyword)) {
-        return { cat: rule.cat, detail1: rule.detail1 || '', detail2: rule.detail2 || '', factor: rule.factor ?? null };
+        return { cat: rule.cat, detail1: rule.detail1 || '', detail2: rule.detail2 || '', factor: rule.factor ?? null, salesCat: '' };
       }
     }
   }
@@ -1175,7 +1177,7 @@ function classifyForRowInner(minorCode, majorName, midName, productName, minorNa
   // 건별로 판단해야 조각피자 등 실제 내용을 놓치지 않는다.
   const isReusedBucket = master && (master.majorName === '프로모션' || master.midName === '매장행사' || master.majorName === '옵션');
   if (master && master.cat && !isReusedBucket) {
-    return { cat: master.cat, detail1: master.detail1 || '', detail2: master.detail2 || '', factor: master.factor ?? null };
+    return { cat: master.cat, detail1: master.detail1 || '', detail2: master.detail2 || '', factor: master.factor ?? null, salesCat: master.salesCat || '' };
   }
   // "항상 제외" 버킷 — 직영메뉴/직영행사/선불카드는 계속 새로운 프로모션/상품명이
   // 추가되는 특성이 있어 일일이 등록하기 어렵다. 지금까지 등록된 사례가 예외 없이
@@ -1183,10 +1185,10 @@ function classifyForRowInner(minorCode, majorName, midName, productName, minorNa
   // 포함) 기본값으로 제외 처리한다. 다른 값이 필요하면 상품명별 개별 등록이 우선한다.
   const ALWAYS_EXCLUDE_BUCKETS = ['직영메뉴', '직영행사', '선불카드'];
   if (ALWAYS_EXCLUDE_BUCKETS.includes(minorName)) {
-    return { cat: '제외', detail1: '제외', detail2: '', factor: null };
+    return { cat: '제외', detail1: '제외', detail2: '', factor: null, salesCat: '' };
   }
   const heuristic = classifyRow(majorName, midName, productName, minorName);
-  return { cat: heuristic.cat, detail1: heuristic.detail || '', detail2: '', factor: null };
+  return { cat: heuristic.cat, detail1: heuristic.detail || '', detail2: '', factor: null, salesCat: '' };
 }
 
 // 발주품목 매칭 — cat/detail과 같은 우선순위로 찾되, 분류와는 독립적으로 조회한다
@@ -1270,27 +1272,31 @@ async function processRawDailyFiles(fileList) {
     fileNames.push(file.name);
 
     const header = json[0].map(String);
-    // 이미 이 툴에서 내려받은 "_분류합본" 파일(끝에 분류/세부구분1/세부구분2/사이즈구분/
-    // 보정값 컬럼이 이미 있는 파일)을 다시 올린 경우, 컬럼을 중복으로 덧붙이지 않고
-    // 그 자리에서 값만 최신 규칙으로 다시 계산해 덮어쓴다. 예전 4컬럼 형식(분류,세부구분,
-    // 사이즈구분,보정값)으로 저장된 파일을 올리면, 그 예전 컬럼들을 그대로 잘라내고
-    // 새 5컬럼으로 교체한다(중복 없이). 원본 파일이면 새로 5개 컬럼을 추가한다.
+    // 이미 이 툴에서 내려받은 "_분류합본" 파일(끝에 매출분류/분류/세부구분1/세부구분2/
+    // 사이즈구분/보정값 컬럼이 이미 있는 파일)을 다시 올린 경우, 컬럼을 중복으로
+    // 덧붙이지 않고 그 자리에서 값만 최신 규칙으로 다시 계산해 덮어쓴다. 예전 형식
+    // (매출분류 없는 5컬럼, 또는 그보다 더 예전인 4컬럼)으로 저장된 파일을 올리면,
+    // 그 예전 꼬리를 그대로 잘라내고 새 6컬럼으로 교체한다(중복 없이).
+    const NEWEST_TAIL = ['매출분류','분류','세부구분1','세부구분2','사이즈구분','보정값'];
     const NEW_TAIL = ['분류','세부구분1','세부구분2','사이즈구분','보정값'];
     const OLD_TAIL = ['분류','세부구분','사이즈구분','보정값'];
-    const hasNewTail = header.length >= 5 && header.slice(-5).join('|') === NEW_TAIL.join('|');
-    const hasOldTail = !hasNewTail && header.length >= 4 && header.slice(-4).join('|') === OLD_TAIL.join('|');
-    const alreadyClassified = hasNewTail || hasOldTail;
-    const baseHeader = hasOldTail ? header.slice(0, -4) : header; // 예전 꼬리는 잘라내고 새로 만든다
-    const catIdx = hasNewTail ? header.length - 5 : baseHeader.length;
+    const hasNewestTail = header.length >= 6 && header.slice(-6).join('|') === NEWEST_TAIL.join('|');
+    const hasNewTail = !hasNewestTail && header.length >= 5 && header.slice(-5).join('|') === NEW_TAIL.join('|');
+    const hasOldTail = !hasNewestTail && !hasNewTail && header.length >= 4 && header.slice(-4).join('|') === OLD_TAIL.join('|');
+    const alreadyClassified = hasNewestTail || hasNewTail || hasOldTail;
+    const tailLenToStrip = hasNewTail ? 5 : (hasOldTail ? 4 : 0);
+    const baseHeader = tailLenToStrip > 0 ? header.slice(0, -tailLenToStrip) : header; // 예전 꼬리는 잘라내고 새로 만든다
+    const catIdx = hasNewestTail ? header.length - 5 : baseHeader.length + 1; // 매출분류 다음이 분류(기준표 분류) 위치
+    const salesCatIdx = catIdx - 1;
     const detail1Idx = catIdx + 1, detail2Idx = catIdx + 2, sizeIdx = catIdx + 3, factorIdx = catIdx + 4;
-    if (!outputHeader) outputHeader = hasNewTail ? header : [...baseHeader, ...NEW_TAIL];
+    if (!outputHeader) outputHeader = hasNewestTail ? header : [...baseHeader, ...NEWEST_TAIL];
     const cols = resolveRawCols(baseHeader);
     if (cols.date < 0 || cols.minorCode < 0) {
       throw new Error(`"${file.name}" 파일에서 "매출일자" 또는 "소분류코드" 컬럼을 찾을 수 없습니다. 일별상품매출현황(매장별) 원본 파일이 맞는지 확인해주세요.`);
     }
 
     json.slice(1).forEach(rFull => {
-      const r = hasOldTail ? rFull.slice(0, -4) : rFull;
+      const r = tailLenToStrip > 0 ? rFull.slice(0, -tailLenToStrip) : rFull;
       const dv = r[cols.date];
       // 숨은 합계(소계) 행 제외 — 매출일자가 비어있는 행은 그 파일 전체 합계를
       // 담은 유령 행으로, 그대로 합치면 매출이 중복 집계됩니다.
@@ -1308,7 +1314,7 @@ async function processRawDailyFiles(fileList) {
       const gubunVal = cols.gubun >= 0 ? String(r[cols.gubun] ?? '').trim() : '';
       const storeCodeVal = cols.storeCode >= 0 ? String(r[cols.storeCode] ?? '').trim() : '';
       const storeNameVal = cols.storeName >= 0 ? String(r[cols.storeName] ?? '').trim() : '';
-      const { cat, detail1, detail2, factor: masterFactor } = classifyForRow(minorCodeVal, majorName, midName, productName, minorNameRaw, productCodeVal, sideProductCodeVal);
+      const { cat, detail1, detail2, factor: masterFactor, salesCat } = classifyForRow(minorCodeVal, majorName, midName, productName, minorNameRaw, productCodeVal, sideProductCodeVal);
       const { size, factor: guessedFactor } = sizeInfo(productName, minorNameRaw);
       // 보정값은 기준표에 명시된 값을 최우선으로 쓰고, 없을 때만 이름 기반 추정치를 쓴다.
       // '제외' 상품은 소진량 추적 대상이 아니므로 보정값을 항상 빈 값으로 둔다.
@@ -1365,11 +1371,11 @@ async function processRawDailyFiles(fileList) {
       if (!rowsByDate[dk]) rowsByDate[dk] = [];
       if (alreadyClassified) {
         const newRow = r.slice();
-        newRow[catIdx] = cat; newRow[detail1Idx] = detail1; newRow[detail2Idx] = detail2;
+        newRow[salesCatIdx] = salesCat; newRow[catIdx] = cat; newRow[detail1Idx] = detail1; newRow[detail2Idx] = detail2;
         newRow[sizeIdx] = size; newRow[factorIdx] = factor;
         rowsByDate[dk].push(newRow);
       } else {
-        rowsByDate[dk].push([...r, cat, detail1, detail2, size, factor]);
+        rowsByDate[dk].push([...r, salesCat, cat, detail1, detail2, size, factor]);
       }
     });
   }
@@ -2279,6 +2285,7 @@ async function reclassifyAndRedownload(date, btnEl) {
     const detail1Idx = header.indexOf('세부구분1') >= 0 ? header.indexOf('세부구분1') : header.indexOf('세부구분');
     const detail2Idx = header.indexOf('세부구분2'); // 예전 형식이면 -1 (그 경우 세부구분2는 저장 못 함)
     const sizeIdx = header.indexOf('사이즈구분'), factorIdx = header.indexOf('보정값');
+    const salesCatIdx = header.indexOf('매출분류'); // 예전 형식이면 -1 (그 경우 매출분류는 저장 못 함)
     if (catIdx < 0 || cols.minorCode < 0) throw new Error('합본 파일 형식을 알아볼 수 없습니다.');
 
     const items = [];
@@ -2293,11 +2300,12 @@ async function reclassifyAndRedownload(date, btnEl) {
       const productCodeVal = cols.productCode >= 0 ? normCode(r[cols.productCode]) : '';
       const sideProductCodeVal = cols.sideProductCode >= 0 ? normCode(r[cols.sideProductCode]) : '';
       const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '') : '';
-      const { cat, detail1, detail2, factor: masterFactor } = classifyForRow(minorCodeVal, majorName, midName, productName, minorNameRaw, productCodeVal, sideProductCodeVal);
+      const { cat, detail1, detail2, factor: masterFactor, salesCat } = classifyForRow(minorCodeVal, majorName, midName, productName, minorNameRaw, productCodeVal, sideProductCodeVal);
       const { size, factor: guessedFactor } = sizeInfo(productName, minorNameRaw);
       // '제외' 상품은 소진량 추적 대상이 아니므로 보정값을 항상 빈 값으로 둔다.
       const factor = cat === '제외' ? '' : (masterFactor != null ? masterFactor : guessedFactor);
       r[catIdx] = cat;
+      if (salesCatIdx >= 0) r[salesCatIdx] = salesCat;
       if (detail1Idx >= 0) r[detail1Idx] = detail1;
       if (detail2Idx >= 0) r[detail2Idx] = detail2;
       if (sizeIdx >= 0) r[sizeIdx] = size;
