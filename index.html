@@ -1433,6 +1433,16 @@ function buildDateReport(date, itemsForDate, parentNameByCode, childrenByCode) {
   });
 
   const TRACKED = ['버거','피자','치킨','비프'];
+  // 이상 항목을 anomalies 배열에 넣기 직전에 중복을 걸러낸다 — 같은 상품이 서로 다른
+  // 소분류코드 그룹(예: 소분류코드 있음/없음)으로 각각 집계되어 똑같은 이상 항목이
+  // 두 번 나오는 경우를 막기 위한 안전장치.
+  const seenAnomalyKeys = new Set();
+  function pushAnomalyUnique(anomaly) {
+    const key = [anomaly.type, anomaly.code || '', anomaly.productCode || '', anomaly.sideProductCode || '', anomaly.productName || anomaly.minorName || ''].join('||');
+    if (seenAnomalyKeys.has(key)) return;
+    seenAnomalyKeys.add(key);
+    anomalies.push(anomaly);
+  }
   const anomalies = [];
 
   Object.values(agg).forEach(item => {
@@ -1443,7 +1453,7 @@ function buildDateReport(date, itemsForDate, parentNameByCode, childrenByCode) {
     if (!item.hasCode) {
       Object.keys(item.blankByName).forEach(pname => {
         const info = item.blankByName[pname];
-        anomalies.push({
+        pushAnomalyUnique({
           code: '', productCode: info.productCode, sideProductCode: info.sideProductCode, gubun: info.gubun, parentName: info.parentName, children: info.children, type: 'bucket_unclassified',
           majorCode: item.majorCode, majorName: item.majorName,
           midCode: item.midCode, midName: item.midName,
@@ -1470,7 +1480,7 @@ function buildDateReport(date, itemsForDate, parentNameByCode, childrenByCode) {
       // 분류되고 있으면(assignedCats.length > 0) "미등록 코드"로 새로 잡지 않는다.
       // 남아있는 진짜 미분류 상품명만 짚어준다.
       if (assignedCats.length === 0) {
-        anomalies.push({
+        pushAnomalyUnique({
           code: item.code, type: 'new_code',
           majorCode: item.majorCode, majorName: item.majorName,
           midCode: item.midCode, midName: item.midName,
@@ -1482,7 +1492,7 @@ function buildDateReport(date, itemsForDate, parentNameByCode, childrenByCode) {
       } else {
         Object.keys(item.blankByName).forEach(pname => {
           const info = item.blankByName[pname];
-          anomalies.push({
+          pushAnomalyUnique({
             code: item.code, productCode: info.productCode, sideProductCode: info.sideProductCode, gubun: info.gubun, parentName: info.parentName, children: info.children, type: 'bucket_unclassified',
             majorCode: item.majorCode, majorName: item.majorName,
             midCode: item.midCode, midName: item.midName,
@@ -1515,7 +1525,7 @@ function buildDateReport(date, itemsForDate, parentNameByCode, childrenByCode) {
     if (TRACKED.includes(master.cat) && !isReusedBucket) {
       // name mismatch (minor name changed)
       if (master.minorName && item.minorName && master.minorName !== item.minorName) {
-        anomalies.push({
+        pushAnomalyUnique({
           code: item.code, type: 'name_mismatch',
           majorCode: item.majorCode, majorName: item.majorName,
           midCode: item.midCode, midName: item.midName,
@@ -1529,7 +1539,7 @@ function buildDateReport(date, itemsForDate, parentNameByCode, childrenByCode) {
       assignedCats.forEach(ac => {
         if (!TRACKED.includes(ac)) return;
         if (master.cat !== ac) {
-          anomalies.push({
+          pushAnomalyUnique({
             code: item.code, type: 'category_mismatch',
             majorCode: item.majorCode, majorName: item.majorName,
             midCode: item.midCode, midName: item.midName,
@@ -1543,7 +1553,7 @@ function buildDateReport(date, itemsForDate, parentNameByCode, childrenByCode) {
     }
     // unclassified: master expects a tracked category but nothing got assigned
     if (TRACKED.includes(master.cat) && !isReusedBucket && assignedCats.length === 0) {
-      anomalies.push({
+      pushAnomalyUnique({
         code: item.code, type: 'unclassified',
         majorCode: item.majorCode, majorName: item.majorName,
         midCode: item.midCode, midName: item.midName,
@@ -1559,7 +1569,7 @@ function buildDateReport(date, itemsForDate, parentNameByCode, childrenByCode) {
     if (isReusedBucket) {
       Object.keys(item.blankByName).forEach(pname => {
         const info = item.blankByName[pname];
-        anomalies.push({
+        pushAnomalyUnique({
           code: item.code, productCode: info.productCode, sideProductCode: info.sideProductCode, gubun: info.gubun, parentName: info.parentName, children: info.children, type: 'bucket_unclassified',
           majorCode: item.majorCode, majorName: item.majorName,
           midCode: item.midCode, midName: item.midName,
