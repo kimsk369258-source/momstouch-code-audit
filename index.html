@@ -1490,6 +1490,9 @@ function buildDateReport(date, itemsForDate, parentNameByCode, childrenByCode) {
           // 필요하진 않지만, 참고할 수 있도록 대표(첫 번째로 발견된) 상품코드/
           // 사이드상품코드/구분도 같이 담아둔다.
           productCode: item.productCode, sideProductCode: item.sideProductCode, gubun: item.gubun,
+          // 이 대표 상품코드의 세트 구성품(사이드상품)이 있으면 참고용으로 같이 담아둔다 —
+          // bucket_unclassified 유형에서만 하던 걸 new_code(완전 신규 코드)에도 적용한다.
+          children: (item.gubun === '사이드모상품' && item.productCode && childrenByCode[item.productCode]) ? [...childrenByCode[item.productCode].values()] : null,
           revenue: item.revenue, rowCount: item.rowCount,
           assignedCat: assignedCats.join(', '),
           master: null,
