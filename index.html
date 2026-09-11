@@ -1706,12 +1706,35 @@ function buildChildRefRows(anomalies) {
 // 단계에서 한 번 더 걸러내는 최종 안전장치다.
 function dedupeExactRows(rows) {
   const seen = new Set();
-  return rows.filter(r => {
+  const exactDeduped = rows.filter(r => {
     const key = r.join('\u0001');
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
+  // 완전히 똑같지는 않아도, 같은 (소분류코드,상품명) 조합인데 한쪽엔 상품코드가
+  // 채워져 있고 다른 쪽엔 비어있는 "정보량만 다른" 근접 중복도 있다 — 이런 경우
+  // 정보가 더 많은(상품코드가 채워진) 쪽만 남긴다.
+  const CH_MINOR_IDX = COMBINED_HEADER.indexOf('소분류코드');
+  const CH_NAME_IDX = COMBINED_HEADER.indexOf('상품명');
+  const groups = new Map(); // "소분류코드|상품명" -> [row, ...]
+  exactDeduped.forEach(r => {
+    const minor = r[CH_MINOR_IDX], name = r[CH_NAME_IDX];
+    if (!minor || !name) return; // 소분류코드나 상품명이 없으면 이 근접중복 판단 대상이 아니다
+    const key = minor + '\u0001' + name;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  });
+  const toDrop = new Set();
+  groups.forEach(groupRows => {
+    if (groupRows.length < 2) return;
+    const withProductCode = groupRows.filter(r => r[6]);
+    if (withProductCode.length > 0 && withProductCode.length < groupRows.length) {
+      // 상품코드 있는 행이 하나라도 있으면, 상품코드 없는 나머지 행은 버린다.
+      groupRows.forEach(r => { if (!r[6]) toDrop.add(r); });
+    }
+  });
+  return toDrop.size === 0 ? exactDeduped : exactDeduped.filter(r => !toDrop.has(r));
 }
 
 function sortByProductCode(rows) {
