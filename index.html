@@ -919,7 +919,7 @@ function buildMasterRows() {
       ? codeOverrides
       : (e.productName ? e.productName.split(' / ').filter(Boolean).map(name => ({ name, cat: e.cat, detail1: e.detail1, detail2: e.detail2, factor: e.factor, orderItem: e.orderItem })) : [{ name: '', cat: e.cat, detail1: e.detail1, detail2: e.detail2, factor: e.factor, orderItem: e.orderItem }]);
     nameEntries.forEach(o => {
-      rows.push([e.majorCode, e.majorName, e.midCode, e.midName, e.minorCode, '', '', '', '', o.name, o.cat, o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '']);
+      rows.push([e.majorCode, e.majorName, e.midCode, e.midName, e.minorCode, '', '', '', '', o.name, '', o.cat, o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '']);
     });
   });
 
@@ -936,7 +936,7 @@ function buildMasterRows() {
       const rowKey = (o.productCode||'') + '|' + (o.sideProductCode||'') + '|' + name;
       if (seenOrphanRows.has(rowKey)) return;
       seenOrphanRows.add(rowKey);
-      rows.push([majorCode, majorName, midCode, midName, '', '', o.productCode, o.sideProductCode || '', gubunGuess, name, o.cat, o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '']);
+      rows.push([majorCode, majorName, midCode, midName, '', '', o.productCode, o.sideProductCode || '', gubunGuess, name, '', o.cat, o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '']);
     });
   });
 
@@ -948,7 +948,7 @@ function buildMasterRows() {
     const o = masterProductCodeOverrides[key];
     const ref = lookupOrphanRef(lookups, pc === '*' ? '' : pc, sc);
     const gubunGuess = sc ? '사이드상품' : '';
-    rows.push([ref.majorCode || '', ref.majorName || '', ref.midCode || '', ref.midName || '', '', '', pc === '*' ? '' : pc, sc, gubunGuess, ref.productName || '', o.cat || '', o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '']);
+    rows.push([ref.majorCode || '', ref.majorName || '', ref.midCode || '', ref.midName || '', '', '', pc === '*' ? '' : pc, sc, gubunGuess, ref.productName || '', '', o.cat || '', o.detail1 || '', o.detail2 || '', o.factor != null ? o.factor : '', o.orderItem || '']);
   });
 
   return rows;
@@ -982,7 +982,7 @@ function downloadMasterFile(btnEl) {
 // 맞춰서(유형 컬럼만 맨 앞에 추가) 눈에 익은 형태로 만든다.
 // A유형 B대분류코드 C대분류명 D중분류코드 E중분류명 F소분류코드 G상품코드 H사이드상품코드
 // I구분1 J구분2 K기준표분류 L세부구분1 M세부구분2 N세부구분보정값
-const COMBINED_HEADER = ['대분류코드','대분류명','중분류코드','중분류명','소분류코드','소분류명','상품코드','사이드상품코드','구분','상품명','기준표 분류','세부구분1','세부구분2','세부구분 보정값','발주품목'];
+const COMBINED_HEADER = ['대분류코드','대분류명','중분류코드','중분류명','소분류코드','소분류명','상품코드','사이드상품코드','구분','상품명','매출 분류','기준표 분류','세부구분1','세부구분2','세부구분 보정값','발주품목'];
 
 const CH_CAT_IDX = COMBINED_HEADER.indexOf('기준표 분류');
 const CH_FACTOR_IDX = COMBINED_HEADER.indexOf('세부구분 보정값');
@@ -1025,7 +1025,7 @@ async function manualAddCode() {
       const newPcOverrides = { ...masterProductCodeOverrides, [key]: { cat, detail1, detail2, factor, orderItem } };
       const newOrphanEntries = masterOrphanEntries.filter(o => !((o.productCode || '') === productCode && (o.sideProductCode || '') === sideProductCode));
       newOrphanEntries.push({ majorCode: '', majorName: '', midCode: '', midName: '', productCode, sideProductCode, productName, cat, detail1, detail2, factor, orderItem });
-      const newSnapshot = appendToSnapshot(['', '', '', '', '', '', productCode === '*' ? '' : productCode, sideProductCode, '', productName, cat, detail1 || '', detail2 || '', factor != null ? factor : '', orderItem || '']);
+      const newSnapshot = appendToSnapshot(['', '', '', '', '', '', productCode === '*' ? '' : productCode, sideProductCode, '', productName, '', cat, detail1 || '', detail2 || '', factor != null ? factor : '', orderItem || '']);
       await saveMaster(newSnapshot);
     });
   } catch (err) {
@@ -1675,7 +1675,7 @@ function buildParentRefRows(anomalies) {
   anomalies.forEach(a => {
     if (a.productCode && a.parentName && !seen.has(a.productCode)) {
       seen.add(a.productCode);
-      rows.push([a.majorCode || '', a.majorName || '', a.midCode || '', a.midName || '', '', '', a.productCode, '', '사이드모상품', a.parentName, '', '', '', '', '']);
+      rows.push([a.majorCode || '', a.majorName || '', a.midCode || '', a.midName || '', '', '', a.productCode, '', '사이드모상품', a.parentName, '', '', '', '', '', '']);
     }
   });
   return rows;
@@ -1690,7 +1690,7 @@ function buildChildRefRows(anomalies) {
     if (a.productCode && a.children && a.children.length && !seen.has(a.productCode)) {
       seen.add(a.productCode);
       a.children.forEach(c => {
-        rows.push([a.majorCode || '', a.majorName || '', a.midCode || '', a.midName || '', '', '', a.productCode, c.sideProductCode || '', '사이드상품', c.productName || '', c.cat || '', c.detail1 || '', c.detail2 || '', '', '']);
+        rows.push([a.majorCode || '', a.majorName || '', a.midCode || '', a.midName || '', '', '', a.productCode, c.sideProductCode || '', '사이드상품', c.productName || '', '', c.cat || '', c.detail1 || '', c.detail2 || '', '', '']);
       });
     }
   });
@@ -1770,7 +1770,7 @@ function exportAnomaliesFile(date) {
     a.productCode || '', a.sideProductCode || '',
     a.gubun || '', // 구분(일반판매상품/사이드모상품/사이드상품) — 원본 데이터에서 그대로 가져옴
     a.productName || a.minorName || '',
-    '', '', '', '', '', // 기준표 분류, 세부구분1, 세부구분2, 보정값, 발주품목 — 채워 넣을 빈 칸
+    '', '', '', '', '', '', // 매출 분류, 기준표 분류, 세부구분1, 세부구분2, 보정값, 발주품목 — 채워 넣을 빈 칸
   ]));
   const dedupedRows = dedupeExactRows(rows);
   sortByProductCode(dedupedRows);
@@ -1821,7 +1821,7 @@ function exportCombinedFile(date) {
       a.code || '', '',
       a.productCode || '', a.sideProductCode || '', a.gubun || '',
       a.productName || a.minorName || '',
-      '', '', '', '', '', // 기준표 분류, 세부구분1, 세부구분2, 보정값, 발주품목 — 채워 넣을 빈 칸
+      '', '', '', '', '', '', // 매출 분류, 기준표 분류, 세부구분1, 세부구분2, 보정값, 발주품목 — 채워 넣을 빈 칸
     ]);
   });
 
@@ -2085,7 +2085,7 @@ async function addAnomalyToMaster(formId, code) {
     try {
       await withMasterLock(async () => {
         const newMap = { ...masterMap, [code]: entry };
-        const newSnapshot = appendToSnapshot([majorCode, majorName, midCode, midName, code, '', '', '', '', productName, cat, detail1 || '', detail2 || '', factor != null ? factor : '', orderItem || '']);
+        const newSnapshot = appendToSnapshot([majorCode, majorName, midCode, midName, code, '', '', '', '', productName, '', cat, detail1 || '', detail2 || '', factor != null ? factor : '', orderItem || '']);
         await saveMaster(newSnapshot);
       });
     } catch (err) {
@@ -2107,7 +2107,7 @@ async function addAnomalyToMaster(formId, code) {
       const newPcOverrides = { ...masterProductCodeOverrides, [key]: { cat, detail1, detail2, factor, orderItem } };
       const newOrphanEntries = masterOrphanEntries.filter(o => !((o.productCode || '') === productCode && (o.sideProductCode || '') === sideProductCode));
       newOrphanEntries.push({ majorCode, majorName, midCode, midName, productCode, sideProductCode, productName, cat, detail1, detail2, factor, orderItem });
-      const newSnapshot = appendToSnapshot([majorCode, majorName, midCode, midName, '', '', productCode === '*' ? '' : productCode, sideProductCode, '', productName, cat, detail1 || '', detail2 || '', factor != null ? factor : '', orderItem || '']);
+      const newSnapshot = appendToSnapshot([majorCode, majorName, midCode, midName, '', '', productCode === '*' ? '' : productCode, sideProductCode, '', productName, '', cat, detail1 || '', detail2 || '', factor != null ? factor : '', orderItem || '']);
       await saveMaster(newSnapshot);
     });
   } catch (err) {
@@ -2131,13 +2131,13 @@ async function addProductOverride(formId, code, productName, productCode) {
     if (code) {
       // 정상적으로 소분류코드가 있는 버킷 코드 — "코드|상품명" 단위로 저장
       await withMasterLock(async () => {
-        const newSnapshot = appendToSnapshot(['', '', '', '', code, '', '', '', '', productName, cat, detail1 || '', detail2 || '', factor != null ? factor : '', orderItem || '']);
+        const newSnapshot = appendToSnapshot(['', '', '', '', code, '', '', '', '', productName, '', cat, detail1 || '', detail2 || '', factor != null ? factor : '', orderItem || '']);
         await saveMaster(newSnapshot);
       });
     } else {
       // 소분류코드 자체가 없는 거래 — 상품코드(없으면 상품명)로 별도 저장
       await withMasterLock(async () => {
-        const newSnapshot = appendToSnapshot(['', '', '', '', '', '', productCode || '', '', '', productName, cat, detail1 || '', detail2 || '', factor != null ? factor : '', orderItem || '']);
+        const newSnapshot = appendToSnapshot(['', '', '', '', '', '', productCode || '', '', '', productName, '', cat, detail1 || '', detail2 || '', factor != null ? factor : '', orderItem || '']);
         await saveMaster(newSnapshot);
       });
     }
