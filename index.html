@@ -1807,7 +1807,10 @@ function exportCombinedFile(date) {
   const anomaliesRaw = anomaliesCache[date] || [];
   const anomalies = anomaliesRaw.filter(a => !(a.productCode && isAlreadyRegistered(a.productCode, a.sideProductCode)));
   rows.push(...buildParentRefRows(anomalies).filter(r => !isAlreadyRegistered(r[6], r[7])));
-  rows.push(...buildChildRefRows(anomalies).filter(r => !isAlreadyRegistered(r[6], r[7])));
+  // 참고용 자식 정보는 이미 등록되어 있어도(와일드카드 등) 항상 그대로 보여준다 —
+  // "중복 방지" 필터는 부모 자체(따로 채워야 할 이상 항목)에만 적용하고, 세트
+  // 구성 파악용 참고 정보는 필터링 대상이 아니다.
+  rows.push(...buildChildRefRows(anomalies));
   anomalies.forEach(a => {
     rows.push([
       a.majorCode || '', a.majorName || '', a.midCode || '', a.midName || '',
