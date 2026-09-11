@@ -1746,11 +1746,18 @@ function exportCombinedFile(date) {
     masterRawSnapshot.header.every((h, i) => h === COMBINED_HEADER[i]);
   const rows = headerMatches ? masterRawSnapshot.rows.map(r => r.slice()) : buildMasterRows();
 
+  // 이미 기준표에 등록되어 있는(=위 rows에 이미 나온) 상품코드+사이드상품코드 조합은
+  // 오늘 처리 중 이상으로도 잡혀서 아래에서 또 들어오면 똑같은 내용이 두 번 나오게
+  // 된다. 그래서 이미 등록된 조합은 이상 목록 쪽에서 건너뛴다 — 기준표 쪽 한 줄만
+  // 남기고, 그 값이 비어있으면(아직 분류 전) 그 한 줄을 보고 채우면 된다.
+  const registeredKeys = new Set(rows.map(r => (r[6] || '') + '|' + (r[7] || '')));
+
   // 이 날짜의 이상 항목(아직 분류가 없거나 확인이 필요한 것들) — 구성품(사이드상품)
   // 이상 항목이 있으면, 그 세트(사이드모상품) 이름을 참고용 행으로 먼저 넣어준다.
-  const anomalies = anomaliesCache[date] || [];
-  rows.push(...buildParentRefRows(anomalies));
-  rows.push(...buildChildRefRows(anomalies));
+  const anomaliesRaw = anomaliesCache[date] || [];
+  const anomalies = anomaliesRaw.filter(a => !(a.productCode && registeredKeys.has(a.productCode + '|' + (a.sideProductCode || ''))));
+  rows.push(...buildParentRefRows(anomalies).filter(r => !registeredKeys.has((r[6]||'') + '|' + (r[7]||''))));
+  rows.push(...buildChildRefRows(anomalies).filter(r => !registeredKeys.has((r[6]||'') + '|' + (r[7]||''))));
   anomalies.forEach(a => {
     rows.push([
       a.majorCode || '', a.majorName || '', a.midCode || '', a.midName || '',
