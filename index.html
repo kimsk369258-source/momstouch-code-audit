@@ -1806,11 +1806,15 @@ function exportCombinedFile(date) {
   // 이상 항목이 있으면, 그 세트(사이드모상품) 이름을 참고용 행으로 먼저 넣어준다.
   const anomaliesRaw = anomaliesCache[date] || [];
   const anomalies = anomaliesRaw.filter(a => !(a.productCode && isAlreadyRegistered(a.productCode, a.sideProductCode)));
-  rows.push(...buildParentRefRows(anomalies).filter(r => !isAlreadyRegistered(r[6], r[7])));
+  // 부모/자식 참고 행은 "이미 등록되어 중복 방지로 걸러진" 항목이라도 원본
+  // anomaliesRaw에서 만든다 — 부모 자체는 중복이라 안 보여줘도, 그 부모에 딸린
+  // 자식(세트 구성) 참고 정보는 살아있어야 하기 때문(필터링된 anomalies만 쓰면
+  // 그 부모의 children 정보까지 같이 사라져 버린다).
+  rows.push(...buildParentRefRows(anomaliesRaw).filter(r => !isAlreadyRegistered(r[6], r[7])));
   // 참고용 자식 정보는 이미 등록되어 있어도(와일드카드 등) 항상 그대로 보여준다 —
   // "중복 방지" 필터는 부모 자체(따로 채워야 할 이상 항목)에만 적용하고, 세트
   // 구성 파악용 참고 정보는 필터링 대상이 아니다.
-  rows.push(...buildChildRefRows(anomalies));
+  rows.push(...buildChildRefRows(anomaliesRaw));
   anomalies.forEach(a => {
     rows.push([
       a.majorCode || '', a.majorName || '', a.midCode || '', a.midName || '',
