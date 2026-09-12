@@ -1175,7 +1175,12 @@ function classifyForRowInner(minorCode, majorName, midName, productName, minorNa
   // "재사용 버킷" 코드다(아이스아메리카노, 오렌지에이드, 불고기조각피자 등이 한 코드에 섞여있음).
   // 이런 코드는 기준표의 단일 분류값을 통째로 씌우면 안 되고, 예전처럼 상품명 기준으로
   // 건별로 판단해야 조각피자 등 실제 내용을 놓치지 않는다.
-  const isReusedBucket = master && (master.majorName === '프로모션' || master.midName === '매장행사' || master.majorName === '옵션');
+  // 코드 자체가 '제외'로 등록된 경우도 재사용 버킷처럼 취급한다 — 그렇지 않으면 코드
+  // 레벨 '제외' 기본값이 그 밑의 모든 상품에 자동으로 상속되어 버려서, 실제로는 다른
+  // 상품(예: 여러 세트가 섞인 코드)인데도 조용히 '제외'로 덮이고 이상으로도 안 잡히는
+  // 문제가 있었다. 이제 '제외'로 등록된 코드는 상품코드/키워드 등으로 정밀하게 매칭된
+  // 것만 그 값을 쓰고, 매칭 안 된 상품은 미분류로 남아 이상 목록에서 확인할 수 있다.
+  const isReusedBucket = master && (master.majorName === '프로모션' || master.midName === '매장행사' || master.majorName === '옵션' || master.cat === '제외');
   if (master && master.cat && !isReusedBucket) {
     return { cat: master.cat, detail1: master.detail1 || '', detail2: master.detail2 || '', factor: master.factor ?? null, salesCat: master.salesCat || '' };
   }
@@ -1535,8 +1540,13 @@ function buildDateReport(date, itemsForDate, parentNameByCode, childrenByCode) {
     // 이름과 무관하게 "사실상 재사용 버킷"으로 취급한다 — 상품코드 정밀 매칭이
     // 이미 각 상품을 올바르게 구분해 분류하고 있는데, 코드 레벨 대표값 하나와
     // 비교해서 나머지를 전부 "불일치"로 잘못 잡는 것을 막기 위함.
-    const isReusedBucket = master.majorName === '프로모션' || master.midName === '매장행사' || master.majorName === '옵션';
-    if (TRACKED.includes(master.cat) && !isReusedBucket) {
+    const isReusedBucket = master.majorName === '프로모션' || master.midName === '매장행사' || master.majorName === '옵션' || master.cat === '제외';
+    // 예전엔 master.cat이 "추적 대상 4대 분류(버거/피자/치킨/비프)"일 때만 불일치/미분류를
+    // 확인했는데, 그러면 '제외'처럼 추적 대상이 아닌 분류로 등록된 코드는 실제로는 여러
+    // 상품이 섞인 버킷이어도 전혀 체크가 안 되는 문제가 있었다(예: 코드 하나에 서로 다른
+    // 세트가 여러 개 섞여 있는데 대표값이 '제외'라서 다 통과되어 버림). 이제는 분류값이
+    // 무엇이든(제외 포함) 코드에 등록된 값과 실제 상품이 다르면 항상 잡아낸다.
+    if (!isReusedBucket) {
       // name mismatch (minor name changed)
       if (master.minorName && item.minorName && master.minorName !== item.minorName) {
         pushAnomalyUnique({
@@ -1549,9 +1559,11 @@ function buildDateReport(date, itemsForDate, parentNameByCode, childrenByCode) {
           master,
         });
       }
-      // category mismatch: tool-assigned category disagrees with master's category
+      // category mismatch: tool-assigned category disagrees with master's category.
+      // 상품 자체가 '제외'로 정밀 매칭된 경우는 세트 안의 소스/음료 같은 곁들임
+      // 구성품이 흔히 그런 것이라 정상이므로 불일치로 잡지 않는다.
       assignedCats.forEach(ac => {
-        if (!TRACKED.includes(ac)) return;
+        if (ac === '제외') return;
         if (master.cat !== ac) {
           pushAnomalyUnique({
             code: item.code, type: 'category_mismatch',
@@ -1565,8 +1577,10 @@ function buildDateReport(date, itemsForDate, parentNameByCode, childrenByCode) {
         }
       });
     }
-    // unclassified: master expects a tracked category but nothing got assigned
-    if (TRACKED.includes(master.cat) && !isReusedBucket && assignedCats.length === 0) {
+    // unclassified: master expects a category but nothing got assigned. 코드 자체가
+    // '제외'로 등록된 경우는 그 밑 상품들이 개별적으로 정밀 매칭 안 되어도 정상이므로
+    // (코드 레벨 제외로 이미 충분) 여기서는 잡지 않는다.
+    if (!isReusedBucket && master.cat !== '제외' && assignedCats.length === 0) {
       pushAnomalyUnique({
         code: item.code, type: 'unclassified',
         majorCode: item.majorCode, majorName: item.majorName,
@@ -1577,24 +1591,23 @@ function buildDateReport(date, itemsForDate, parentNameByCode, childrenByCode) {
         master,
       });
     }
-    // 버킷 코드는 코드 단위 이상 감지에서는 빠지지만, "분류가 하나도 안 붙은 특정 상품명"은
-    // 계속 짚어낸다 — 어떤 상품이 새로 생겼는지, 기존 규칙/상품명 오버라이드로 못 잡는지
-    // 놓치지 않기 위함. 이미 등록된 상품명은(오버라이드가 있으면) 여기 안 걸린다.
-    if (isReusedBucket) {
-      Object.keys(item.blankByName).forEach(pname => {
-        const info = item.blankByName[pname];
-        pushAnomalyUnique({
-          code: item.code, productCode: info.productCode, sideProductCode: info.sideProductCode, gubun: info.gubun, parentName: info.parentName, children: info.children, type: 'bucket_unclassified',
-          majorCode: item.majorCode, majorName: item.majorName,
-          midCode: item.midCode, midName: item.midName,
-          minorName: item.minorName,
-          productName: pname,
-          revenue: info.revenue, rowCount: info.rowCount,
-          assignedCat: '',
-          master,
-        });
+    // 특정 상품명(사이드모상품 포함)이 분류가 하나도 안 붙었으면, 코드 자체가 "재사용
+    // 버킷"으로 인식됐는지와 무관하게 항상 짚어낸다. 코드 레벨 대표값(master.cat)이
+    // '제외'처럼 추적 대상이 아닌 값이어도, 그 밑에 서로 다른 상품(예: 여러 세트가
+    // 뒤섞인 코드)이 섞여 있을 수 있어 개별 상품명 단위로는 항상 확인해야 누락이 없다.
+    Object.keys(item.blankByName).forEach(pname => {
+      const info = item.blankByName[pname];
+      pushAnomalyUnique({
+        code: item.code, productCode: info.productCode, sideProductCode: info.sideProductCode, gubun: info.gubun, parentName: info.parentName, children: info.children, type: 'bucket_unclassified',
+        majorCode: item.majorCode, majorName: item.majorName,
+        midCode: item.midCode, midName: item.midName,
+        minorName: item.minorName,
+        productName: pname,
+        revenue: info.revenue, rowCount: info.rowCount,
+        assignedCat: '',
+        master,
       });
-    }
+    });
   });
 
   return {
