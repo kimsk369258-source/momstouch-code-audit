@@ -1381,7 +1381,7 @@ async function processRawDailyFiles(fileList) {
         productCode: productCodeVal, sideProductCode: sideProductCodeVal, productName,
         gubun: gubunVal,
         revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
-        cat,
+        cat, salesCat,
       });
 
       // 세부구분1/2(=발주품목)이 매칭되는 상품이면, 매장별 판매(소진)량을 누적 추적한다.
@@ -1450,12 +1450,24 @@ function buildDateReport(date, itemsForDate, parentNameByCode, childrenByCode) {
         revenue: 0, rowCount: 0, catAssignedSet: new Set(),
         blankByName: {}, // 분류가 하나도 안 붙은 상품명별 매출/건수 — 버킷 코드에서 "어떤 상품이
                           // 미분류인지" 구체적으로 짚어내기 위해 코드 단위가 아니라 상품명 단위로 추적
+        blankSalesCatByName: {}, // 기준표 분류는 있는데 매출 분류가 비어있는 상품명별 매출/건수
       };
     }
     agg[groupKey].revenue += item.revenue;
     agg[groupKey].rowCount += 1;
     if (item.cat) {
       agg[groupKey].catAssignedSet.add(item.cat);
+      // 기준표 분류는 채워졌는데 매출 분류가 비어있으면(예: 매출분류 필드가 새로
+      // 추가되기 전에 등록된 항목) 별도로 짚어낸다.
+      if (!item.salesCat) {
+        const skey = item.productName || item.minorName || '(상품명 없음)';
+        const sbucket = agg[groupKey].blankSalesCatByName;
+        if (!sbucket[skey]) sbucket[skey] = {
+          revenue: 0, rowCount: 0, productCode: item.productCode || '', sideProductCode: item.sideProductCode || '', gubun: item.gubun || '', cat: item.cat,
+        };
+        sbucket[skey].revenue += item.revenue;
+        sbucket[skey].rowCount += 1;
+      }
     } else {
       const key = item.productName || item.minorName || '(상품명 없음)';
       const bucket = agg[groupKey].blankByName;
@@ -1635,6 +1647,23 @@ function buildDateReport(date, itemsForDate, parentNameByCode, childrenByCode) {
         productName: pname,
         revenue: info.revenue, rowCount: info.rowCount,
         assignedCat: '',
+        master,
+      });
+    });
+    // 기준표 분류는 있는데 매출 분류가 비어있는 상품명도 따로 짚어낸다 — 매출분류
+    // 필드가 나중에 추가되면서, 그 전에 등록된 항목들은 기준표 분류만 있고 매출
+    // 분류는 비어있을 수 있다. 이런 항목은 "제외"로 분류돼 있어도(추적 대상 밖이라
+    // 다른 체크에는 안 걸려도) 매출 분류가 빠진 건 별도로 계속 확인해야 한다.
+    Object.keys(item.blankSalesCatByName).forEach(pname => {
+      const info = item.blankSalesCatByName[pname];
+      pushAnomalyUnique({
+        code: item.code, productCode: info.productCode, sideProductCode: info.sideProductCode, gubun: info.gubun, type: 'sales_cat_missing',
+        majorCode: item.majorCode, majorName: item.majorName,
+        midCode: item.midCode, midName: item.midName,
+        minorName: item.minorName,
+        productName: pname,
+        revenue: info.revenue, rowCount: info.rowCount,
+        assignedCat: info.cat,
         master,
       });
     });
@@ -1819,7 +1848,10 @@ function exportAnomaliesFile(date) {
     a.productCode || '', a.sideProductCode || '',
     a.gubun || '', // 구분(일반판매상품/사이드모상품/사이드상품) — 원본 데이터에서 그대로 가져옴
     a.productName || a.minorName || '',
-    '', '', '', '', '', '', // 매출 분류, 기준표 분류, 세부구분1, 세부구분2, 보정값, 발주품목 — 채워 넣을 빈 칸
+    '', // 매출 분류 — 채워 넣을 빈 칸
+    // 'sales_cat_missing'(매출분류만 누락)은 기준표 분류가 이미 있으니 그대로 보여준다.
+    a.type === 'sales_cat_missing' ? (a.assignedCat || '') : '',
+    '', '', '', '', // 세부구분1, 세부구분2, 보정값, 발주품목 — 채워 넣을 빈 칸
   ]));
   const dedupedRows = dedupeExactRows(rows);
   sortByProductCode(dedupedRows);
@@ -1875,7 +1907,9 @@ function exportCombinedFile(date) {
       a.code || '', '',
       a.productCode || '', a.sideProductCode || '', a.gubun || '',
       a.productName || a.minorName || '',
-      '', '', '', '', '', '', // 매출 분류, 기준표 분류, 세부구분1, 세부구분2, 보정값, 발주품목 — 채워 넣을 빈 칸
+      '', // 매출 분류 — 채워 넣을 빈 칸
+      a.type === 'sales_cat_missing' ? (a.assignedCat || '') : '',
+      '', '', '', '', // 세부구분1, 세부구분2, 보정값, 발주품목 — 채워 넣을 빈 칸
     ]);
   });
 
@@ -2023,7 +2057,7 @@ function dayCardHTML(report, showSaveBtn) {
 }
 
 function anomalyTypeLabel(t) {
-  return { new_code:'미등록 코드', name_mismatch:'상품명 변경', category_mismatch:'분류 불일치', unclassified:'미분류', bucket_unclassified:'버킷코드 내 미분류 상품' }[t] || t;
+  return { new_code:'미등록 코드', name_mismatch:'상품명 변경', category_mismatch:'분류 불일치', unclassified:'미분류', bucket_unclassified:'버킷코드 내 미분류 상품', sales_cat_missing:'매출분류 누락' }[t] || t;
 }
 
 function anomalyRowHTML(a, date, idx) {
