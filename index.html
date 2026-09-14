@@ -1848,7 +1848,12 @@ function exportCombinedFile(date) {
   // 사이드상품코드 단독 와일드카드로 등록된 것들도 별도로 모아둔다 — 부모의 상품코드와
   // 짝지어진 정확한 조합이 아니라도, 그 사이드상품코드 자체가 이미 어딘가에 등록되어
   // 있으면 "이미 분류된 것"으로 보고 자식 참고 행을 또 넣지 않기 위함.
-  const registeredSideCodes = new Set(rows.filter(r => r[7]).map(r => r[7]));
+  // 사이드상품코드 단독 와일드카드('*')로 등록된 것만 "이미 등록됨"으로 본다 —
+  // 특정 상품코드에만 개별로 등록된 것까지 여기 포함시키면, 그 사이드상품코드가
+  // 다른(아직 등록 안 된) 상품코드에 새로 나타났을 때도 "이미 등록됨"으로 잘못
+  // 판단해서 이상 목록에서 통째로 사라져 버리는 문제가 있었다(실제로는 그 조합이
+  // 등록된 적이 없는데도 빠짐).
+  const registeredSideCodes = new Set(rows.filter(r => r[6] === '' && r[7]).map(r => r[7]));
   const isAlreadyRegistered = (pc, sc) => registeredKeys.has((pc||'') + '|' + (sc||'')) || (sc && registeredSideCodes.has(sc));
 
   // 이 날짜의 이상 항목(아직 분류가 없거나 확인이 필요한 것들) — 구성품(사이드상품)
