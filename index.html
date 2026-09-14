@@ -675,8 +675,16 @@ function buildMasterMapFromRows(json) {
     // 대표값은 분류(cat)가 채워진 첫 번째 행을 쓴다. 분류가 빈칸인 행이 먼저 등록되면
     // "코드는 있는데 분류가 없는" 상태가 되어 이상 탐지가 새는 원인이 되므로, 나중에
     // 분류가 채워진 행이 나오면 그걸로 갱신한다.
-    if (!(code in map)) { map[code] = rowEntry; count++; }
-    else if (!map[code].cat && rowEntry.cat) { map[code] = rowEntry; }
+    // 단, 이 행에 상품코드가 함께 있으면(=개별 상품 단위로 정밀 등록된 행) 코드 레벨
+    // 대표값에는 반영하지 않는다 — 그렇지 않으면 특정 상품 하나의 분류가 코드 전체의
+    // 대표값으로 잘못 상속되어, 그 코드를 공유하는 다른(실제로는 다른 종류인) 상품들이
+    // 전부 그 값을 물려받아 버리는 문제가 있었다(예: 피자+치킨이 섞인 코드가 한쪽
+    // 상품의 분류만으로 코드 전체가 '치킨'이 되어버림). 소분류코드만 있고 상품코드가
+    // 없는 "코드 전체 등록" 행만 대표값으로 인정한다.
+    if (!productCode) {
+      if (!(code in map)) { map[code] = rowEntry; count++; }
+      else if (!map[code].cat && rowEntry.cat) { map[code] = rowEntry; }
+    }
     if (!namesByCode[code]) namesByCode[code] = [];
     namesByCode[code].push({
       name: rowEntry.productName, cat: rowEntry.cat,
@@ -699,6 +707,7 @@ function buildMasterMapFromRows(json) {
   // 다품종이 아니라 단순 여러 이름), 굳이 여러 줄로 나눠 저장할 필요 없이 상품명만
   // "/"로 합쳐 코드 레벨 entry에 채워 넣는다.
   Object.keys(namesByCode).forEach(code => {
+    if (!map[code]) return; // 이 코드에 "코드 전체 등록" 행이 없으면(전부 상품코드 단위 등록) 건너뛴다.
     const list = namesByCode[code].filter(x => x.name);
     if (list.length <= 1) { if (list.length === 1) map[code].productName = list[0].name; return; }
     const cats = new Set(list.map(x => x.cat));
