@@ -1565,6 +1565,22 @@ function buildDateReport(date, itemsForDate, parentNameByCode, childrenByCode) {
           });
         });
       }
+      // 코드 자체가 기준표(소분류코드 레벨)에 등록 안 되어 있어도(=상품코드 단위로만
+      // 등록된 경우, 최근 구조 변경 이후 흔한 케이스), 매출 분류 누락은 여기서도
+      // 똑같이 확인해야 한다 — 아래(코드가 등록된 경우) 쪽에만 있으면 이 케이스를 놓친다.
+      Object.keys(item.blankSalesCatByName).forEach(pname => {
+        const info = item.blankSalesCatByName[pname];
+        pushAnomalyUnique({
+          code: item.code, productCode: info.productCode, sideProductCode: info.sideProductCode, gubun: info.gubun, type: 'sales_cat_missing',
+          majorCode: item.majorCode, majorName: item.majorName,
+          midCode: item.midCode, midName: item.midName,
+          minorName: item.minorName,
+          productName: pname,
+          revenue: info.revenue, rowCount: info.rowCount,
+          assignedCat: info.cat,
+          master: null,
+        });
+      });
       return;
     }
     // Name/category consistency checks are only meaningful for codes the master
