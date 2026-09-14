@@ -896,8 +896,18 @@ function buildOrphanLookups() {
   return { bySideCode, byProductCode, nameBySideCode, nameByProductCode };
 }
 function lookupOrphanRef(lookups, pc, sc) {
-  const majorRef = (sc && lookups.bySideCode[sc]) || (pc && lookups.byProductCode[pc]) || {};
-  const productName = (sc && lookups.nameBySideCode[sc]) || (pc && lookups.nameByProductCode[pc]) || '';
+  // 대분류/중분류도 상품코드 기준 채우기는 하지 않는다 — 상품코드 하나(세트)는 서로
+  // 다른 대분류(피자+음료+사이드 등)의 구성품을 같이 묶는 값이라, "상품코드가 같은
+  // 아무 항목"에서 가져오면 전혀 관계없는 카테고리가 잘못 채워진다(예: 부모의
+  // 대분류가 자식인 음료의 '음료/탄산'으로 잘못 채워짐). 사이드상품코드(구성품 고유
+  // 식별자) 기준일 때만 안전하게 채운다.
+  const majorRef = (sc && lookups.bySideCode[sc]) || {};
+  // 상품명은 사이드상품코드(구성품 고유 식별자)가 있으면 그 값만 쓴다 — 상품코드는
+  // 세트 하나를 여러 구성품이 같이 쓰는 값이라, 상품코드 기준으로 이름을 대신
+  // 채우면 "이 세트의 다른 구성품 이름"이 엉뚱하게 채워지는 문제가 있었다
+  // (예: 2604번 구성품에 같은 상품코드를 쓰는 다른 구성품 이름이 잘못 채워짐).
+  // 상품코드만 있고 사이드상품코드가 없는(=단독 판매) 경우에만 상품코드 기준으로 채운다.
+  const productName = sc ? (lookups.nameBySideCode[sc] || '') : (pc && lookups.nameByProductCode[pc]) || '';
   return { majorCode: majorRef.majorCode || '', majorName: majorRef.majorName || '', midCode: majorRef.midCode || '', midName: majorRef.midName || '', productName };
 }
 
