@@ -1828,7 +1828,45 @@ function dedupeExactRows(rows) {
       groupRows.forEach(r => { if (!r[6]) toDrop.add(r); });
     }
   });
-  return toDrop.size === 0 ? exactDeduped : exactDeduped.filter(r => !toDrop.has(r));
+
+  // 같은 상품코드의 부모(사이드모상품/일반판매상품)가 서로 다른 이름/대분류로 여러 번
+  // 등록되어 있는 경우(예: 예전에 한 번, 나중에 또 다른 이름으로 등록된 경우) — 그중
+  // 하나만 남긴다. 소분류코드가 있는 쪽을 우선하고, 그래도 여러 개면 마지막(가장 최근
+  // 등록된 것으로 간주) 것만 남긴다. 자식(사이드상품)도 같은 상품코드+사이드상품코드
+  // 조합이 서로 다른 맥락(소분류코드)으로 중복 등록된 경우 동일하게 정리한다.
+  const CH_PC_IDX = 6, CH_GUBUN_IDX2 = COMBINED_HEADER.indexOf('구분'), CH_SC_IDX = 7;
+  const parentGroups = new Map(); // "상품코드" -> [row, ...] (부모)
+  const childGroups = new Map();  // "상품코드|사이드상품코드" -> [row, ...] (자식)
+  const afterFirstPass = exactDeduped.filter(r => !toDrop.has(r));
+  afterFirstPass.forEach(r => {
+    const pc = r[CH_PC_IDX];
+    const sc = r[CH_SC_IDX];
+    const gubun = r[CH_GUBUN_IDX2];
+    if (pc && !sc && (gubun === '사이드모상품' || gubun === '일반판매상품')) {
+      if (!parentGroups.has(pc)) parentGroups.set(pc, []);
+      parentGroups.get(pc).push(r);
+    } else if (pc && sc && gubun === '사이드상품') {
+      const key = pc + '\u0001' + sc;
+      if (!childGroups.has(key)) childGroups.set(key, []);
+      childGroups.get(key).push(r);
+    }
+  });
+  const toDrop2 = new Set();
+  function resolveDuplicateGroup(groupRows) {
+    if (groupRows.length < 2) return;
+    const minors = new Set(groupRows.map(r => r[CH_MINOR_IDX] || ''));
+    const names = new Set(groupRows.map(r => r[CH_NAME_IDX]));
+    if (minors.size < 2 && names.size < 2) return; // 완전히 똑같은 중복이면(이미 위에서 처리됨) 여기서 더 볼 필요 없음
+    let keepRow = groupRows[groupRows.length - 1]; // 기본값: 마지막(가장 최근) 것
+    for (const r of groupRows) {
+      if (r[CH_MINOR_IDX]) { keepRow = r; break; } // 소분류코드가 있는 쪽을 우선
+    }
+    groupRows.forEach(r => { if (r !== keepRow) toDrop2.add(r); });
+  }
+  parentGroups.forEach(resolveDuplicateGroup);
+  childGroups.forEach(resolveDuplicateGroup);
+  if (toDrop2.size === 0) return afterFirstPass;
+  return afterFirstPass.filter(r => !toDrop2.has(r));
 }
 
 function sortByProductCode(rows) {
