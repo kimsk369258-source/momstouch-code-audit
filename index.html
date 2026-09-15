@@ -1893,6 +1893,17 @@ function exportCombinedFile(date) {
   // 된다. 그래서 이미 등록된 조합은 이상 목록 쪽에서 건너뛴다 — 기준표 쪽 한 줄만
   // 남기고, 그 값이 비어있으면(아직 분류 전) 그 한 줄을 보고 채우면 된다.
   const registeredKeys = new Set(rows.map(r => (r[6] || '') + '|' + (r[7] || '')));
+  // 마스터에 등록된 (상품코드,사이드상품코드) 조합의 상품명도 같이 기록해둔다 — 등록된
+  // 이름과 오늘 실제 거래의 이름이 다르면(예: 예전에 다른 세트 이름으로 잘못/낡게
+  // 등록된 경우), "이미 등록됨"으로 인정하지 않고 다시 확인 대상으로 남긴다. 이름이
+  // 다르다는 것 자체가 그 등록이 오늘 이 거래를 가리키는 게 아니라는 뜻이기 때문.
+  const CH_NAME_IDX2 = COMBINED_HEADER.indexOf('상품명');
+  const registeredNameByKey = new Map();
+  rows.forEach(r => {
+    const key = (r[6] || '') + '|' + (r[7] || '');
+    const name = r[CH_NAME_IDX2];
+    if (name && !registeredNameByKey.has(key)) registeredNameByKey.set(key, name);
+  });
   // 사이드상품코드 단독 와일드카드로 등록된 것들도 별도로 모아둔다 — 부모의 상품코드와
   // 짝지어진 정확한 조합이 아니라도, 그 사이드상품코드 자체가 이미 어딘가에 등록되어
   // 있으면 "이미 분류된 것"으로 보고 자식 참고 행을 또 넣지 않기 위함.
@@ -1902,17 +1913,37 @@ function exportCombinedFile(date) {
   // 판단해서 이상 목록에서 통째로 사라져 버리는 문제가 있었다(실제로는 그 조합이
   // 등록된 적이 없는데도 빠짐).
   const registeredSideCodes = new Set(rows.filter(r => r[6] === '' && r[7]).map(r => r[7]));
-  const isAlreadyRegistered = (pc, sc) => registeredKeys.has((pc||'') + '|' + (sc||'')) || (sc && registeredSideCodes.has(sc));
+  const registeredNameBySideCode = new Map();
+  rows.forEach(r => {
+    if (r[6] === '' && r[7] && r[CH_NAME_IDX2] && !registeredNameBySideCode.has(r[7])) {
+      registeredNameBySideCode.set(r[7], r[CH_NAME_IDX2]);
+    }
+  });
+  function isAlreadyRegistered(pc, sc, expectedName) {
+    const key = (pc || '') + '|' + (sc || '');
+    if (registeredKeys.has(key)) {
+      // 이름이 주어졌는데 등록된 이름과 다르면(낡은 등록) 인정하지 않는다.
+      const regName = registeredNameByKey.get(key);
+      if (expectedName && regName && regName !== expectedName) return false;
+      return true;
+    }
+    if (sc && registeredSideCodes.has(sc)) {
+      const regName = registeredNameBySideCode.get(sc);
+      if (expectedName && regName && regName !== expectedName) return false;
+      return true;
+    }
+    return false;
+  }
 
   // 이 날짜의 이상 항목(아직 분류가 없거나 확인이 필요한 것들) — 구성품(사이드상품)
   // 이상 항목이 있으면, 그 세트(사이드모상품) 이름을 참고용 행으로 먼저 넣어준다.
   const anomaliesRaw = anomaliesCache[date] || [];
-  const anomalies = anomaliesRaw.filter(a => !(a.productCode && isAlreadyRegistered(a.productCode, a.sideProductCode)));
+  const anomalies = anomaliesRaw.filter(a => !(a.productCode && isAlreadyRegistered(a.productCode, a.sideProductCode, a.productName || a.minorName)));
   // 부모/자식 참고 행은 "이미 등록되어 중복 방지로 걸러진" 항목이라도 원본
   // anomaliesRaw에서 만든다 — 부모 자체는 중복이라 안 보여줘도, 그 부모에 딸린
   // 자식(세트 구성) 참고 정보는 살아있어야 하기 때문(필터링된 anomalies만 쓰면
   // 그 부모의 children 정보까지 같이 사라져 버린다).
-  rows.push(...buildParentRefRows(anomaliesRaw).filter(r => !isAlreadyRegistered(r[6], r[7])));
+  rows.push(...buildParentRefRows(anomaliesRaw).filter(r => !isAlreadyRegistered(r[6], r[7], r[CH_NAME_IDX2])));
   // 참고용 자식 정보는 이미 등록되어 있어도(와일드카드 등) 항상 그대로 보여준다 —
   // "중복 방지" 필터는 부모 자체(따로 채워야 할 이상 항목)에만 적용하고, 세트
   // 구성 파악용 참고 정보는 필터링 대상이 아니다.
