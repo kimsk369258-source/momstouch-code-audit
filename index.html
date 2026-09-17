@@ -1909,7 +1909,9 @@ function dedupeExactRows(rows) {
   // 등록된 것으로 간주) 것만 남긴다. 자식(사이드상품)도 같은 상품코드+사이드상품코드
   // 조합이 서로 다른 맥락(소분류코드)으로 중복 등록된 경우 동일하게 정리한다.
   const CH_PC_IDX = 6, CH_GUBUN_IDX2 = COMBINED_HEADER.indexOf('구분'), CH_SC_IDX = 7;
-  const parentGroups = new Map(); // "상품코드" -> [row, ...] (부모)
+  const parentGroups = new Map(); // "상품코드|구분" -> [row, ...] (부모) — 같은 상품코드라도
+  // 구분(일반판매상품/사이드모상품)이 다르면 서로 다른 실제 거래이므로(예: 같은 상품코드가
+  // 단독 판매될 때도 있고 세트의 부모로 쓰일 때도 있음) 절대 하나로 합치지 않는다.
   const childGroups = new Map();  // "상품코드|사이드상품코드" -> [row, ...] (자식)
   const afterFirstPass = exactDeduped.filter(r => !toDrop.has(r));
   afterFirstPass.forEach(r => {
@@ -1917,8 +1919,9 @@ function dedupeExactRows(rows) {
     const sc = r[CH_SC_IDX];
     const gubun = r[CH_GUBUN_IDX2];
     if (pc && !sc && (gubun === '사이드모상품' || gubun === '일반판매상품')) {
-      if (!parentGroups.has(pc)) parentGroups.set(pc, []);
-      parentGroups.get(pc).push(r);
+      const key = pc + '\u0001' + gubun;
+      if (!parentGroups.has(key)) parentGroups.set(key, []);
+      parentGroups.get(key).push(r);
     } else if (pc && sc && gubun === '사이드상품') {
       const key = pc + '\u0001' + sc;
       if (!childGroups.has(key)) childGroups.set(key, []);
