@@ -1751,7 +1751,81 @@ function renderDailyResults(reports) {
   const dates = Object.keys(reports).sort().reverse();
   if (dates.length === 0) { container.innerHTML = ''; return; }
 
-  container.innerHTML = dates.map(dk => dayCardHTML(reports[dk], true)).join('');
+  const multiDateBtn = dates.length > 1
+    ? `<div style="margin-bottom:12px;"><button class="btn btn-primary btn-sm" onclick="exportAllDatesCombinedFile()">📦 전체 ${dates.length}개 날짜 통합 다운로드</button></div>`
+    : '';
+  container.innerHTML = multiDateBtn + dates.map(dk => dayCardHTML(reports[dk], true)).join('');
+}
+
+// 여러 날짜를 한 번에 업로드/처리했을 때, 그 날짜들의 이상 항목을 전부 모아서 한
+// 파일로 내려받는다. 기준표(등록된 내용)는 한 번만 포함하고, 그 뒤에 각 날짜의
+// 이상 항목을 이어붙인다 — 날짜별로 따로 "통합 다운로드"를 누를 필요가 없게 하기 위함.
+function exportAllDatesCombinedFile() {
+  const dates = Object.keys(anomaliesCache).sort();
+  if (dates.length === 0) { alert('처리된 날짜가 없습니다.'); return; }
+
+  const headerMatches = masterRawSnapshot && masterRawSnapshot.header &&
+    masterRawSnapshot.header.length === COMBINED_HEADER.length &&
+    masterRawSnapshot.header.every((h, i) => h === COMBINED_HEADER[i]);
+  const rows = headerMatches ? masterRawSnapshot.rows.map(r => r.slice()) : buildMasterRows();
+
+  const CH_NAME_IDX3 = COMBINED_HEADER.indexOf('상품명');
+  const registeredKeys = new Set(rows.map(r => (r[6] || '') + '|' + (r[7] || '')));
+  const registeredNameByKey = new Map();
+  rows.forEach(r => {
+    const key = (r[6] || '') + '|' + (r[7] || '');
+    if (r[CH_NAME_IDX3] && !registeredNameByKey.has(key)) registeredNameByKey.set(key, r[CH_NAME_IDX3]);
+  });
+  const registeredSideCodes = new Set(rows.filter(r => r[6] === '' && r[7]).map(r => r[7]));
+  const registeredNameBySideCode = new Map();
+  rows.forEach(r => {
+    if (r[6] === '' && r[7] && r[CH_NAME_IDX3] && !registeredNameBySideCode.has(r[7])) {
+      registeredNameBySideCode.set(r[7], r[CH_NAME_IDX3]);
+    }
+  });
+  function isAlreadyRegistered(pc, sc, expectedName) {
+    const key = (pc || '') + '|' + (sc || '');
+    if (registeredKeys.has(key)) {
+      const regName = registeredNameByKey.get(key);
+      if (expectedName && regName && regName !== expectedName) return false;
+      return true;
+    }
+    if (sc && registeredSideCodes.has(sc)) {
+      const regName = registeredNameBySideCode.get(sc);
+      if (expectedName && regName && regName !== expectedName) return false;
+      return true;
+    }
+    return false;
+  }
+
+  // 같은 이상 항목이 여러 날짜에 걸쳐 반복해서 나올 수 있으므로(같은 미분류 상품이
+  // 여러 날 계속 팔림), 상품코드+사이드상품코드+상품명 기준으로 날짜 간 중복도 걸러낸다.
+  const seenAcrossDates = new Set();
+  dates.forEach(date => {
+    const anomaliesRaw = anomaliesCache[date] || [];
+    const anomalies = anomaliesRaw.filter(a => !(a.productCode && isAlreadyRegistered(a.productCode, a.sideProductCode, a.productName || a.minorName)));
+    rows.push(...buildParentRefRows(anomaliesRaw).filter(r => !isAlreadyRegistered(r[6], r[7], r[CH_NAME_IDX3])));
+    rows.push(...buildChildRefRows(anomaliesRaw));
+    anomalies.forEach(a => {
+      const dedupeKey = (a.productCode || '') + '\u0001' + (a.sideProductCode || '') + '\u0001' + (a.productName || a.minorName || '') + '\u0001' + (a.code || '');
+      if (seenAcrossDates.has(dedupeKey)) return;
+      seenAcrossDates.add(dedupeKey);
+      rows.push([
+        a.majorCode || '', a.majorName || '', a.midCode || '', a.midName || '',
+        a.code || '', '',
+        a.productCode || '', a.sideProductCode || '', a.gubun || '',
+        a.productName || a.minorName || '',
+        '',
+        a.type === 'sales_cat_missing' ? (a.assignedCat || '') : '',
+        '', '', '', '',
+      ]);
+    });
+  });
+
+  const dedupedRows = dedupeExactRows(rows);
+  sortByProductCode(dedupedRows);
+  const blob = buildExportBlob(COMBINED_HEADER, dedupedRows);
+  triggerDownload(blob, `기준표_이상항목_통합_${dates[0]}_${dates[dates.length - 1]}.csv`);
 }
 
 // 이상 항목을 엑셀에서 채워 넣기 좋은 형태로 내려받는다. 다운로드 → 분류/세부구분1/2/
@@ -2997,7 +3071,7 @@ Object.assign(window, {
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
   deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable,
-  addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster,
+  addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile,
 });
 </script>
 </body>
