@@ -442,7 +442,8 @@ let currentConsumptionByDate = {}; // 방금 처리한 판매 데이터의 발�
 
 // ── 발주/재고 상태 ──
 let orderCodeMap = {};       // 발주코드(정규화) -> 상품별코드명(=발주품목)
-let orderCodeEntries = [];   // [{codeName, orderCode, orderName}] (표시/다운로드용)
+let orderCodeEntries = [];   // [{codeName, orderCode, orderName, spec, unitsPerPack, packUnit}] (표시/다운로드용)
+let orderSpecByCode = {};    // 발주코드(정규화) -> {unitsPerPack, packUnit} — 재고 환산용
 let orderCodeUpdatedAt = null;
 let ordersIndex = [];        // [{date, fileName, uploadedAt, storeCount, itemCount, totalQty}]
 
@@ -2783,6 +2784,23 @@ async function resetAllHistory() {
 // ==========================================================================
 // 발주/재고 — 발주코드 매핑표
 // ==========================================================================
+// "규격" 텍스트(예: "10ea/bag", "60g*10ea*4bag/box")에서 발주 단위(bag/box) 하나당
+// 실제 개수(ea/pc)가 몇 개인지 뽑아낸다. 무게(g)만 있고 개수 표기가 없으면(예:
+// "450g/bag") 환산 불가로 처리한다 — 개당 무게를 모르면 개수로 못 바꾸기 때문.
+function parseOrderSpec(spec) {
+  const s = String(spec || '').trim();
+  const idx = s.lastIndexOf('/');
+  if (idx < 0) return { unitsPerPack: null, packUnit: '' };
+  const numerator = s.slice(0, idx), packUnit = s.slice(idx + 1).trim();
+  const matches = [...numerator.matchAll(/(\d+)\s*(?:ea|pc|bag)/gi)];
+  // 개수(ea/pc) 표기가 없고 무게(g)만 있으면("450g/bag" 등), 포장 하나가 그대로
+  // 1회 판매분이라는 뜻이므로(예: 450g짜리 순살 1봉지 = 1개 판매) 환산값은 1이다.
+  if (matches.length === 0) return { unitsPerPack: /\d+\s*g/i.test(numerator) ? 1 : null, packUnit };
+  let total = 1;
+  matches.forEach(m => { total *= Number(m[1]); });
+  return { unitsPerPack: total, packUnit };
+}
+
 function findOrderCodeHeaderRow(rows) {
   for (let i = 0; i < Math.min(rows.length, 15); i++) {
     const r = rows[i];
@@ -2797,39 +2815,48 @@ function buildOrderCodeMapFromRows(json) {
   const header = json[headerRowIdx].map(v => String(v).trim());
   const idx = name => header.indexOf(name);
   const cCodeName = idx('상품별코드명'), cOrderCode = idx('발주코드'), cOrderName = idx('발주품명');
+  const cSpec = idx('규 격') >= 0 ? idx('규 격') : idx('규격');
   if (cCodeName < 0 || cOrderCode < 0) throw new Error('"상품별코드명" 또는 "발주코드" 컬럼을 찾을 수 없습니다.');
 
   const map = {};
   const entries = [];
+  // 상품별코드명(=기준표의 발주품목) 단위 환산 정보 — 같은 코드명에 발주코드가 여러
+  // 개(지역별 소싱 등) 있어도, 포장 단위가 다르면 그 발주코드별로 각각 저장해서
+  // 재고 계산 시 실제 입고된 발주코드 기준으로 정확히 환산할 수 있게 한다.
+  const specByOrderCode = {}; // 발주코드 -> {unitsPerPack, packUnit}
   for (let i = headerRowIdx + 1; i < json.length; i++) {
     const r = json[i];
     const codeName = String(r[cCodeName] ?? '').trim();
     const orderCode = normCode(r[cOrderCode]);
     const orderName = cOrderName >= 0 ? String(r[cOrderName] ?? '').trim() : '';
+    const specRaw = cSpec >= 0 ? String(r[cSpec] ?? '').trim() : '';
     if (!codeName || !orderCode) continue;
     map[orderCode] = codeName;
-    entries.push({ codeName, orderCode, orderName });
+    const { unitsPerPack, packUnit } = parseOrderSpec(specRaw);
+    entries.push({ codeName, orderCode, orderName, spec: specRaw, unitsPerPack, packUnit });
+    specByOrderCode[orderCode] = { unitsPerPack, packUnit };
   }
-  return { map, entries };
+  return { map, entries, specByOrderCode };
 }
 
 async function loadOrderCodeMap() {
   const raw = await storageGet('orderCodeMap');
-  if (!raw) { orderCodeMap = {}; orderCodeEntries = []; orderCodeUpdatedAt = null; renderOrderCodeMapStatus(); return; }
+  if (!raw) { orderCodeMap = {}; orderCodeEntries = []; orderSpecByCode = {}; orderCodeUpdatedAt = null; renderOrderCodeMapStatus(); return; }
   try {
     const obj = JSON.parse(raw);
     orderCodeMap = obj.map || {};
     orderCodeEntries = obj.entries || [];
+    orderSpecByCode = obj.specByOrderCode || {};
     orderCodeUpdatedAt = obj.updatedAt || null;
-  } catch (e) { orderCodeMap = {}; orderCodeEntries = []; orderCodeUpdatedAt = null; }
+  } catch (e) { orderCodeMap = {}; orderCodeEntries = []; orderSpecByCode = {}; orderCodeUpdatedAt = null; }
   renderOrderCodeMapStatus();
 }
 
-async function saveOrderCodeMap(map, entries) {
+async function saveOrderCodeMap(map, entries, specByOrderCode) {
   const updatedAt = nowISO();
-  const ok = await storageSet('orderCodeMap', JSON.stringify({ map, entries, updatedAt }));
+  const ok = await storageSet('orderCodeMap', JSON.stringify({ map, entries, specByOrderCode: specByOrderCode || {}, updatedAt }));
   if (!ok) throw new Error('Firebase에 저장하지 못했습니다.');
-  orderCodeMap = map; orderCodeEntries = entries; orderCodeUpdatedAt = updatedAt;
+  orderCodeMap = map; orderCodeEntries = entries; orderSpecByCode = specByOrderCode || {}; orderCodeUpdatedAt = updatedAt;
   renderOrderCodeMapStatus();
 }
 
@@ -2850,9 +2877,11 @@ setupDropZone('orderCodeMapDropZone', 'orderCodeMapFileInput', async (file) => {
   preview.innerHTML = `<div class="note">읽는 중...</div>`;
   try {
     const json = await readWorkbook(file);
-    const { map, entries } = buildOrderCodeMapFromRows(json);
-    await saveOrderCodeMap(map, entries);
-    preview.innerHTML = `<div class="status-line" style="margin-top:10px;"><span class="pill pill-ok">✓ 완료</span><span>${esc(file.name)} 에서 ${entries.length.toLocaleString()}개 발주코드를 불러와 저장했습니다.</span></div>`;
+    const { map, entries, specByOrderCode } = buildOrderCodeMapFromRows(json);
+    await saveOrderCodeMap(map, entries, specByOrderCode);
+    const withSpec = entries.filter(e => e.unitsPerPack != null).length;
+    const specNote = withSpec > 0 ? ` (포장 단위 환산 가능 ${withSpec}건${entries.length > withSpec ? `, 무게 표기라 환산 불가 ${entries.length - withSpec}건` : ''})` : '';
+    preview.innerHTML = `<div class="status-line" style="margin-top:10px;"><span class="pill pill-ok">✓ 완료</span><span>${esc(file.name)} 에서 ${entries.length.toLocaleString()}개 발주코드를 불러와 저장했습니다.${specNote}</span></div>`;
   } catch (err) {
     preview.innerHTML = `<div class="status-line" style="margin-top:10px;"><span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span></div>`;
   }
@@ -2879,6 +2908,64 @@ function orderDeliveryDateKey(v) {
   return s.slice(0, 10);
 }
 
+// "누적 입고" 형식 — 이 양식은 가맹점코드(A)/발주코드(G)/발주상품명(H)/실제배송량(P)만
+// 있고 배송일자가 없다. 하루치 배송이 아니라 "지금까지의 누적 입고량 전체"를
+// 나타내는 파일이라, 업로드할 때마다 이전 값을 덮어쓴다(날짜별로 쌓지 않음).
+function looksLikeCumulativeOrderFormat(json) {
+  // 1행에 "거래처정보"/"거래처주문"/"물류배송" 같은 그룹 라벨이 있고, 2행에 실제
+  // 컬럼명(코드/주문거래처/.../코드/품명/.../배송량)이 오는 2단 헤더 구조를 인식한다.
+  if (json.length < 3) return false;
+  const row1 = (json[0] || []).map(v => String(v ?? '').trim());
+  return row1.includes('거래처정보') && row1.includes('물류배송');
+}
+
+function parseCumulativeOrderRows(json) {
+  // 데이터는 3행부터 시작(1행: 그룹 라벨, 2행: 컬럼명). 위치 기준으로 읽는다 —
+  // "코드"라는 이름이 A열(거래처코드)과 G열(발주코드) 둘 다에 쓰여서 이름만으로는
+  // 구분이 안 되기 때문에, 사용자가 알려준 고정 위치(A=0, G=6, H=7, P=15)를 쓴다.
+  const rows = [];
+  for (let i = 2; i < json.length; i++) {
+    const r = json[i];
+    const storeCode = String(r[0] ?? '').trim();
+    if (!storeCode) continue; // 빈 구분선 행 건너뜀
+    rows.push({
+      storeCode,
+      storeName: String(r[1] ?? '').trim(),
+      orderCode: normCode(r[6]),
+      orderName: String(r[7] ?? '').trim(),
+      qty: toNum(r[15]),
+    });
+  }
+  return rows;
+}
+
+async function handleCumulativeOrderFile(file, json) {
+  const statusEl = document.getElementById('orderDataStatus');
+  const rawRows = parseCumulativeOrderRows(json);
+  const byKey = {}; // "storeCode|codeName" -> {storeCode, storeName, orderItem, qty}
+  let unmatchedCodes = new Set();
+  rawRows.forEach(r => {
+    if (!r.storeCode || !r.orderCode) return;
+    const codeName = orderCodeMap[r.orderCode];
+    if (!codeName) { unmatchedCodes.add(r.orderCode); return; }
+    const key = r.storeCode + '|' + codeName;
+    if (!byKey[key]) byKey[key] = { storeCode: r.storeCode, storeName: r.storeName, orderItem: codeName, qty: 0 };
+    byKey[key].qty += r.qty;
+  });
+  const entries = Object.values(byKey);
+  if (entries.length === 0) throw new Error('처리할 수 있는 배송 데이터가 없습니다. 발주코드 매핑표에 없는 품목코드만 있을 수 있습니다.');
+
+  const storeCount = new Set(entries.map(e => e.storeCode)).size;
+  await storageSet('orders:__cumulative__', JSON.stringify({ date: '__cumulative__', fileName: file.name, uploadedAt: nowISO(), entries }));
+
+  let msg = `<span class="pill pill-ok">✓ 완료</span><span>${esc(file.name)} · 누적 입고 ${storeCount}개 매장 저장(날짜 구분 없이 덮어씀)</span>`;
+  if (unmatchedCodes.size > 0) {
+    msg += `<div class="note" style="margin-top:4px;">발주코드 매핑표에 없는 품목코드 ${unmatchedCodes.size}개는 제외되었습니다: ${[...unmatchedCodes].slice(0,10).join(', ')}${unmatchedCodes.size>10?' 외':''}</div>`;
+  }
+  statusEl.innerHTML = msg;
+  await loadOrdersIndex();
+}
+
 async function handleOrderDataFile(file) {
   const statusEl = document.getElementById('orderDataStatus');
   if (orderCodeEntries.length === 0) {
@@ -2889,6 +2976,10 @@ async function handleOrderDataFile(file) {
   try {
     const json = await readWorkbook(file);
     if (json.length < 2) throw new Error('데이터가 없는 파일입니다.');
+    if (looksLikeCumulativeOrderFormat(json)) {
+      await handleCumulativeOrderFile(file, json);
+      return;
+    }
     // 첫 몇 줄에 "거래처정보" 같은 그룹 헤더가 있을 수 있으니, "거래처코드"가 있는 줄을 찾는다.
     let headerRowIdx = 0;
     for (let i = 0; i < Math.min(json.length, 5); i++) {
@@ -2968,8 +3059,9 @@ function renderOrderHistoryTable() {
     html += `<tr><td colspan="5"><div class="empty">저장된 발주 이력이 없습니다.</div></td></tr>`;
   } else {
     sorted.forEach(d => {
+      const dateLabel = d.date === '__cumulative__' ? '📦 누적(날짜없음)' : d.date;
       html += `<tr>
-        <td><strong>${esc(d.date)}</strong></td>
+        <td><strong>${esc(dateLabel)}</strong></td>
         <td>${esc(d.fileName||'-')}</td>
         <td class="num">${d.storeCount}</td>
         <td class="num">${d.itemCount}</td>
@@ -3038,13 +3130,27 @@ function renderStockTable() {
   if (!storeCode) { wrap.innerHTML = '<div class="empty">매장을 선택하면 재고 현황이 표시됩니다.</div>'; return; }
   if (!stockOrderDocs || !stockConsumptionDocs) { wrap.innerHTML = '<div class="empty">🔄 새로고침을 눌러 데이터를 불러와주세요.</div>'; return; }
 
+  // 발주품목(상품별코드명) 단위로 "포장 하나(bag/box)당 실제 개수" 대표값을 만든다.
+  // 발주코드가 여러 개라도(지역별 소싱 등) 보통 포장 단위는 같으므로, 처음 찾은
+  // 값을 대표로 쓴다. 무게(g) 표기뿐이라 개수로 못 바꾸는 항목은 null로 남는다.
+  const packInfoByCodeName = {};
+  orderCodeEntries.forEach(e => {
+    if (!packInfoByCodeName[e.codeName] && e.unitsPerPack != null) {
+      packInfoByCodeName[e.codeName] = { unitsPerPack: e.unitsPerPack, packUnit: e.packUnit };
+    } else if (!(e.codeName in packInfoByCodeName)) {
+      packInfoByCodeName[e.codeName] = null; // 아직 모름 — 나중에 환산 가능한 값이 나오면 덮어씀
+    }
+  });
+
   const received = {}; // 발주품목 -> {qty, lastDate}
   stockOrderDocs.forEach(doc => {
     (doc.entries || []).forEach(e => {
       if (e.storeCode !== storeCode) return;
       if (!received[e.orderItem]) received[e.orderItem] = { qty: 0, lastDate: '' };
       received[e.orderItem].qty += e.qty;
-      if (doc.date > received[e.orderItem].lastDate) received[e.orderItem].lastDate = doc.date;
+      // "누적" 문서는 실제 날짜가 아니므로(날짜 구분 없는 전체 누적값), 최근
+      // 입고일 갱신에는 쓰지 않는다.
+      if (doc.date !== '__cumulative__' && doc.date > received[e.orderItem].lastDate) received[e.orderItem].lastDate = doc.date;
     });
   });
 
@@ -3061,18 +3167,29 @@ function renderStockTable() {
   const items = [...new Set([...Object.keys(received), ...Object.keys(sold)])].sort();
   if (items.length === 0) { wrap.innerHTML = '<div class="empty">이 매장의 발주/판매 데이터가 없습니다.</div>'; return; }
 
-  let html = '<div class="table-wrap"><table><thead><tr><th>발주품목</th><th class="num">누적 입고</th><th class="num">누적 판매(환산)</th><th class="num">현재 재고</th><th>최근 입고일</th><th>최근 판매일</th></tr></thead><tbody>';
+  let html = '<div class="table-wrap"><table><thead><tr><th>발주품목</th><th class="num">누적 입고(포장 단위)</th><th class="num">입고 환산(개)</th><th class="num">누적 판매(환산·개)</th><th class="num">현재 재고(개)</th><th>최근 입고일</th><th>최근 판매일</th></tr></thead><tbody>';
   items.forEach(item => {
-    const rQty = received[item] ? received[item].qty : 0;
+    const rQtyRaw = received[item] ? received[item].qty : 0;
     const sQty = sold[item] ? sold[item].qty : 0;
+    const pack = packInfoByCodeName[item];
+    // 판매(소진)는 이미 "개" 단위(보정값 반영)로 기록되어 있다. 입고는 발주 데이터가
+    // 보통 팩/박스 단위이므로, 포장 단위 환산값이 있으면 개수로 바꿔서 비교하고,
+    // 없으면(무게 표기뿐이거나 매핑표에 없는 품목) 입고량을 그대로 개로 간주한다
+    // (기존 방식과 동일하게 동작 — 환산이 아예 불가능한 경우의 안전한 기본값).
+    const rQty = pack && pack.unitsPerPack ? rQtyRaw * pack.unitsPerPack : rQtyRaw;
     const stock = rQty - sQty;
     const rowStyle = stock < 0 ? ' style="background:#fef2f2;"' : (stock === 0 ? ' style="background:#fffbeb;"' : '');
     const stockLabel = stock < 0
       ? `<span class="pill pill-bad">부족 ${fmtNum(Math.abs(stock))}</span>`
       : (stock === 0 ? `<span class="pill pill-warn">소진</span>` : `<span class="pill pill-ok">${fmtNum(stock)}</span>`);
+    const rawLabel = pack && pack.unitsPerPack ? `${fmtNum(rQtyRaw)} ${esc(pack.packUnit || '')}` : fmtNum(rQtyRaw);
+    const convertedLabel = pack && pack.unitsPerPack
+      ? fmtNum(rQty)
+      : `<span title="포장 단위 환산 정보가 없어 입고량을 그대로 개수로 계산했습니다.">${fmtNum(rQty)} ⚠</span>`;
     html += `<tr${rowStyle}>
       <td>${esc(item)}</td>
-      <td class="num">${fmtNum(rQty)}</td>
+      <td class="num">${rawLabel}</td>
+      <td class="num">${convertedLabel}</td>
       <td class="num">${fmtNum(sQty)}</td>
       <td class="num">${stockLabel}</td>
       <td>${esc(received[item]?.lastDate || '-')}</td>
