@@ -2795,7 +2795,7 @@ function parseOrderSpec(spec) {
   const matches = [...numerator.matchAll(/(\d+)\s*(?:ea|pc|bag)/gi)];
   // 개수(ea/pc) 표기가 없고 무게(g)만 있으면("450g/bag" 등), 포장 하나가 그대로
   // 1회 판매분이라는 뜻이므로(예: 450g짜리 순살 1봉지 = 1개 판매) 환산값은 1이다.
-  if (matches.length === 0) return { unitsPerPack: /\d+\s*g/i.test(numerator) ? 1 : null, packUnit };
+  if (matches.length === 0) return { unitsPerPack: /\d+\s*k?g\b/i.test(numerator) ? 1 : null, packUnit };
   let total = 1;
   matches.forEach(m => { total *= Number(m[1]); });
   return { unitsPerPack: total, packUnit };
@@ -2928,6 +2928,7 @@ function parseCumulativeOrderRows(json) {
     const r = json[i];
     const storeCode = String(r[0] ?? '').trim();
     if (!storeCode) continue; // 빈 구분선 행 건너뜀
+    if (storeCode.startsWith('<')) continue; // "< 소 계 >", "< 총 계 >" 같은 소계/합계 행 건너뜀 — 실제 매장이 아니라 그대로 넣으면 배송량이 중복 집계된다.
     rows.push({
       storeCode,
       storeName: String(r[1] ?? '').trim(),
@@ -2941,24 +2942,49 @@ function parseCumulativeOrderRows(json) {
 
 async function handleCumulativeOrderFile(file, json) {
   const statusEl = document.getElementById('orderDataStatus');
+  statusEl.innerHTML = `<span class="pill pill-neutral">분석 중... (매장이 많으면 시간이 걸릴 수 있습니다)</span>`;
   const rawRows = parseCumulativeOrderRows(json);
-  const byKey = {}; // "storeCode|codeName" -> {storeCode, storeName, orderItem, qty}
+  const byStore = {}; // storeCode -> { "storeCode|codeName" -> {storeCode, storeName, orderItem, qty} }
   let unmatchedCodes = new Set();
   rawRows.forEach(r => {
     if (!r.storeCode || !r.orderCode) return;
     const codeName = orderCodeMap[r.orderCode];
     if (!codeName) { unmatchedCodes.add(r.orderCode); return; }
-    const key = r.storeCode + '|' + codeName;
-    if (!byKey[key]) byKey[key] = { storeCode: r.storeCode, storeName: r.storeName, orderItem: codeName, qty: 0 };
-    byKey[key].qty += r.qty;
+    if (!byStore[r.storeCode]) byStore[r.storeCode] = {};
+    const key = codeName;
+    if (!byStore[r.storeCode][key]) byStore[r.storeCode][key] = { storeCode: r.storeCode, storeName: r.storeName, orderItem: codeName, qty: 0 };
+    byStore[r.storeCode][key].qty += r.qty;
   });
-  const entries = Object.values(byKey);
-  if (entries.length === 0) throw new Error('처리할 수 있는 배송 데이터가 없습니다. 발주코드 매핑표에 없는 품목코드만 있을 수 있습니다.');
+  const storeCodes = Object.keys(byStore);
+  if (storeCodes.length === 0) throw new Error('처리할 수 있는 배송 데이터가 없습니다. 발주코드 매핑표에 없는 품목코드만 있을 수 있습니다.');
 
-  const storeCount = new Set(entries.map(e => e.storeCode)).size;
-  await storageSet('orders:__cumulative__', JSON.stringify({ date: '__cumulative__', fileName: file.name, uploadedAt: nowISO(), entries }));
+  // 매장 수가 많으면(1,000개 이상) 전체를 문서 하나로 합쳤을 때 Firestore의 문서당
+  // 1MB 용량 한도를 넘어 저장이 조용히 실패하는 문제가 있었다. 그래서 매장별로
+  // 문서를 나눠 저장한다("orders:__cum__:매장코드"). 이번 파일에 없는(=더 이상
+  // 배송이 없는) 매장의 예전 누적 문서는 지워서, 오래된 값이 남아있지 않게 한다.
+  let oldStoreCodes = [];
+  try {
+    const idxRaw = await storageGet('orders:__cum_index__');
+    if (idxRaw) oldStoreCodes = JSON.parse(idxRaw).storeCodes || [];
+  } catch (e) { /* 인덱스가 없거나 깨졌으면 그냥 빈 목록으로 시작 */ }
+  const toDelete = oldStoreCodes.filter(c => !storeCodes.includes(c));
 
-  let msg = `<span class="pill pill-ok">✓ 완료</span><span>${esc(file.name)} · 누적 입고 ${storeCount}개 매장 저장(날짜 구분 없이 덮어씀)</span>`;
+  let saved = 0, failed = [];
+  for (const storeCode of storeCodes) {
+    statusEl.innerHTML = `<span class="pill pill-neutral">저장 중... (${saved + 1}/${storeCodes.length}) ${esc(storeCode)}</span>`;
+    const entries = Object.values(byStore[storeCode]);
+    const ok = await storageSet('orders:__cum__:' + storeCode, JSON.stringify({ date: '__cumulative__', fileName: file.name, uploadedAt: nowISO(), entries }));
+    if (ok) saved++; else failed.push(storeCode);
+  }
+  for (const storeCode of toDelete) {
+    await storageDelete('orders:__cum__:' + storeCode);
+  }
+  await storageSet('orders:__cum_index__', JSON.stringify({ storeCodes, fileName: file.name, uploadedAt: nowISO() }));
+
+  let msg = `<span class="pill ${failed.length > 0 ? 'pill-bad' : 'pill-ok'}">${failed.length > 0 ? '⚠ 일부 실패' : '✓ 완료'}</span><span>${esc(file.name)} · 누적 입고 ${saved}/${storeCodes.length}개 매장 저장(날짜 구분 없이 덮어씀)</span>`;
+  if (failed.length > 0) {
+    msg += `<div class="note" style="margin-top:4px;">저장 실패한 매장 ${failed.length}개: ${failed.slice(0,10).join(', ')}${failed.length>10?' 외':''}</div>`;
+  }
   if (unmatchedCodes.size > 0) {
     msg += `<div class="note" style="margin-top:4px;">발주코드 매핑표에 없는 품목코드 ${unmatchedCodes.size}개는 제외되었습니다: ${[...unmatchedCodes].slice(0,10).join(', ')}${unmatchedCodes.size>10?' 외':''}</div>`;
   }
@@ -3035,9 +3061,21 @@ async function loadOrdersIndex() {
   ordersIndex = [];
   try {
     const snap = await getDocs(collection(db, 'orders'));
+    // "누적" 데이터는 매장별로 문서가 나뉘어 저장되어 있으므로(1MB 문서 용량 한도
+    // 때문), 이력 목록에는 전부 합쳐서 요약 한 줄로만 보여준다. 인덱스 문서
+    // (__cum_index__)는 목록에 표시할 대상이 아니라 건너뛴다.
+    let cumEntries = [], cumFileName = '', cumUploadedAt = '', cumStoreCount = 0;
     snap.forEach(d => {
+      if (d.id === '__cum_index__') return;
       const data = unwrapDoc(d.data());
       const entries = data.entries || [];
+      if (d.id.startsWith('__cum__:')) {
+        cumEntries.push(...entries);
+        cumStoreCount++;
+        if (!cumFileName) cumFileName = data.fileName;
+        if (data.uploadedAt > cumUploadedAt) cumUploadedAt = data.uploadedAt;
+        return;
+      }
       ordersIndex.push({
         date: data.date, fileName: data.fileName, uploadedAt: data.uploadedAt,
         storeCount: new Set(entries.map(e => e.storeCode)).size,
@@ -3045,6 +3083,14 @@ async function loadOrdersIndex() {
         totalQty: entries.reduce((s, e) => s + e.qty, 0),
       });
     });
+    if (cumStoreCount > 0) {
+      ordersIndex.push({
+        date: '__cumulative__', fileName: cumFileName, uploadedAt: cumUploadedAt,
+        storeCount: cumStoreCount,
+        itemCount: new Set(cumEntries.map(e => e.orderItem)).size,
+        totalQty: cumEntries.reduce((s, e) => s + e.qty, 0),
+      });
+    }
   } catch (e) { console.error('load orders index failed', e); }
   renderOrderHistoryTable();
   populateStockStoreSelect();
@@ -3075,14 +3121,35 @@ function renderOrderHistoryTable() {
 }
 
 async function deleteOrderDay(date) {
-  if (!confirm(`${date} 발주 이력을 삭제할까요?`)) return;
-  await storageDelete('orders:' + date);
+  if (!confirm(`${date === '__cumulative__' ? '누적 입고' : date} 발주 이력을 삭제할까요?`)) return;
+  if (date === '__cumulative__') {
+    await deleteAllCumulativeOrderDocs();
+  } else {
+    await storageDelete('orders:' + date);
+  }
   await loadOrdersIndex();
+}
+
+// 매장별로 나뉘어 저장된 누적 입고 문서를 전부 지운다(인덱스 문서에 기록된
+// 매장 목록 기준으로 지우고, 인덱스 자체도 지운다).
+async function deleteAllCumulativeOrderDocs() {
+  let storeCodes = [];
+  try {
+    const idxRaw = await storageGet('orders:__cum_index__');
+    if (idxRaw) storeCodes = JSON.parse(idxRaw).storeCodes || [];
+  } catch (e) { /* 무시 */ }
+  for (const storeCode of storeCodes) {
+    await storageDelete('orders:__cum__:' + storeCode);
+  }
+  await storageDelete('orders:__cum_index__');
 }
 
 async function resetAllOrderHistory() {
   if (!confirm('저장된 모든 발주 이력을 삭제할까요? 발주코드 매핑표는 삭제되지 않습니다.')) return;
-  for (const d of ordersIndex) { await storageDelete('orders:' + d.date); }
+  for (const d of ordersIndex) {
+    if (d.date === '__cumulative__') { await deleteAllCumulativeOrderDocs(); continue; }
+    await storageDelete('orders:' + d.date);
+  }
   await loadOrdersIndex();
 }
 
