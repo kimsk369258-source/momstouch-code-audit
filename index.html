@@ -557,6 +557,7 @@ function resolveDocRef(key) {
   if (key.startsWith('consumption:')) return doc(db, 'consumption', key.slice(12));
   if (key.startsWith('consumption_index:')) return doc(db, 'consumption_index', key.slice(19));
   if (key.startsWith('catqty:')) return doc(db, 'catqty', key.slice(7));
+  if (key.startsWith('catqty_index:')) return doc(db, 'catqty_index', key.slice(13));
   return doc(db, 'meta', key);
 }
 async function storageGet(key) {
@@ -2570,7 +2571,7 @@ async function saveDayReport(date, btnEl) {
     // 매장×분류별 판매건수(데이터 추출 기능용)도 함께 저장한다.
     if (currentCategoryQtyByDate[date]) {
       const entries = Object.values(currentCategoryQtyByDate[date]);
-      await storageSet('catqty:' + date, JSON.stringify({ date, entries }));
+      await saveCatQtyForDate(date, entries);
     }
 
     alert(`${date} 대조 결과를 저장했습니다. '③ 이력' 탭에서 확인할 수 있습니다.${exportNote}`);
@@ -2690,7 +2691,7 @@ async function reclassifyOneDateSilently(date) {
   await uploadBytes(exportStorageRef(date), blob);
   const ok = await storageSet('daily:' + date, JSON.stringify(newReport));
   if (!ok) throw new Error('저장 실패');
-  await storageSet('catqty:' + date, JSON.stringify({ date, entries: Object.values(categoryQtyMap) }));
+  await saveCatQtyForDate(date, Object.values(categoryQtyMap));
   return { oldCount: oldReport ? oldReport.anomalyCount : null, newCount: newReport.anomalies.length };
 }
 
@@ -2878,6 +2879,34 @@ async function viewHistoryDetail(date) {
   detailEl.scrollIntoView({ behavior:'smooth', block:'start' });
 }
 
+// 매장×분류별 판매건수(catqty)를 매장별 문서로 나눠 저장한다. 소진량(consumption)과
+// 같은 이유(매장 1,500개 이상이면 문서 하나로 합쳤을 때 1MB 한도 초과)로 나눈다.
+async function saveCatQtyForDate(date, entries) {
+  const byStore = {};
+  entries.forEach(e => {
+    if (!byStore[e.storeCode]) byStore[e.storeCode] = [];
+    byStore[e.storeCode].push(e);
+  });
+  const storeCodes = Object.keys(byStore);
+  const writeItems = storeCodes.map(sc => ({
+    key: 'catqty:' + date + '::' + sc,
+    value: JSON.stringify({ date, storeCode: sc, entries: byStore[sc] }),
+  }));
+  await storageSetBatch(writeItems);
+  await storageSet('catqty_index:' + date, JSON.stringify({ date, storeCodes }));
+}
+
+// 매장별로 나뉘어 저장된 catqty 문서를 특정 날짜 기준으로 전부 지운다.
+async function deleteCatQtyForDate(date) {
+  let storeCodes = [];
+  try {
+    const idxRaw = await storageGet('catqty_index:' + date);
+    if (idxRaw) storeCodes = JSON.parse(idxRaw).storeCodes || [];
+  } catch (e) { /* 무시 */ }
+  await Promise.all(storeCodes.map(sc => storageDelete('catqty:' + date + '::' + sc)));
+  await storageDelete('catqty_index:' + date);
+}
+
 // 매장별로 나뉘어 저장된 소진량(consumption) 문서를 특정 날짜 기준으로 전부 지운다.
 async function deleteConsumptionForDate(date) {
   let storeCodes = [];
@@ -2892,7 +2921,7 @@ async function deleteConsumptionForDate(date) {
 async function deleteDayReport(date) {
   if (!confirm(`${date} 대조 이력을 삭제할까요?`)) return;
   await storageDelete('daily:' + date);
-  await storageDelete('catqty:' + date);
+  await deleteCatQtyForDate(date);
   await deleteConsumptionForDate(date);
   document.getElementById('historyDetail').innerHTML = '';
   await loadDailyIndex();
@@ -2902,7 +2931,7 @@ async function resetAllHistory() {
   if (!confirm('저장된 모든 대조 이력을 삭제할까요? 기준코드표는 삭제되지 않습니다.')) return;
   for (const d of dailyIndex) {
     await storageDelete('daily:' + d.date);
-    await storageDelete('catqty:' + d.date);
+    await deleteCatQtyForDate(d.date);
     await deleteConsumptionForDate(d.date);
   }
   document.getElementById('historyDetail').innerHTML = '';
@@ -3100,6 +3129,22 @@ async function loadCategoryQtyForRange(startDate, endDate) {
   const dates = dailyIndex.map(d => d.date).filter(dt => (!startDate || dt >= startDate) && (!endDate || dt <= endDate)).sort();
   const result = {}; // date -> entries[]
   await Promise.all(dates.map(async dk => {
+    // 매장별로 나뉘어 저장되어 있으므로, 먼저 인덱스로 그 날짜의 매장 목록을 찾고
+    // 매장별 문서를 전부 불러와 합친다. 예전 방식(문서 하나)으로 저장된 날짜도
+    // 계속 읽을 수 있도록 인덱스가 없으면 그 방식으로 폴백한다.
+    const idxRaw = await storageGet('catqty_index:' + dk);
+    if (idxRaw) {
+      let storeCodes = [];
+      try { storeCodes = JSON.parse(idxRaw).storeCodes || []; } catch (e) { /* 무시 */ }
+      const entries = [];
+      await Promise.all(storeCodes.map(async sc => {
+        const raw = await storageGet('catqty:' + dk + '::' + sc);
+        if (!raw) return;
+        try { entries.push(...(JSON.parse(raw).entries || [])); } catch (e) { /* 무시 */ }
+      }));
+      result[dk] = entries;
+      return;
+    }
     const raw = await storageGet('catqty:' + dk);
     if (!raw) return;
     try {
