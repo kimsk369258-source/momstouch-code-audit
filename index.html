@@ -205,6 +205,7 @@
     <button class="tab-btn" data-tab="daily">② 일별 대조</button>
     <button class="tab-btn" data-tab="history">③ 이력</button>
     <button class="tab-btn" data-tab="orders">④ 발주/재고</button>
+    <button class="tab-btn" data-tab="extract">⑤ 데이터 추출</button>
   </div>
 
   <!-- ===================== TAB 1: 기준코드 관리 ===================== -->
@@ -367,6 +368,40 @@
     </div>
   </section>
 
+  <!-- ===================== TAB 5: 데이터 추출 ===================== -->
+  <section class="panel" id="panel-extract">
+    <div class="card">
+      <h2>가맹점현황</h2>
+      <div class="card-sub">매장코드(E코드) → 매장명/팀 매핑표입니다. 점포가 수시로 바뀔 수 있어 필요할 때마다 새로 업로드하면 됩니다(전체 교체).</div>
+      <div class="drop-zone" id="storeInfoDropZone" style="margin-top:12px;">
+        <div class="dz-icon">🏬</div>
+        <div class="dz-text">가맹점_현황.xlsb (또는 .xlsx) 파일을 여기로 드래그하거나 클릭</div>
+        <div class="dz-hint">.xlsx / .xls / .xlsb · E코드 · 매장명 · 팀 컬럼 필요</div>
+      </div>
+      <input type="file" id="storeInfoFileInput" accept=".xlsx,.xls,.xlsb">
+      <div id="storeInfoStatus" class="status-line" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card">
+      <h2>매장별 일자별 데이터 추출</h2>
+      <div class="card-sub">저장된 일별 대조 이력에서, 분류(버거/치킨/피자/비프)별 매장×날짜 판매건수를 지금 쓰시는 엑셀과 같은 레이아웃(행=매장, 열=날짜)으로 뽑아드립니다. 원본 파일을 다시 올릴 필요 없이, 이미 저장된 데이터에서 바로 만듭니다.</div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-top:10px;">
+        <div>
+          <label style="display:block; font-size:12px; color:#6b7280; margin-bottom:4px;">시작일</label>
+          <input type="date" id="extractStartDate" class="search-input">
+        </div>
+        <div>
+          <label style="display:block; font-size:12px; color:#6b7280; margin-bottom:4px;">종료일</label>
+          <input type="date" id="extractEndDate" class="search-input">
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="downloadCategoryExtract()">📥 전체 분류 시트로 한번에 다운로드</button>
+      </div>
+      <div class="note" style="margin-top:6px;">버거/치킨/비프/피자(전체)/피자(싱글=조각피자)/피자(홀피자) 총 6개 시트가 한 엑셀 파일로 만들어집니다. 기간을 비워두면 저장된 전체 기간이 포함됩니다.</div>
+      <div class="note">※ 이 기능을 새로 추가하기 전에 저장된 날짜는 매장×분류별 판매건수가 따로 저장되어 있지 않아 추출에 포함되지 않습니다. "③ 이력" 탭의 "🔄 전체 재분류"를 한 번 실행하면 과거 날짜도 포함됩니다.</div>
+      <div id="extractStatus" style="margin-top:8px;"></div>
+    </div>
+  </section>
+
   <div class="footer-note">POS 엑셀 합치기 툴의 결과 파일과 함께 사용하도록 설계되었습니다.</div>
 </div>
 <!-- /#mainApp -->
@@ -439,6 +474,7 @@ let masterRowCount = 0;
 let dailyIndex = [];     // [{date, fileName, uploadedAt, totalRows, totalRevenue, uniqueCodes, anomalyCount, status}]
 let currentDailyReports = null; // last parsed (not-yet-saved) reports, keyed by date
 let currentConsumptionByDate = {}; // 방금 처리한 판매 데이터의 발주품목 소진량 { date: { "매장코드|발주품목": {storeName, qty} } }
+let currentCategoryQtyByDate = {}; // 방금 처리한 판매 데이터의 매장×분류×세부구분1별 판매건수 { date: { key: {storeCode,storeName,cat,detail1,qty} } }
 
 // ── 발주/재고 상태 ──
 let orderCodeMap = {};       // 발주코드(정규화) -> 상품별코드명(=발주품목)
@@ -519,6 +555,7 @@ function resolveDocRef(key) {
   if (key.startsWith('daily:')) return doc(db, 'daily', key.slice(6));
   if (key.startsWith('orders:')) return doc(db, 'orders', key.slice(7));
   if (key.startsWith('consumption:')) return doc(db, 'consumption', key.slice(12));
+  if (key.startsWith('catqty:')) return doc(db, 'catqty', key.slice(7));
   return doc(db, 'meta', key);
 }
 async function storageGet(key) {
@@ -1331,6 +1368,7 @@ async function processRawDailyFiles(fileList) {
   const byDate = {};          // date -> [{집계용 item}]
   const rowsByDate = {};      // date -> [원본행+분류4열]
   const consumptionByDate = {}; // date -> { "매장코드|발주품목": {storeName, qty} } — 발주품목 소진량 추적용
+  const categoryQtyByDate = {}; // date -> { "매장코드\x01분류\x01세부구분1": {storeCode,storeName,cat,detail1,qty} } — 매장별 일자별 데이터 추출용
   const fileNames = [];
   let totalRemovedSummary = 0;
   let outputHeader = null;
@@ -1438,6 +1476,15 @@ async function processRawDailyFiles(fileList) {
             if (!consumptionByDate[dk][key]) consumptionByDate[dk][key] = { storeCode: storeCodeVal, storeName: storeNameVal, orderItem: oi.name, qty: 0 };
             consumptionByDate[dk][key].qty += qtySold * oi.qtyPerUnit;
           });
+          // 매장×분류(기준표 분류)×세부구분1별 판매 건수도 따로 누적한다 — "버거 수량",
+          // "피자 수량(싱글/홀피자)" 같은 매장별 일자별 데이터 추출 기능에 쓰인다.
+          // '제외'는 추적 대상이 아니므로 빼고, 분류가 있는 것만 담는다.
+          if (cat && cat !== '제외') {
+            if (!categoryQtyByDate[dk]) categoryQtyByDate[dk] = {};
+            const cqKey = storeCodeVal + '\u0001' + cat + '\u0001' + (detail1 || '');
+            if (!categoryQtyByDate[dk][cqKey]) categoryQtyByDate[dk][cqKey] = { storeCode: storeCodeVal, storeName: storeNameVal, cat, detail1: detail1 || '', qty: 0 };
+            categoryQtyByDate[dk][cqKey].qty += qtySold;
+          }
         }
       }
 
@@ -1464,6 +1511,7 @@ async function processRawDailyFiles(fileList) {
   currentMergedHeader = outputHeader;
   currentMergedRowsByDate = rowsByDate;
   currentConsumptionByDate = consumptionByDate;
+  currentCategoryQtyByDate = categoryQtyByDate;
 
   const totalRows = Object.values(byDate).reduce((s, arr) => s + arr.length, 0);
   return { reports, fileNames, totalRemovedSummary, totalRows };
@@ -2506,6 +2554,11 @@ async function saveDayReport(date, btnEl) {
       const entries = Object.values(currentConsumptionByDate[date]);
       await storageSet('consumption:' + date, JSON.stringify({ date, entries }));
     }
+    // 매장×분류별 판매건수(데이터 추출 기능용)도 함께 저장한다.
+    if (currentCategoryQtyByDate[date]) {
+      const entries = Object.values(currentCategoryQtyByDate[date]);
+      await storageSet('catqty:' + date, JSON.stringify({ date, entries }));
+    }
 
     alert(`${date} 대조 결과를 저장했습니다. '③ 이력' 탭에서 확인할 수 있습니다.${exportNote}`);
     await loadDailyIndex();
@@ -2573,6 +2626,7 @@ async function reclassifyOneDateSilently(date) {
   if (catIdx < 0 || cols.minorCode < 0) throw new Error('합본 파일 형식을 알아볼 수 없습니다.');
 
   const items = [];
+  const categoryQtyMap = {};
   const rows = json.slice(1);
   rows.forEach(r => {
     const majorCode = cols.majorCode >= 0 ? normCode(r[cols.majorCode]) : '';
@@ -2585,6 +2639,8 @@ async function reclassifyOneDateSilently(date) {
     const sideProductCodeVal = cols.sideProductCode >= 0 ? normCode(r[cols.sideProductCode]) : '';
     const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '') : '';
     const gubunVal = cols.gubun >= 0 ? String(r[cols.gubun] ?? '').trim() : '';
+    const storeCodeVal = cols.storeCode >= 0 ? String(r[cols.storeCode] ?? '').trim() : '';
+    const storeNameVal = cols.storeName >= 0 ? String(r[cols.storeName] ?? '').trim() : '';
     const { cat, detail1, detail2, factor: masterFactor, salesCat } = classifyForRow(minorCodeVal, majorName, midName, productName, minorNameRaw, productCodeVal, sideProductCodeVal, gubunVal);
     const { size, factor: guessedFactor } = sizeInfo(productName, minorNameRaw);
     const factor = cat === '제외' ? '' : (masterFactor != null ? masterFactor : guessedFactor);
@@ -2595,6 +2651,14 @@ async function reclassifyOneDateSilently(date) {
     if (detail2Idx >= 0) r[detail2Idx] = detail2;
     if (sizeIdx >= 0) r[sizeIdx] = size;
     if (factorIdx >= 0) r[factorIdx] = factor;
+    if (storeCodeVal && cat && cat !== '제외') {
+      const qtySold = cols.qty >= 0 ? toNum(r[cols.qty]) : 0;
+      if (qtySold) {
+        const cqKey = storeCodeVal + '\u0001' + cat + '\u0001' + (detail1 || '');
+        if (!categoryQtyMap[cqKey]) categoryQtyMap[cqKey] = { storeCode: storeCodeVal, storeName: storeNameVal, cat, detail1: detail1 || '', qty: 0 };
+        categoryQtyMap[cqKey].qty += qtySold;
+      }
+    }
     items.push({
       minorCode: minorCodeVal, minorName: minorNameRaw,
       majorCode, majorName, midCode, midName,
@@ -2612,6 +2676,7 @@ async function reclassifyOneDateSilently(date) {
   await uploadBytes(exportStorageRef(date), blob);
   const ok = await storageSet('daily:' + date, JSON.stringify(newReport));
   if (!ok) throw new Error('저장 실패');
+  await storageSet('catqty:' + date, JSON.stringify({ date, entries: Object.values(categoryQtyMap) }));
   return { oldCount: oldReport ? oldReport.anomalyCount : null, newCount: newReport.anomalies.length };
 }
 
@@ -2801,13 +2866,14 @@ async function viewHistoryDetail(date) {
 async function deleteDayReport(date) {
   if (!confirm(`${date} 대조 이력을 삭제할까요?`)) return;
   await storageDelete('daily:' + date);
+  await storageDelete('catqty:' + date);
   document.getElementById('historyDetail').innerHTML = '';
   await loadDailyIndex();
 }
 
 async function resetAllHistory() {
   if (!confirm('저장된 모든 대조 이력을 삭제할까요? 기준코드표는 삭제되지 않습니다.')) return;
-  for (const d of dailyIndex) { await storageDelete('daily:' + d.date); }
+  for (const d of dailyIndex) { await storageDelete('daily:' + d.date); await storageDelete('catqty:' + d.date); }
   document.getElementById('historyDetail').innerHTML = '';
   await loadDailyIndex();
 }
@@ -2917,6 +2983,179 @@ setupDropZone('orderCodeMapDropZone', 'orderCodeMapFileInput', async (file) => {
     preview.innerHTML = `<div class="status-line" style="margin-top:10px;"><span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span></div>`;
   }
 });
+
+// ==========================================================================
+// 데이터 추출 — 가맹점현황(매장코드→매장명/팀 매핑) + 매장×분류별 판매건수 추출
+// ==========================================================================
+let storeInfoMap = {}; // 매장코드 -> {name, team}
+let storeInfoUpdatedAt = null;
+
+async function loadStoreInfoMap() {
+  const raw = await storageGet('meta:storeInfo');
+  if (!raw) { storeInfoMap = {}; storeInfoUpdatedAt = null; renderStoreInfoStatus(); return; }
+  try {
+    const obj = JSON.parse(raw);
+    storeInfoMap = obj.map || {};
+    storeInfoUpdatedAt = obj.updatedAt || null;
+  } catch (e) { storeInfoMap = {}; storeInfoUpdatedAt = null; }
+  renderStoreInfoStatus();
+}
+
+async function saveStoreInfoMap(map) {
+  const updatedAt = nowISO();
+  const ok = await storageSet('meta:storeInfo', JSON.stringify({ map, updatedAt }));
+  if (!ok) throw new Error('Firebase에 저장하지 못했습니다.');
+  storeInfoMap = map; storeInfoUpdatedAt = updatedAt;
+  renderStoreInfoStatus();
+}
+
+function renderStoreInfoStatus() {
+  const el = document.getElementById('storeInfoStatus');
+  if (!el) return;
+  const count = Object.keys(storeInfoMap).length;
+  if (count === 0) { el.innerHTML = '<span class="pill pill-warn">⚠ 미등록</span><span>가맹점현황 파일을 업로드해주세요.</span>'; return; }
+  el.innerHTML = `<span class="pill pill-ok">✓ 등록됨</span><span>${count.toLocaleString()}개 매장 · 마지막 갱신: ${esc(storeInfoUpdatedAt ? new Date(storeInfoUpdatedAt).toLocaleString('ko-KR') : '-')}</span>`;
+}
+
+// "가맹점현황" 파일에서 E코드(매장코드) → 매장명/팀을 뽑아낸다. 헤더 행("E코드"가
+// 있는 행)을 찾아서, 그 아래 데이터 행을 위치가 아니라 컬럼명으로 읽는다(D코드/E코드
+// 둘 다 있어서 이름만으론 완전히 안전하진 않지만, 실제로는 "코드"라는 이름이 아니라
+// "E코드"/"D코드"로 구분되어 있어 문제없다).
+function buildStoreInfoMapFromRows(json) {
+  let headerRowIdx = -1, header = null;
+  for (let i = 0; i < Math.min(json.length, 15); i++) {
+    const r = (json[i] || []).map(v => String(v ?? '').trim());
+    if (r.includes('E코드')) { headerRowIdx = i; header = r; break; }
+  }
+  if (headerRowIdx < 0) throw new Error('"E코드" 헤더를 찾을 수 없습니다. 가맹점현황 파일 형식을 확인해주세요.');
+  const cCode = header.indexOf('E코드'), cName = header.indexOf('매장명'), cTeam = header.indexOf('팀');
+  if (cCode < 0) throw new Error('"E코드" 컬럼을 찾을 수 없습니다.');
+
+  const map = {};
+  for (let i = headerRowIdx + 1; i < json.length; i++) {
+    const r = json[i];
+    const code = String(r[cCode] ?? '').trim();
+    if (!code) continue;
+    map[code] = { name: cName >= 0 ? String(r[cName] ?? '').trim() : '', team: cTeam >= 0 ? String(r[cTeam] ?? '').trim() : '' };
+  }
+  return map;
+}
+
+setupDropZone('storeInfoDropZone', 'storeInfoFileInput', async (file) => {
+  const statusEl = document.getElementById('storeInfoStatus');
+  statusEl.innerHTML = `<span class="pill pill-neutral">읽는 중...</span>`;
+  try {
+    const json = await readWorkbook(file);
+    const map = buildStoreInfoMapFromRows(json);
+    await saveStoreInfoMap(map);
+  } catch (err) {
+    statusEl.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`;
+  }
+});
+
+// 엑셀 날짜 일련번호로 변환(1899-12-30 기준) — 추출 시트의 날짜 컬럼 헤더용.
+function toExcelSerialDate(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  const epoch = Date.UTC(1899, 11, 30);
+  return Math.round((d.getTime() - epoch) / 86400000);
+}
+
+// 저장된 일별 catqty(매장×분류×세부구분1별 판매건수) 이력을 지정한 기간만큼 불러온다.
+async function loadCategoryQtyForRange(startDate, endDate) {
+  const dates = dailyIndex.map(d => d.date).filter(dt => (!startDate || dt >= startDate) && (!endDate || dt <= endDate)).sort();
+  const result = {}; // date -> entries[]
+  await Promise.all(dates.map(async dk => {
+    const raw = await storageGet('catqty:' + dk);
+    if (!raw) return;
+    try {
+      const obj = JSON.parse(raw);
+      result[dk] = obj.entries || [];
+    } catch (e) { /* 무시 */ }
+  }));
+  return { dates, byDate: result };
+}
+
+// 분류(+세부구분1 필터)별로 "매장 × 날짜" 피벗 시트 데이터(2차원 배열, aoa)를 만든다.
+// 사용자가 쓰던 엑셀과 같은 레이아웃: 1행 헤더(D코드,,E코드,,매장명,팀,,날짜1,날짜2,...),
+// 그 아래로 매장별 한 줄씩.
+function buildPivotSheetAOA(dates, byDate, catFilter, detail1Filter) {
+  const storeCodes = Object.keys(storeInfoMap).sort();
+  const header = ['D코드', null, 'E코드', null, '매장명', '팀', null, ...dates.map(toExcelSerialDate)];
+  const rows = [header];
+  storeCodes.forEach(code => {
+    const info = storeInfoMap[code];
+    const row = [null, null, code, null, info.name, info.team, null];
+    dates.forEach(dk => {
+      const entries = byDate[dk] || [];
+      let sum = 0;
+      entries.forEach(e => {
+        if (e.storeCode !== code) return;
+        if (e.cat !== catFilter) return;
+        if (detail1Filter != null && e.detail1 !== detail1Filter) return;
+        sum += e.qty;
+      });
+      row.push(sum);
+    });
+    rows.push(row);
+  });
+  return rows;
+}
+
+async function downloadCategoryExtract() {
+  const statusEl = document.getElementById('extractStatus');
+  if (Object.keys(storeInfoMap).length === 0) { statusEl.innerHTML = `<span class="pill pill-warn">⚠ 가맹점현황을 먼저 업로드해주세요.</span>`; return; }
+  const startDate = document.getElementById('extractStartDate').value;
+  const endDate = document.getElementById('extractEndDate').value;
+  statusEl.innerHTML = `<span class="pill pill-neutral">불러오는 중...</span>`;
+  try {
+    const { dates, byDate } = await loadCategoryQtyForRange(startDate, endDate);
+    if (dates.length === 0) { statusEl.innerHTML = `<span class="pill pill-warn">⚠ 해당 기간에 저장된 대조 이력이 없습니다.</span>`; return; }
+
+    // "조각피자"는 낱개(싱글)로 파는 것, 그 외 피자 세부구분1은 홀피자로 본다.
+    const sheets = [
+      { name: '버거 수량', cat: '버거', detail1: null },
+      { name: '치킨 수량', cat: '치킨', detail1: null },
+      { name: '비프 수량', cat: '비프', detail1: null },
+      { name: '피자 수량', cat: '피자', detail1: null },
+      { name: '피자 수량(싱글)', cat: '피자', detail1: '조각피자' },
+      { name: '피자 수량(홀피자)', cat: '피자', detail1: '__NOT_SLICE__' }, // 아래에서 특별 처리
+    ];
+
+    const wb = XLSX.utils.book_new();
+    sheets.forEach(s => {
+      let aoa;
+      if (s.detail1 === '__NOT_SLICE__') {
+        // 홀피자 = 피자이면서 세부구분1이 "조각피자"가 아닌 것 전부(빈 값 포함)
+        const storeCodes = Object.keys(storeInfoMap).sort();
+        const header = ['D코드', null, 'E코드', null, '매장명', '팀', null, ...dates.map(toExcelSerialDate)];
+        aoa = [header];
+        storeCodes.forEach(code => {
+          const info = storeInfoMap[code];
+          const row = [null, null, code, null, info.name, info.team, null];
+          dates.forEach(dk => {
+            const entries = byDate[dk] || [];
+            let sum = 0;
+            entries.forEach(e => {
+              if (e.storeCode === code && e.cat === '피자' && e.detail1 !== '조각피자') sum += e.qty;
+            });
+            row.push(sum);
+          });
+          aoa.push(row);
+        });
+      } else {
+        aoa = buildPivotSheetAOA(dates, byDate, s.cat, s.detail1);
+      }
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      XLSX.utils.book_append_sheet(wb, ws, s.name);
+    });
+
+    const dateStr = nowISO().slice(0, 10);
+    XLSX.writeFile(wb, `매장별_분류_판매건수_${dateStr}.xlsx`);
+    statusEl.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${dates.length}개 날짜(${dates[0]} ~ ${dates[dates.length-1]}) · ${Object.keys(storeInfoMap).length}개 매장 · 6개 시트 다운로드했습니다.</span>`;
+  } catch (err) {
+    statusEl.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`;
+  }
+}
 
 // ==========================================================================
 // 발주/재고 — 가맹점별 발주(배송) 데이터
@@ -3376,6 +3615,7 @@ if (!isConfigured) {
       await loadDailyIndex();
       await loadOrderCodeMap();
       await loadOrdersIndex();
+      await loadStoreInfoMap();
     } else {
       showScreen('login');
     }
@@ -3388,7 +3628,7 @@ Object.assign(window, {
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
   deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable,
-  addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory,
+  addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
 </body>
