@@ -2662,7 +2662,8 @@ async function reclassifyOneDateSilently(date) {
     items.push({
       minorCode: minorCodeVal, minorName: minorNameRaw,
       majorCode, majorName, midCode, midName,
-      productCode: productCodeVal, productName,
+      productCode: productCodeVal, sideProductCode: sideProductCodeVal, productName,
+      gubun: gubunVal,
       revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
       cat,
     });
@@ -2753,7 +2754,8 @@ async function reclassifyAndRedownload(date, btnEl) {
         minorCode: minorCodeVal,
         minorName: minorNameRaw,
         majorCode, majorName, midCode, midName,
-        productCode: productCodeVal, productName,
+        productCode: productCodeVal, sideProductCode: sideProductCodeVal, productName,
+        gubun: gubunVal,
         revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
         cat,
       });
