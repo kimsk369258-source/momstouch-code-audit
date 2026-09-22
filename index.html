@@ -555,6 +555,7 @@ function resolveDocRef(key) {
   if (key.startsWith('daily:')) return doc(db, 'daily', key.slice(6));
   if (key.startsWith('orders:')) return doc(db, 'orders', key.slice(7));
   if (key.startsWith('consumption:')) return doc(db, 'consumption', key.slice(12));
+  if (key.startsWith('consumption_index:')) return doc(db, 'consumption_index', key.slice(19));
   if (key.startsWith('catqty:')) return doc(db, 'catqty', key.slice(7));
   return doc(db, 'meta', key);
 }
@@ -2549,10 +2550,22 @@ async function saveDayReport(date, btnEl) {
       exportNote = `\n(참고: 지금 이 화면에 ${date}의 처리된 원본 데이터가 없어서 다운로드용 합본 파일은 서버에 저장되지 않았습니다. 나중에 다운로드/재분류가 필요하면, "② 일별 대조"에서 원본 파일을 다시 올려 처리한 뒤 다시 저장해주세요.)`;
     }
 
-    // 발주품목 소진량(재고 추적용)도 함께 저장한다.
+    // 발주품목 소진량(재고 추적용)도 함께 저장한다. 매장이 1,500개가 넘으면 하루치를
+    // 문서 하나로 합쳤을 때 Firestore 문서당 1MB 용량 한도를 넘을 수 있어서(실제로
+    // 발생함), 발주 데이터 때와 같은 방식으로 매장별 문서로 나눠 저장한다.
     if (currentConsumptionByDate[date]) {
-      const entries = Object.values(currentConsumptionByDate[date]);
-      await storageSet('consumption:' + date, JSON.stringify({ date, entries }));
+      const byStore = {};
+      Object.values(currentConsumptionByDate[date]).forEach(e => {
+        if (!byStore[e.storeCode]) byStore[e.storeCode] = [];
+        byStore[e.storeCode].push(e);
+      });
+      const storeCodes = Object.keys(byStore);
+      const writeItems = storeCodes.map(sc => ({
+        key: 'consumption:' + date + '::' + sc,
+        value: JSON.stringify({ date, storeCode: sc, entries: byStore[sc] }),
+      }));
+      await storageSetBatch(writeItems);
+      await storageSet('consumption_index:' + date, JSON.stringify({ date, storeCodes }));
     }
     // 매장×분류별 판매건수(데이터 추출 기능용)도 함께 저장한다.
     if (currentCategoryQtyByDate[date]) {
@@ -2865,17 +2878,33 @@ async function viewHistoryDetail(date) {
   detailEl.scrollIntoView({ behavior:'smooth', block:'start' });
 }
 
+// 매장별로 나뉘어 저장된 소진량(consumption) 문서를 특정 날짜 기준으로 전부 지운다.
+async function deleteConsumptionForDate(date) {
+  let storeCodes = [];
+  try {
+    const idxRaw = await storageGet('consumption_index:' + date);
+    if (idxRaw) storeCodes = JSON.parse(idxRaw).storeCodes || [];
+  } catch (e) { /* 무시 */ }
+  await Promise.all(storeCodes.map(sc => storageDelete('consumption:' + date + '::' + sc)));
+  await storageDelete('consumption_index:' + date);
+}
+
 async function deleteDayReport(date) {
   if (!confirm(`${date} 대조 이력을 삭제할까요?`)) return;
   await storageDelete('daily:' + date);
   await storageDelete('catqty:' + date);
+  await deleteConsumptionForDate(date);
   document.getElementById('historyDetail').innerHTML = '';
   await loadDailyIndex();
 }
 
 async function resetAllHistory() {
   if (!confirm('저장된 모든 대조 이력을 삭제할까요? 기준코드표는 삭제되지 않습니다.')) return;
-  for (const d of dailyIndex) { await storageDelete('daily:' + d.date); await storageDelete('catqty:' + d.date); }
+  for (const d of dailyIndex) {
+    await storageDelete('daily:' + d.date);
+    await storageDelete('catqty:' + d.date);
+    await deleteConsumptionForDate(d.date);
+  }
   document.getElementById('historyDetail').innerHTML = '';
   await loadDailyIndex();
 }
