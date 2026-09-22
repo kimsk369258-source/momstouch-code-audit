@@ -2988,24 +2988,26 @@ setupDropZone('orderCodeMapDropZone', 'orderCodeMapFileInput', async (file) => {
 // 데이터 추출 — 가맹점현황(매장코드→매장명/팀 매핑) + 매장×분류별 판매건수 추출
 // ==========================================================================
 let storeInfoMap = {}; // 매장코드 -> {name, team}
+let storeInfoOrder = []; // 가맹점현황 파일에 나온 매장코드 순서
 let storeInfoUpdatedAt = null;
 
 async function loadStoreInfoMap() {
   const raw = await storageGet('meta:storeInfo');
-  if (!raw) { storeInfoMap = {}; storeInfoUpdatedAt = null; renderStoreInfoStatus(); return; }
+  if (!raw) { storeInfoMap = {}; storeInfoOrder = []; storeInfoUpdatedAt = null; renderStoreInfoStatus(); return; }
   try {
     const obj = JSON.parse(raw);
     storeInfoMap = obj.map || {};
+    storeInfoOrder = obj.order || Object.keys(storeInfoMap); // 예전 저장분(순서 없음) 호환
     storeInfoUpdatedAt = obj.updatedAt || null;
-  } catch (e) { storeInfoMap = {}; storeInfoUpdatedAt = null; }
+  } catch (e) { storeInfoMap = {}; storeInfoOrder = []; storeInfoUpdatedAt = null; }
   renderStoreInfoStatus();
 }
 
-async function saveStoreInfoMap(map) {
+async function saveStoreInfoMap(map, order) {
   const updatedAt = nowISO();
-  const ok = await storageSet('meta:storeInfo', JSON.stringify({ map, updatedAt }));
+  const ok = await storageSet('meta:storeInfo', JSON.stringify({ map, order, updatedAt }));
   if (!ok) throw new Error('Firebase에 저장하지 못했습니다.');
-  storeInfoMap = map; storeInfoUpdatedAt = updatedAt;
+  storeInfoMap = map; storeInfoOrder = order; storeInfoUpdatedAt = updatedAt;
   renderStoreInfoStatus();
 }
 
@@ -3032,13 +3034,15 @@ function buildStoreInfoMapFromRows(json) {
   if (cCode < 0) throw new Error('"E코드" 컬럼을 찾을 수 없습니다.');
 
   const map = {};
+  const order = []; // 가맹점현황 파일에 나온 순서 그대로 — 추출 결과도 이 순서로 배열한다.
   for (let i = headerRowIdx + 1; i < json.length; i++) {
     const r = json[i];
     const code = String(r[cCode] ?? '').trim();
     if (!code) continue;
+    if (!(code in map)) order.push(code);
     map[code] = { name: cName >= 0 ? String(r[cName] ?? '').trim() : '', team: cTeam >= 0 ? String(r[cTeam] ?? '').trim() : '' };
   }
-  return map;
+  return { map, order };
 }
 
 setupDropZone('storeInfoDropZone', 'storeInfoFileInput', async (file) => {
@@ -3046,8 +3050,8 @@ setupDropZone('storeInfoDropZone', 'storeInfoFileInput', async (file) => {
   statusEl.innerHTML = `<span class="pill pill-neutral">읽는 중...</span>`;
   try {
     const json = await readWorkbook(file);
-    const map = buildStoreInfoMapFromRows(json);
-    await saveStoreInfoMap(map);
+    const { map, order } = buildStoreInfoMapFromRows(json);
+    await saveStoreInfoMap(map, order);
   } catch (err) {
     statusEl.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`;
   }
@@ -3078,27 +3082,63 @@ async function loadCategoryQtyForRange(startDate, endDate) {
 // 분류(+세부구분1 필터)별로 "매장 × 날짜" 피벗 시트 데이터(2차원 배열, aoa)를 만든다.
 // 사용자가 쓰던 엑셀과 같은 레이아웃: 1행 헤더(D코드,,E코드,,매장명,팀,,날짜1,날짜2,...),
 // 그 아래로 매장별 한 줄씩.
-function buildPivotSheetAOA(dates, byDate, catFilter, detail1Filter) {
-  const storeCodes = Object.keys(storeInfoMap).sort();
+// 분류(+세부구분1) 조건에 맞는 "매장 × 날짜" 피벗 시트를 만든다. matchFn(entry)이
+// true를 반환하는 항목만 그 날짜 합계에 포함시킨다 — 홀피자처럼 "조각피자가 아닌
+// 전부" 같은 조건도 matchFn 하나로 표현할 수 있게 일반화했다.
+// 구조: 1행은 빈 줄(사용자가 쓰던 원본 파일과 같은 여백), 2행이 헤더(D코드/E코드/
+// 매장명/팀/날짜...), 3행부터 매장별 데이터(가맹점현황 파일에 나온 순서 그대로),
+// 그 아래 3줄은 날짜 컬럼별 합계/판매점포수/평균 수식.
+function buildPivotSheet(dates, byDate, matchFn) {
+  const codes = storeInfoOrder.filter(c => storeInfoMap[c]);
   const header = ['D코드', null, 'E코드', null, '매장명', '팀', null, ...dates.map(toExcelSerialDate)];
-  const rows = [header];
-  storeCodes.forEach(code => {
+  const rows = [new Array(header.length).fill(null), header]; // 1행: 빈 줄, 2행: 헤더
+
+  codes.forEach(code => {
     const info = storeInfoMap[code];
     const row = [null, null, code, null, info.name, info.team, null];
     dates.forEach(dk => {
       const entries = byDate[dk] || [];
       let sum = 0;
-      entries.forEach(e => {
-        if (e.storeCode !== code) return;
-        if (e.cat !== catFilter) return;
-        if (detail1Filter != null && e.detail1 !== detail1Filter) return;
-        sum += e.qty;
-      });
+      entries.forEach(e => { if (e.storeCode === code && matchFn(e)) sum += e.qty; });
       row.push(sum);
     });
     rows.push(row);
   });
-  return rows;
+
+  const dataStartRow = 3; // 엑셀 1-based 행 번호 — 1행은 빈 줄, 2행은 헤더, 3행부터 매장 데이터
+  const dataEndRow = dataStartRow + codes.length - 1;
+  const sumRow = new Array(header.length).fill(null); sumRow[4] = '판매수량';
+  const countRow = new Array(header.length).fill(null); countRow[4] = '판매점포수';
+  const avgRow = new Array(header.length).fill(null); avgRow[4] = '평균수량';
+  rows.push(sumRow, countRow, avgRow);
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+
+  // 날짜 헤더 셀에 날짜 표시 형식을 입힌다(엑셀 일련번호가 숫자로만 보이지 않도록).
+  const headerRowIdx0 = 1; // aoa_to_sheet은 0-based — 2번째 행(인덱스1)이 헤더
+  dates.forEach((_, i) => {
+    const colIdx = 7 + i; // H열(인덱스7)부터 날짜
+    const cellRef = XLSX.utils.encode_cell({ r: headerRowIdx0, c: colIdx });
+    if (ws[cellRef]) { ws[cellRef].t = 'n'; ws[cellRef].z = 'yyyy-mm-dd'; }
+  });
+
+  // 하단 요약 3행에 실제 수식을 넣는다(값이 아니라 수식 — 나중에 데이터가 바뀌어도
+  // 자동으로 다시 계산되도록).
+  const sumRowNum = dataEndRow + 1, countRowNum = dataEndRow + 2, avgRowNum = dataEndRow + 3;
+  dates.forEach((_, i) => {
+    const col = XLSX.utils.encode_col(7 + i);
+    const sumRef = XLSX.utils.encode_cell({ r: sumRowNum - 1, c: 7 + i });
+    const countRef = XLSX.utils.encode_cell({ r: countRowNum - 1, c: 7 + i });
+    const avgRef = XLSX.utils.encode_cell({ r: avgRowNum - 1, c: 7 + i });
+    ws[sumRef] = { t: 'n', f: `SUM(${col}${dataStartRow}:${col}${dataEndRow})` };
+    ws[countRef] = { t: 'n', f: `COUNTIF(${col}${dataStartRow}:${col}${dataEndRow},">0")` };
+    ws[avgRef] = { t: 'n', f: `IF(${countRef}=0,0,${sumRef}/${countRef})` };
+  });
+  // 시트 범위(!ref)를 요약행까지 포함하도록 넓혀준다(aoa_to_sheet이 자동으로
+  // 잡아주지만, 수식 셀을 나중에 끼워 넣은 것들도 범위에 포함되도록 명시적으로 재계산).
+  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: avgRowNum - 1, c: 7 + dates.length - 1 } });
+
+  return ws;
 }
 
 async function downloadCategoryExtract() {
@@ -3113,45 +3153,23 @@ async function downloadCategoryExtract() {
 
     // "조각피자"는 낱개(싱글)로 파는 것, 그 외 피자 세부구분1은 홀피자로 본다.
     const sheets = [
-      { name: '버거 수량', cat: '버거', detail1: null },
-      { name: '치킨 수량', cat: '치킨', detail1: null },
-      { name: '비프 수량', cat: '비프', detail1: null },
-      { name: '피자 수량', cat: '피자', detail1: null },
-      { name: '피자 수량(싱글)', cat: '피자', detail1: '조각피자' },
-      { name: '피자 수량(홀피자)', cat: '피자', detail1: '__NOT_SLICE__' }, // 아래에서 특별 처리
+      { name: '버거 수량', match: e => e.cat === '버거' },
+      { name: '치킨 수량', match: e => e.cat === '치킨' },
+      { name: '비프 수량', match: e => e.cat === '비프' },
+      { name: '피자 수량', match: e => e.cat === '피자' },
+      { name: '피자 수량(싱글)', match: e => e.cat === '피자' && e.detail1 === '조각피자' },
+      { name: '피자 수량(홀피자)', match: e => e.cat === '피자' && e.detail1 !== '조각피자' },
     ];
 
     const wb = XLSX.utils.book_new();
     sheets.forEach(s => {
-      let aoa;
-      if (s.detail1 === '__NOT_SLICE__') {
-        // 홀피자 = 피자이면서 세부구분1이 "조각피자"가 아닌 것 전부(빈 값 포함)
-        const storeCodes = Object.keys(storeInfoMap).sort();
-        const header = ['D코드', null, 'E코드', null, '매장명', '팀', null, ...dates.map(toExcelSerialDate)];
-        aoa = [header];
-        storeCodes.forEach(code => {
-          const info = storeInfoMap[code];
-          const row = [null, null, code, null, info.name, info.team, null];
-          dates.forEach(dk => {
-            const entries = byDate[dk] || [];
-            let sum = 0;
-            entries.forEach(e => {
-              if (e.storeCode === code && e.cat === '피자' && e.detail1 !== '조각피자') sum += e.qty;
-            });
-            row.push(sum);
-          });
-          aoa.push(row);
-        });
-      } else {
-        aoa = buildPivotSheetAOA(dates, byDate, s.cat, s.detail1);
-      }
-      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      const ws = buildPivotSheet(dates, byDate, s.match);
       XLSX.utils.book_append_sheet(wb, ws, s.name);
     });
 
     const dateStr = nowISO().slice(0, 10);
     XLSX.writeFile(wb, `매장별_분류_판매건수_${dateStr}.xlsx`);
-    statusEl.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${dates.length}개 날짜(${dates[0]} ~ ${dates[dates.length-1]}) · ${Object.keys(storeInfoMap).length}개 매장 · 6개 시트 다운로드했습니다.</span>`;
+    statusEl.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${dates.length}개 날짜(${dates[0]} ~ ${dates[dates.length-1]}) · ${storeInfoOrder.length}개 매장 · 6개 시트 다운로드했습니다.</span>`;
   } catch (err) {
     statusEl.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`;
   }
