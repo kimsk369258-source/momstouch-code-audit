@@ -378,7 +378,7 @@ import {
   setPersistence, browserLocalPersistence,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
-  getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs,
+  getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, writeBatch,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
   getStorage, ref, uploadBytes, getDownloadURL,
@@ -543,6 +543,37 @@ async function storageSet(key, value) {
 async function storageDelete(key) {
   try { await deleteDoc(resolveDocRef(key)); return true; }
   catch (e) { console.error('storage delete failed', key, e); return false; }
+}
+
+// 여러 키를 한 번에 저장한다(Firestore writeBatch). 매장별로 문서를 하나씩 순서대로
+// 저장(storageSet 반복 호출)하면 매장마다 네트워크 왕복이 따로 생겨서, 매장이
+// 1,000개가 넘으면 수 분씩 걸린다. writeBatch는 최대 500개 쓰기를 한 번의 네트워크
+// 요청으로 묶어 보내므로 훨씬 빠르다(Firestore 한도가 배치당 500개라 그 이상이면
+// 여러 배치로 나눠 보낸다 — 배치끼리는 병렬로 보내 속도를 더 높인다).
+// 실패한 개별 키를 구분할 수 있도록, 배치 하나가 실패하면 그 배치에 속한 키를
+// 전부 개별 재시도해서 어떤 키가 진짜 실패했는지 가려낸다.
+async function storageSetBatch(items) {
+  const CHUNK = 450; // Firestore 배치 한도(500)보다 살짝 여유 있게
+  const chunks = [];
+  for (let i = 0; i < items.length; i += CHUNK) chunks.push(items.slice(i, i + CHUNK));
+
+  const failedKeys = [];
+  await Promise.all(chunks.map(async chunk => {
+    try {
+      const batch = writeBatch(db);
+      chunk.forEach(({ key, value }) => { batch.set(resolveDocRef(key), { __blob: value }); });
+      await batch.commit();
+    } catch (e) {
+      console.error('storage batch set failed, retrying individually', e);
+      // 배치 전체가 실패하면(문서 하나가 이상해도 배치 전체가 실패할 수 있음),
+      // 그 배치 안의 키들만 따로 하나씩 다시 시도해서 진짜 실패한 것만 골라낸다.
+      await Promise.all(chunk.map(async ({ key, value }) => {
+        const ok = await storageSet(key, value);
+        if (!ok) failedKeys.push(key);
+      }));
+    }
+  }));
+  return failedKeys; // 빈 배열이면 전부 성공
 }
 
 // 컬렉션을 통째로 조회할 때(getDocs) 쓰는 헬퍼 — storageSet으로 저장된 문서는
@@ -2970,14 +3001,18 @@ async function handleCumulativeOrderFile(file, json) {
   const toDelete = oldStoreCodes.filter(c => !storeCodes.includes(c));
 
   let saved = 0, failed = [];
-  for (const storeCode of storeCodes) {
-    statusEl.innerHTML = `<span class="pill pill-neutral">저장 중... (${saved + 1}/${storeCodes.length}) ${esc(storeCode)}</span>`;
-    const entries = Object.values(byStore[storeCode]);
-    const ok = await storageSet('orders:_cum_:' + storeCode, JSON.stringify({ date: '_cumulative_', fileName: file.name, uploadedAt: nowISO(), entries }));
-    if (ok) saved++; else failed.push(storeCode);
-  }
-  for (const storeCode of toDelete) {
-    await storageDelete('orders:_cum_:' + storeCode);
+  const writeItems = storeCodes.map(storeCode => ({
+    key: 'orders:_cum_:' + storeCode,
+    value: JSON.stringify({ date: '_cumulative_', fileName: file.name, uploadedAt: nowISO(), entries: Object.values(byStore[storeCode]) }),
+  }));
+  statusEl.innerHTML = `<span class="pill pill-neutral">저장 중... (일괄 저장, ${storeCodes.length}개 매장)</span>`;
+  const failedKeys = await storageSetBatch(writeItems);
+  saved = storeCodes.length - failedKeys.length;
+  failed = failedKeys.map(k => k.replace('orders:_cum_:', ''));
+
+  if (toDelete.length > 0) {
+    // 삭제도 순서대로 하면 느리므로 병렬로 지운다.
+    await Promise.all(toDelete.map(storeCode => storageDelete('orders:_cum_:' + storeCode)));
   }
   await storageSet('orders:_cum_index_', JSON.stringify({ storeCodes, fileName: file.name, uploadedAt: nowISO() }));
 
@@ -3138,9 +3173,7 @@ async function deleteAllCumulativeOrderDocs() {
     const idxRaw = await storageGet('orders:_cum_index_');
     if (idxRaw) storeCodes = JSON.parse(idxRaw).storeCodes || [];
   } catch (e) { /* 무시 */ }
-  for (const storeCode of storeCodes) {
-    await storageDelete('orders:_cum_:' + storeCode);
-  }
+  await Promise.all(storeCodes.map(storeCode => storageDelete('orders:_cum_:' + storeCode)));
   await storageDelete('orders:_cum_index_');
 }
 
