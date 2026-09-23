@@ -2642,6 +2642,7 @@ async function reclassifyOneDateSilently(date) {
   const items = [];
   const categoryQtyMap = {};
   const rows = json.slice(1);
+  const parentNameByCode = {}, childrenByCode = {};
   rows.forEach(r => {
     const majorCode = cols.majorCode >= 0 ? normCode(r[cols.majorCode]) : '';
     const majorName = cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '';
@@ -2679,12 +2680,19 @@ async function reclassifyOneDateSilently(date) {
       productCode: productCodeVal, sideProductCode: sideProductCodeVal, productName,
       gubun: gubunVal,
       revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
-      cat,
+      cat, salesCat,
     });
+    // 세트명/구성품 참고정보도 최초 처리 때와 똑같이 모은다.
+    if (productCodeVal && gubunVal === '사이드모상품' && !parentNameByCode[productCodeVal]) parentNameByCode[productCodeVal] = productName;
+    if (productCodeVal && gubunVal === '사이드상품') {
+      if (!childrenByCode[productCodeVal]) childrenByCode[productCodeVal] = new Map();
+      const ck = sideProductCodeVal + '|' + productName;
+      if (!childrenByCode[productCodeVal].has(ck)) childrenByCode[productCodeVal].set(ck, { sideProductCode: sideProductCodeVal, productName, cat, detail1, detail2 });
+    }
   });
 
   const oldReport = dailyIndex.find(d => d.date === date);
-  const newReport = buildDateReport(date, items);
+  const newReport = buildDateReport(date, items, parentNameByCode, childrenByCode);
   newReport.fileName = oldReport ? oldReport.fileName : date;
 
   const blob = buildExportBlob(header, rows);
@@ -2742,6 +2750,7 @@ async function reclassifyAndRedownload(date, btnEl) {
 
     const items = [];
     const rows = json.slice(1);
+    const parentNameByCode = {}, childrenByCode = {};
     rows.forEach(r => {
       const majorCode = cols.majorCode >= 0 ? normCode(r[cols.majorCode]) : '';
       const majorName = cols.majorName >= 0 ? String(r[cols.majorName] ?? '').trim() : '';
@@ -2771,12 +2780,18 @@ async function reclassifyAndRedownload(date, btnEl) {
         productCode: productCodeVal, sideProductCode: sideProductCodeVal, productName,
         gubun: gubunVal,
         revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
-        cat,
+        cat, salesCat,
       });
+      if (productCodeVal && gubunVal === '사이드모상품' && !parentNameByCode[productCodeVal]) parentNameByCode[productCodeVal] = productName;
+      if (productCodeVal && gubunVal === '사이드상품') {
+        if (!childrenByCode[productCodeVal]) childrenByCode[productCodeVal] = new Map();
+        const ck = sideProductCodeVal + '|' + productName;
+        if (!childrenByCode[productCodeVal].has(ck)) childrenByCode[productCodeVal].set(ck, { sideProductCode: sideProductCodeVal, productName, cat, detail1, detail2 });
+      }
     });
 
     const oldReport = dailyIndex.find(d => d.date === date);
-    const newReport = buildDateReport(date, items);
+    const newReport = buildDateReport(date, items, parentNameByCode, childrenByCode);
     newReport.fileName = oldReport ? oldReport.fileName : date;
 
     const blob = buildExportBlob(header, rows);
