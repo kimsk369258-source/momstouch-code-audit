@@ -632,6 +632,47 @@ async function storageSetBatch(items) {
   return failedKeys; // 빈 배열이면 전부 성공
 }
 
+// 1MB를 넘을 수 있는 큰 값(기준표 등)을 여러 문서로 나눠 저장/조회한다.
+// Firestore 문서 하나는 최대 약 1MB라, 기준표가 커지면(월별 파일로 코드가 많이
+// 등록되는 등) "__blob is longer than 1048487 bytes" 에러로 저장이 막힌다.
+// 본문을 조각(meta/{key}__part0, __part1 …)으로 나누고, meta/{key}에는 조각 개수만
+// 적어둔다. 전부 writeBatch 한 번으로 써서, 다른 사람이 읽는 도중에 조각이 섞이는
+// 일이 없다. 예전처럼 문서 하나(__blob)로 저장된 기준표도 그대로 읽힌다.
+const LARGE_PART_CHARS = 250000; // 한글 3바이트 기준으로도 ~750KB라 1MB 한도 안쪽
+function partDocRef(key, i) { return doc(db, 'meta', key + '__part' + i); }
+async function storageGetLarge(key) {
+  try {
+    const snap = await getDoc(resolveDocRef(key));
+    if (!snap.exists()) return null;
+    const data = snap.data();
+    if (typeof data.__parts === 'number') {
+      const parts = await Promise.all(Array.from({ length: data.__parts }, (_, i) => getDoc(partDocRef(key, i))));
+      if (parts.some(p => !p.exists())) throw new Error('기준표 조각 일부가 없습니다.');
+      return parts.map(p => p.data().__blob || '').join('');
+    }
+    if (typeof data.__blob === 'string') return data.__blob;
+    return JSON.stringify(data);
+  } catch (e) { console.error('storage get(large) failed', key, e); return null; }
+}
+async function storageSetLarge(key, value) {
+  try {
+    let prevParts = 0;
+    try {
+      const prev = await getDoc(resolveDocRef(key));
+      if (prev.exists() && typeof prev.data().__parts === 'number') prevParts = prev.data().__parts;
+    } catch (e) { /* 이전 조각 수를 몰라도 저장은 진행 */ }
+    const parts = [];
+    for (let i = 0; i < value.length; i += LARGE_PART_CHARS) parts.push(value.slice(i, i + LARGE_PART_CHARS));
+    if (parts.length === 0) parts.push('');
+    const batch = writeBatch(db);
+    parts.forEach((p, i) => batch.set(partDocRef(key, i), { __blob: p }));
+    for (let i = parts.length; i < prevParts; i++) batch.delete(partDocRef(key, i)); // 줄어든 만큼 남은 옛 조각 정리
+    batch.set(resolveDocRef(key), { __parts: parts.length, __size: value.length });
+    await batch.commit();
+    return true;
+  } catch (e) { console.error('storage set(large) failed', key, e); return false; }
+}
+
 // 컬렉션을 통째로 조회할 때(getDocs) 쓰는 헬퍼 — storageSet으로 저장된 문서는
 // { __blob: "JSON문자열" } 형태이므로 그 안의 실제 데이터를 꺼내 돌려준다.
 // 예전 방식(값을 그대로 문서 필드로 풀어서 저장)으로 저장된 문서도 계속 지원한다.
@@ -850,7 +891,7 @@ function recomputeMasterFromSnapshot() {
 }
 
 async function loadMaster() {
-  const raw = await storageGet('master');
+  const raw = await storageGetLarge('master');
   if (!raw) { masterRawSnapshot = null; masterKeywordRules = []; masterUpdatedAt = null; recomputeMasterFromSnapshot(); renderMasterStatus(); renderMasterTable(); renderKeywordRules(); return; }
   try {
     const obj = JSON.parse(raw);
@@ -883,7 +924,7 @@ async function saveMaster(rawSnapshot, keywordRules) {
   const snapshot = rawSnapshot !== undefined ? rawSnapshot : masterRawSnapshot;
   const rules = keywordRules !== undefined ? keywordRules : masterKeywordRules;
   const payload = JSON.stringify({ updatedAt, rawSnapshot: snapshot, keywordRules: rules });
-  const ok = await storageSet('master', payload);
+  const ok = await storageSetLarge('master', payload);
   if (!ok) throw new Error('Firebase에 저장하지 못했습니다. 브라우저 개발자 도구(F12) 콘솔에서 에러 메시지를 확인해주세요.');
   masterRawSnapshot = snapshot;
   masterKeywordRules = rules;
