@@ -277,10 +277,10 @@
   <section class="panel" id="panel-daily">
     <div class="card">
       <h2>일별 매출 원본 파일 업로드</h2>
-      <div class="card-sub">POS에서 받은 "일별상품매출현황(매장별)" 원본 파일 8~10개를 한 번에 선택하면, 자동으로 합치고 분류한 뒤 기준표와 대조합니다. 별도 합치기 툴을 거칠 필요가 없습니다. 이미 내려받은 "_분류합본" 파일을 수정 후 다시 올려도 됩니다 — 자동으로 알아보고 재분류합니다.</div>
+      <div class="card-sub">POS에서 받은 "일별상품매출현황(매장별)" 원본 파일 8~10개를 한 번에 선택하면, 자동으로 합치고 분류한 뒤 기준표와 대조합니다. 별도 합치기 툴을 거칠 필요가 없습니다. 이미 내려받은 "_분류합본" 파일을 수정 후 다시 올려도 됩니다 — 자동으로 알아보고 재분류합니다. 월 단위로 합칠 때는 "월별상품매출현황(매장별)" 파일(_1, _2 … 나뉜 파일 포함)을 올리면 "년월" 기준으로 한 달이 하나로 합쳐져 월합계 이력으로 저장됩니다(일별·월별 파일은 따로 올려주세요).</div>
       <div class="drop-zone" id="dailyDropZone">
         <div class="dz-icon">🧾</div>
-        <div class="dz-text">일별상품매출현황(매장별) 원본 파일 여러 개를 여기로 드래그하거나 클릭 (여러 개 동시 선택 가능)</div>
+        <div class="dz-text">일별 또는 월별상품매출현황(매장별) 원본 파일 여러 개를 여기로 드래그하거나 클릭 (여러 개 동시 선택 가능)</div>
         <div class="dz-hint">.xlsx / .xls / .csv · 여러 파일 선택 가능</div>
       </div>
       <input type="file" id="dailyFileInput" accept=".xlsx,.xls,.csv" multiple>
@@ -394,9 +394,16 @@
           <label style="display:block; font-size:12px; color:#6b7280; margin-bottom:4px;">종료일</label>
           <input type="date" id="extractEndDate" class="search-input">
         </div>
+        <div>
+          <label style="display:block; font-size:12px; color:#6b7280; margin-bottom:4px;">집계 단위</label>
+          <select id="extractUnit" class="search-input">
+            <option value="day">일별 (열 = 날짜)</option>
+            <option value="month">월별 (열 = 월)</option>
+          </select>
+        </div>
         <button class="btn btn-primary btn-sm" onclick="downloadCategoryExtract()">📥 전체 분류 시트로 한번에 다운로드</button>
       </div>
-      <div class="note" style="margin-top:6px;">버거/치킨/비프/피자(전체)/피자(싱글=조각피자)/피자(홀피자) 총 6개 시트가 한 엑셀 파일로 만들어집니다. 기간을 비워두면 저장된 전체 기간이 포함됩니다.</div>
+      <div class="note" style="margin-top:6px;">버거/치킨/비프/피자(전체)/피자(싱글=조각피자)/피자(홀피자) 총 6개 시트가 한 엑셀 파일로 만들어집니다. 기간을 비워두면 저장된 전체 기간이 포함됩니다. 월별로 뽑으면 월합계로 올린 달은 그 값을, 월합계가 없는 달은 저장된 일별 데이터를 합산해서 채웁니다(해당 월의 시작~종료일이 기간에 걸리면 포함).</div>
       <div class="note">※ 이 기능을 새로 추가하기 전에 저장된 날짜는 매장×분류별 판매건수가 따로 저장되어 있지 않아 추출에 포함되지 않습니다. "③ 이력" 탭의 "🔄 전체 재분류"를 한 번 실행하면 과거 날짜도 포함됩니다.</div>
       <div id="extractStatus" style="margin-top:8px;"></div>
     </div>
@@ -522,6 +529,16 @@ function dateKeyOf(v) {
   if (v instanceof Date) return formatDate(v);
   return String(v).trim().slice(0, 10);
 }
+// 월별상품매출현황의 "년월" 값(예: "2026-07", "202607", "2026.07", 엑셀 날짜)을 "YYYY-MM" 키로 맞춘다.
+function monthKeyOf(v) {
+  if (v instanceof Date) return formatDate(v).slice(0, 7);
+  const m = String(v).trim().match(/^(\d{4})\D?(\d{1,2})/);
+  return m ? `${m[1]}-${m[2].padStart(2, '0')}` : String(v).trim().slice(0, 7);
+}
+// 저장 키가 월 단위(YYYY-MM)인지 — 일 단위는 YYYY-MM-DD.
+function isMonthKey(k) { return /^\d{4}-\d{2}$/.test(String(k || '')); }
+function periodLabel(k) { return isMonthKey(k) ? `${k} (월합계)` : k; }
+function mergedFileName(k) { return `${isMonthKey(k) ? '월별' : '일별'}상품매출현황_매장별_${k}_분류합본.csv`; }
 
 function readWorkbook(file) {
   const isCsv = /\.csv$/i.test(file.name);
@@ -1350,7 +1367,8 @@ function legacyOrderItemForRow(minorCode, productName, productCode) {
 function resolveRawCols(header) {
   const idx = name => header.indexOf(name);
   return {
-    date: idx('매출일자'),
+    date: idx('매출일자') >= 0 ? idx('매출일자') : idx('년월'),
+    period: idx('매출일자') >= 0 ? 'day' : (idx('년월') >= 0 ? 'month' : ''),
     storeCode: idx('매장코드'), storeName: idx('매장명'),
     majorCode: idx('대분류코드'), majorName: idx('대분류명'),
     midCode: idx('중분류코드'), midName: idx('중분류명'),
@@ -1377,6 +1395,7 @@ async function processRawDailyFiles(fileList) {
   const fileNames = [];
   let totalRemovedSummary = 0;
   let outputHeader = null;
+  let batchPeriod = null; // 이번에 올린 파일들이 일별인지 월별인지 — 섞어서 올리면 컬럼 구성이 달라 합칠 수 없다.
   const parentNameByDate = {}; // date -> {상품코드: 사이드모상품/일반판매상품 이름} — 구성품(사이드상품) 옆에
   // 세트명을 같이 보여줘서, 수기 입력할 때 사이드모상품을 따로 찾아다닐 필요가 없게 하기 위함.
   const childrenByDate = {}; // date -> {상품코드: Map("사이드상품코드|상품명" -> {sideProductCode,productName,cat,detail1,detail2})}
@@ -1408,8 +1427,12 @@ async function processRawDailyFiles(fileList) {
     if (!outputHeader) outputHeader = hasNewestTail ? header : [...baseHeader, ...NEWEST_TAIL];
     const cols = resolveRawCols(baseHeader);
     if (cols.date < 0 || cols.minorCode < 0) {
-      throw new Error(`"${file.name}" 파일에서 "매출일자" 또는 "소분류코드" 컬럼을 찾을 수 없습니다. 일별상품매출현황(매장별) 원본 파일이 맞는지 확인해주세요.`);
+      throw new Error(`"${file.name}" 파일에서 "매출일자"(일별) 또는 "년월"(월별), 혹은 "소분류코드" 컬럼을 찾을 수 없습니다. 일별/월별상품매출현황(매장별) 원본 파일이 맞는지 확인해주세요.`);
     }
+    if (batchPeriod && batchPeriod !== cols.period) {
+      throw new Error(`일별 파일과 월별 파일을 한 번에 섞어서 올릴 수 없습니다("${file.name}"). 일별은 일별끼리, 월별은 월별끼리 따로 올려주세요.`);
+    }
+    batchPeriod = cols.period;
 
     json.slice(1).forEach(rFull => {
       const r = tailLenToStrip > 0 ? rFull.slice(0, -tailLenToStrip) : rFull;
@@ -1435,7 +1458,7 @@ async function processRawDailyFiles(fileList) {
       // 보정값은 기준표에 명시된 값을 최우선으로 쓰고, 없을 때만 이름 기반 추정치를 쓴다.
       // '제외' 상품은 소진량 추적 대상이 아니므로 보정값을 항상 빈 값으로 둔다.
       const factor = cat === '제외' ? '' : (masterFactor != null ? masterFactor : guessedFactor);
-      const dk = dateKeyOf(dv);
+      const dk = cols.period === 'month' ? monthKeyOf(dv) : dateKeyOf(dv);
 
       // 세트(사이드모상품/일반판매상품)의 이름을 상품코드 기준으로 기록해둔다 —
       // 나중에 같은 상품코드의 사이드상품(구성품)을 수기 입력할 때, 위에 참고용
@@ -1475,7 +1498,9 @@ async function processRawDailyFiles(fileList) {
         const qtySold = cols.qty >= 0 ? toNum(r[cols.qty]) : 0;
         if (qtySold) {
           const orderItems = orderItemsForRow(minorCodeVal, majorName, midName, productName, minorNameRaw, productCodeVal, sideProductCodeVal, gubunVal);
-          orderItems.forEach(oi => {
+          // 월합계 데이터는 재고(소진량) 추적에 넣지 않는다 — 같은 달의 일별 데이터와
+          // 겹치면 판매가 두 번 차감되기 때문. 재고는 일별 업로드 기준으로만 계산한다.
+          if (cols.period !== 'month') orderItems.forEach(oi => {
             if (!consumptionByDate[dk]) consumptionByDate[dk] = {};
             const key = storeCodeVal + '|' + oi.name;
             if (!consumptionByDate[dk][key]) consumptionByDate[dk][key] = { storeCode: storeCodeVal, storeName: storeNameVal, orderItem: oi.name, qty: 0 };
@@ -2577,7 +2602,8 @@ async function saveDayReport(date, btnEl) {
       await saveCatQtyForDate(date, entries);
     }
 
-    alert(`${date} 대조 결과를 저장했습니다. '③ 이력' 탭에서 확인할 수 있습니다.${exportNote}`);
+    const monthNote = isMonthKey(date) ? '\n(월합계 데이터는 데이터 추출(월별)에는 쓰이고, 발주/재고의 판매 소진량에는 반영되지 않습니다 — 재고는 일별 데이터 기준입니다.)' : '';
+    alert(`${periodLabel(date)} 대조 결과를 저장했습니다. '③ 이력' 탭에서 확인할 수 있습니다.${monthNote}${exportNote}`);
     await loadDailyIndex();
   } finally {
     if (btnEl) { btnEl.disabled = false; btnEl.textContent = originalText; }
@@ -2596,14 +2622,14 @@ async function downloadMergedFile(date, btnEl) {
       // 브라우저가 버튼 상태를 먼저 그리도록 한 틱 양보한 뒤 무거운 작업 시작
       await new Promise(r => setTimeout(r, 30));
       const blob = buildExportBlob(currentMergedHeader, currentMergedRowsByDate[date]);
-      triggerDownload(blob, `일별상품매출현황_매장별_${date}_분류합본.csv`);
+      triggerDownload(blob, mergedFileName(date));
       return;
     }
     if (btnEl) btnEl.textContent = '받아오는 중...';
     const url = await getDownloadURL(exportStorageRef(date));
     const resp = await fetch(url);
     const blob = await resp.blob();
-    triggerDownload(blob, `일별상품매출현황_매장별_${date}_분류합본.csv`);
+    triggerDownload(blob, mergedFileName(date));
   } catch (err) {
     console.error('download failed', date, err);
     const msg = String(err.code || err.message || '');
@@ -2814,7 +2840,7 @@ async function reclassifyAndRedownload(date, btnEl) {
     if (!ok) throw new Error('재분류된 대조 결과 저장에 실패했습니다.');
     await saveCatQtyForDate(date, Object.values(categoryQtyMap));
 
-    triggerDownload(blob, `일별상품매출현황_매장별_${date}_분류합본.csv`);
+    triggerDownload(blob, mergedFileName(date));
     await loadDailyIndex();
     document.getElementById('historyDetail').innerHTML = '';
 
@@ -2868,7 +2894,7 @@ function renderTrendChart() {
     const h = Math.max(3, Math.round((d.anomalyCount / max) * 66));
     return `<div class="mini-bar-col" title="${d.date}: 이상 ${d.anomalyCount}건">
       <div class="mini-bar ${d.anomalyCount>0?'has-issue':''}" style="height:${h}px;"></div>
-      <div class="mini-bar-label">${d.date.slice(5)}</div>
+      <div class="mini-bar-label">${isMonthKey(d.date) ? d.date.slice(5) + '월' : d.date.slice(5)}</div>
     </div>`;
   }).join('')}</div>`;
 }
@@ -2883,7 +2909,7 @@ function renderHistoryTable() {
     sorted.forEach(d => {
       const pill = d.status === 'ok' ? `<span class="pill pill-ok">이상없음</span>` : `<span class="pill pill-bad">이상 ${d.anomalyCount}건</span>`;
       html += `<tr>
-        <td><strong>${esc(d.date)}</strong></td>
+        <td><strong>${esc(d.date)}</strong>${isMonthKey(d.date) ? ' <span class="pill pill-neutral">월합계</span>' : ''}</td>
         <td>${esc(d.fileName||'-')}</td>
         <td class="num">${fmtNum(d.totalRows)}</td>
         <td class="num">${fmtNum(d.totalRevenue)}</td>
@@ -3154,9 +3180,10 @@ function toExcelSerialDate(dateStr) {
   return Math.round((d.getTime() - epoch) / 86400000);
 }
 
-// 저장된 일별 catqty(매장×분류×세부구분1별 판매건수) 이력을 지정한 기간만큼 불러온다.
-async function loadCategoryQtyForRange(startDate, endDate) {
-  const dates = dailyIndex.map(d => d.date).filter(dt => (!startDate || dt >= startDate) && (!endDate || dt <= endDate)).sort();
+// 저장된 catqty(매장×분류×세부구분1별 판매수량) 이력을 지정한 기간만큼 불러온다.
+// keys를 넘기면 그 키(일 YYYY-MM-DD 또는 월 YYYY-MM)만 그대로 불러온다.
+async function loadCategoryQtyForRange(startDate, endDate, keys) {
+  const dates = keys || dailyIndex.map(d => d.date).filter(dt => !isMonthKey(dt) && (!startDate || dt >= startDate) && (!endDate || dt <= endDate)).sort();
   const result = {}; // date -> entries[]
   await Promise.all(dates.map(async dk => {
     // 매장별로 나뉘어 저장되어 있으므로, 먼저 인덱스로 그 날짜의 매장 목록을 찾고
@@ -3196,7 +3223,7 @@ async function loadCategoryQtyForRange(startDate, endDate) {
 // 그 아래 3줄은 날짜 컬럼별 합계/판매점포수/평균 수식.
 function buildPivotSheet(dates, byDate, matchFn) {
   const codes = storeInfoOrder.filter(c => storeInfoMap[c]);
-  const header = ['D코드', null, 'E코드', null, '매장명', '팀', null, ...dates.map(toExcelSerialDate)];
+  const header = ['D코드', null, 'E코드', null, '매장명', '팀', null, ...dates.map(k => isMonthKey(k) ? k : toExcelSerialDate(k))];
   const rows = [new Array(header.length).fill(null), header]; // 1행: 빈 줄, 2행: 헤더
 
   codes.forEach(code => {
@@ -3225,7 +3252,7 @@ function buildPivotSheet(dates, byDate, matchFn) {
   dates.forEach((_, i) => {
     const colIdx = 7 + i; // H열(인덱스7)부터 날짜
     const cellRef = XLSX.utils.encode_cell({ r: headerRowIdx0, c: colIdx });
-    if (ws[cellRef]) { ws[cellRef].t = 'n'; ws[cellRef].z = 'yyyy-mm-dd'; }
+    if (ws[cellRef] && !isMonthKey(dates[i])) { ws[cellRef].t = 'n'; ws[cellRef].z = 'yyyy-mm-dd'; }
   });
 
   // 하단 요약 3행에 실제 수식을 넣는다(값이 아니라 수식 — 나중에 데이터가 바뀌어도
@@ -3252,9 +3279,38 @@ async function downloadCategoryExtract() {
   if (Object.keys(storeInfoMap).length === 0) { statusEl.innerHTML = `<span class="pill pill-warn">⚠ 가맹점현황을 먼저 업로드해주세요.</span>`; return; }
   const startDate = document.getElementById('extractStartDate').value;
   const endDate = document.getElementById('extractEndDate').value;
+  const unit = (document.getElementById('extractUnit') || {}).value || 'day';
   statusEl.innerHTML = `<span class="pill pill-neutral">불러오는 중...</span>`;
   try {
-    const { dates, byDate } = await loadCategoryQtyForRange(startDate, endDate);
+    let dates, byDate, monthNote = '';
+    if (unit === 'month') {
+      // 기간에 걸리는 달 목록: 월합계로 저장된 달 + 일별 데이터가 있는 달.
+      const sM = startDate ? startDate.slice(0, 7) : '', eM = endDate ? endDate.slice(0, 7) : '';
+      const inRange = m => (!sM || m >= sM) && (!eM || m <= eM);
+      const monthKeys = new Set(dailyIndex.filter(d => isMonthKey(d.date)).map(d => d.date));
+      const dayKeysByMonth = {};
+      dailyIndex.filter(d => !isMonthKey(d.date)).forEach(d => {
+        const m = d.date.slice(0, 7);
+        (dayKeysByMonth[m] = dayKeysByMonth[m] || []).push(d.date);
+      });
+      const months = [...new Set([...monthKeys, ...Object.keys(dayKeysByMonth)])].filter(inRange).sort();
+      // 월합계가 있으면 그 달은 월합계만 쓰고(일별과 이중 집계 방지), 없으면 일별을 합산한다.
+      const loadKeys = [];
+      const fromDays = [];
+      months.forEach(m => {
+        if (monthKeys.has(m)) loadKeys.push(m);
+        else { loadKeys.push(...dayKeysByMonth[m]); fromDays.push(`${m}(일별 ${dayKeysByMonth[m].length}일 합산)`); }
+      });
+      const loaded = await loadCategoryQtyForRange(null, null, loadKeys);
+      byDate = {};
+      months.forEach(m => {
+        byDate[m] = monthKeys.has(m) ? (loaded.byDate[m] || []) : dayKeysByMonth[m].flatMap(dk => loaded.byDate[dk] || []);
+      });
+      dates = months;
+      if (fromDays.length) monthNote = ` · 월합계 없이 일별로 합산한 달: ${fromDays.join(', ')}`;
+    } else {
+      ({ dates, byDate } = await loadCategoryQtyForRange(startDate, endDate));
+    }
     if (dates.length === 0) { statusEl.innerHTML = `<span class="pill pill-warn">⚠ 해당 기간에 저장된 대조 이력이 없습니다.</span>`; return; }
 
     // "조각피자"는 낱개(싱글)로 파는 것, 그 외 피자 세부구분1은 홀피자로 본다.
@@ -3274,8 +3330,8 @@ async function downloadCategoryExtract() {
     });
 
     const dateStr = nowISO().slice(0, 10);
-    XLSX.writeFile(wb, `매장별_분류_판매건수_${dateStr}.xlsx`);
-    statusEl.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${dates.length}개 날짜(${dates[0]} ~ ${dates[dates.length-1]}) · ${storeInfoOrder.length}개 매장 · 6개 시트 다운로드했습니다.</span>`;
+    XLSX.writeFile(wb, `매장별_분류_판매건수${unit === 'month' ? '_월별' : ''}_${dateStr}.xlsx`);
+    statusEl.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${dates.length}개 ${unit === 'month' ? '월' : '날짜'}(${dates[0]} ~ ${dates[dates.length-1]}) · ${storeInfoOrder.length}개 매장 · 6개 시트 다운로드했습니다.${esc(monthNote)}</span>`;
   } catch (err) {
     statusEl.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`;
   }
