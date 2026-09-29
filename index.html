@@ -333,7 +333,7 @@
 
     <div class="card">
       <h2>가맹점별 발주(배송) 데이터 업로드</h2>
-      <div class="card-sub">거래처코드·품목코드·배송일자·배송량이 담긴 원본 파일을 올리면, 배송일자별로 자동 저장됩니다. 화/목/토 배송 기준으로 계속 누적 관리하세요.</div>
+      <div class="card-sub">거래처코드·품목코드·배송일자·배송량이 담긴 파일(또는 배송일자 컬럼이 있는 거래처별거래원장)을 올리면 배송일자별로 저장됩니다. 한 달치를 한 번에 올려도 되고, 같은 날짜를 다시 올리면 그 날짜 값만 교체됩니다. 배송일자가 없는 원장은 예전처럼 "누적"으로 저장됩니다.</div>
       <div class="drop-zone" id="orderDataDropZone">
         <div class="dz-icon">🚚</div>
         <div class="dz-text">가맹점별 발주품목 파일을 여기로 드래그하거나 클릭</div>
@@ -356,7 +356,7 @@
 
     <div class="card">
       <h2>재고 현황</h2>
-      <div class="card-sub">추적 시작일부터 지금까지 누적 입고량과 누적 판매(소진)량을 비교합니다. 배송받은 날부터 바로 판매 가능하다고 가정합니다.</div>
+      <div class="card-sub">배송일자별 입고와 일별 판매(판매수량×보정값)를 날짜순으로 따라가며 재고를 추정합니다. 배송받은 날부터 판매 가능하다고 보고, 재고가 0 아래로 내려가는 순간은 "입고로 설명 안 되는 판매"로 따로 쌓은 뒤 0부터 다시 셉니다 — 기초재고를 몰라도 시간이 지나면 추정 재고가 실제에 수렴합니다.</div>
       <div class="toolbar">
         <select id="stockStoreSelect" class="search-input" style="flex:none; min-width:220px;" onchange="renderStockTable()">
           <option value="">매장을 선택하세요</option>
@@ -364,7 +364,8 @@
         <button class="btn btn-ghost btn-sm" onclick="loadStockData()">🔄 새로고침</button>
       </div>
       <div id="stockTableWrap"><div class="empty">매장을 선택하면 재고 현황이 표시됩니다.</div></div>
-      <div class="note">※ 재고 = (선택 매장의 발주품목별 누적 배송량) − (같은 매장의 판매 데이터에서 그 발주품목으로 매칭된 판매수량×보정값의 누적). 저장된 일별 대조/발주 이력이 있는 날짜만 집계에 포함됩니다.</div>
+      <div class="note">※ 충족률 = 최근 4주 입고(개) ÷ 최근 4주 판매(개). 90% 미만이 계속되면 과소발주 또는 사입 의심, 130% 초과는 과다발주입니다. 추적 시작 후 7일 안의 부족분은 기초재고로 봅니다.</div>
+      <div class="note">※ 이 기능 업데이트 전에 저장한 판매 데이터는 한 번 옮겨야 재고 계산에 포함됩니다. <button class="btn btn-ghost btn-sm" onclick="migrateConsumptionToLedger()">예전 판매 소진 데이터 옮기기</button> <span id="ledgerMigrateStatus"></span></div>
     </div>
   </section>
 
@@ -421,6 +422,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, writeBatch,
+  query, where, FieldPath, deleteField,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
   getStorage, ref, uploadBytes, getDownloadURL,
@@ -489,6 +491,7 @@ let orderCodeEntries = [];   // [{codeName, orderCode, orderName, spec, unitsPer
 let orderSpecByCode = {};    // 발주코드(정규화) -> {unitsPerPack, packUnit} — 재고 환산용
 let orderCodeUpdatedAt = null;
 let ordersIndex = [];        // [{date, fileName, uploadedAt, storeCount, itemCount, totalQty}]
+function setOrdersIndex(v) { ordersIndex = v; }
 
 // ==========================================================================
 // Helpers
@@ -2623,19 +2626,11 @@ async function saveDayReport(date, btnEl) {
     // 발주품목 소진량(재고 추적용)도 함께 저장한다. 매장이 1,500개가 넘으면 하루치를
     // 문서 하나로 합쳤을 때 Firestore 문서당 1MB 용량 한도를 넘을 수 있어서(실제로
     // 발생함), 발주 데이터 때와 같은 방식으로 매장별 문서로 나눠 저장한다.
-    if (currentConsumptionByDate[date]) {
-      const byStore = {};
-      Object.values(currentConsumptionByDate[date]).forEach(e => {
-        if (!byStore[e.storeCode]) byStore[e.storeCode] = [];
-        byStore[e.storeCode].push(e);
-      });
-      const storeCodes = Object.keys(byStore);
-      const writeItems = storeCodes.map(sc => ({
-        key: 'consumption:' + date + '::' + sc,
-        value: JSON.stringify({ date, storeCode: sc, entries: byStore[sc] }),
-      }));
-      await storageSetBatch(writeItems);
-      await storageSet('consumption_index:' + date, JSON.stringify({ date, storeCodes }));
+    // 매장×월 원장(sold_m)에 일자별로 기록한다(재고/발주 예측용).
+    if (currentConsumptionByDate[date] && !isMonthKey(date)) {
+      if (btnEl) btnEl.textContent = '판매 소진량 저장 중...';
+      const rows = Object.values(currentConsumptionByDate[date]).map(e => ({ storeCode: e.storeCode, storeName: e.storeName, date, item: e.orderItem, qty: e.qty }));
+      await ledgerWriteRows(LEDGER_SOLD, rows);
     }
     // 매장×분류별 판매건수(데이터 추출 기능용)도 함께 저장한다.
     if (currentCategoryQtyByDate[date]) {
@@ -2905,19 +2900,28 @@ async function reclassifyAndRedownload(date, btnEl) {
 // ==========================================================================
 // HISTORY (이력) — 'daily' 컬렉션을 직접 조회 (여러 명이 동시에 써도 안전)
 // ==========================================================================
+// 여러 곳(저장 직후, 삭제 직후, 로그인 시)에서 거의 동시에 호출될 수 있다. 예전에는
+// 전역 배열을 먼저 비운 뒤 서버 응답을 기다렸다가 채웠기 때문에, 두 호출이 겹치면
+// 두 번 채워져 이력이 날짜마다 두 줄씩 보였다(서버에는 날짜당 문서 하나뿐 — 표시만 중복).
+// 지역 배열에 모은 뒤 마지막에 한 번에 바꾸고, 가장 최근 호출 결과만 반영한다.
+let dailyIndexLoadSeq = 0;
 async function loadDailyIndex() {
-  dailyIndex = [];
+  const seq = ++dailyIndexLoadSeq;
+  const list = [];
   try {
     const snap = await getDocs(collection(db, 'daily'));
     snap.forEach(d => {
       const data = unwrapDoc(d.data());
-      dailyIndex.push({
+      list.push({
         date: data.date, fileName: data.fileName, uploadedAt: data.uploadedAt,
         totalRows: data.totalRows, totalRevenue: data.totalRevenue,
         uniqueCodes: data.uniqueCodes, anomalyCount: (data.anomalies||[]).length, status: data.status,
       });
     });
-  } catch (e) { console.error('load daily index failed', e); }
+  } catch (e) { console.error('load daily index failed', e); return; }
+  if (seq !== dailyIndexLoadSeq) return; // 더 나중에 시작한 호출이 있으면 그 결과를 쓴다
+  const byDate = new Map(); list.forEach(x => byDate.set(x.date, x)); // 혹시 모를 중복 방지(날짜당 1개)
+  dailyIndex = [...byDate.values()];
   renderHistoryTab();
 }
 
@@ -3020,6 +3024,7 @@ async function deleteDayReport(date) {
   await storageDelete('daily:' + date);
   await deleteCatQtyForDate(date);
   await deleteConsumptionForDate(date);
+  try { await ledgerDeleteDate(LEDGER_SOLD, date); } catch (e) { console.error('ledger delete failed', e); }
   document.getElementById('historyDetail').innerHTML = '';
   await loadDailyIndex();
 }
@@ -3031,6 +3036,7 @@ async function resetAllHistory() {
     await deleteCatQtyForDate(d.date);
     await deleteConsumptionForDate(d.date);
   }
+  try { await ledgerDeleteAll(LEDGER_SOLD); } catch (e) { console.error('ledger reset failed', e); }
   document.getElementById('historyDetail').innerHTML = '';
   await loadDailyIndex();
 }
@@ -3379,6 +3385,135 @@ async function downloadCategoryExtract() {
 }
 
 // ==========================================================================
+// 매장×월 원장(ledger) — 일자별 입고/판매를 "매장 하나 × 한 달 = 문서 하나"로 저장
+// ==========================================================================
+// 배송일자별로 문서를 만들면 하루치(1,476개 매장 × 품목)가 1MB를 넘고, 날짜×매장별로
+// 만들면 문서 수가 1년에 수십만 개로 늘어 재고 화면이 전체를 읽느라 느려진다.
+// 그래서 recv_m(입고), sold_m(판매 소진) 컬렉션에 문서 ID "매장코드_YYYY-MM",
+// 내용 { storeCode, storeName, month, items: { 발주품목: { "DD": 수량 } } } 로 저장한다.
+// - 문서 하나 = 13개 품목 × 31일 정도라 수 KB — 1MB 한도와 무관
+// - merge 저장이라 같은 날짜를 다시 올리면 그 날짜 값만 덮어씀(읽기 없이 빠름)
+// - 재고 화면은 선택한 매장의 문서만 읽음(보통 1~3개)
+const LEDGER_RECV = 'recv_m', LEDGER_SOLD = 'sold_m';
+
+// rows: [{storeCode, storeName, date:'YYYY-MM-DD', item, qty}]
+// 파일에 들어있는 (매장, 날짜)마다 파일에 나온 모든 품목을 0부터 채워서 쓴다 —
+// 재업로드 때 예전 값이 남지 않게(그 매장·그 날짜 기준으로 완전히 교체) 하기 위함.
+async function ledgerWriteRows(coll, rows, onProgress) {
+  const itemsAll = [...new Set(rows.map(r => r.item))];
+  const byDoc = {}; const storeNames = {};
+  rows.forEach(r => {
+    const month = r.date.slice(0, 7), dd = r.date.slice(8, 10);
+    const id = r.storeCode + '_' + month;
+    if (!byDoc[id]) byDoc[id] = { storeCode: r.storeCode, storeName: r.storeName || '', month, items: {}, days: new Set() };
+    const d = byDoc[id];
+    d.days.add(dd);
+    if (r.storeName) d.storeName = r.storeName;
+    if (!d.items[r.item]) d.items[r.item] = {};
+    d.items[r.item][dd] = (d.items[r.item][dd] || 0) + r.qty;
+    if (r.storeName) storeNames[r.storeCode] = r.storeName;
+    else if (!(r.storeCode in storeNames)) storeNames[r.storeCode] = '';
+  });
+  const ids = Object.keys(byDoc);
+  const CHUNK = 450; let done = 0; const failed = [];
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    const batch = writeBatch(db);
+    chunk.forEach(id => {
+      const d = byDoc[id];
+      const items = {};
+      itemsAll.forEach(item => {
+        items[item] = {};
+        d.days.forEach(dd => { items[item][dd] = (d.items[item] && d.items[item][dd]) || 0; });
+      });
+      batch.set(doc(db, coll, id), { storeCode: d.storeCode, storeName: d.storeName, month: d.month, items }, { merge: true });
+    });
+    try { await batch.commit(); } catch (e) { console.error('ledger write failed', coll, e); failed.push(...chunk); }
+    done += chunk.length;
+    if (onProgress) onProgress(done, ids.length);
+  }
+  // 매장 목록(재고 화면 선택 상자용) — 이름이 있는 것만 갱신
+  const named = {}; Object.entries(storeNames).forEach(([c, n]) => { named[c] = n; });
+  try { await setDoc(doc(db, 'meta', 'ledger_stores'), { stores: named }, { merge: true }); } catch (e) { console.error('ledger stores save failed', e); }
+  return { docCount: ids.length, failed };
+}
+
+// 특정 날짜 하루치를 원장에서 지운다(그 달의 문서들 중 그 날짜가 있는 것만).
+async function ledgerDeleteDate(coll, date) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+  const month = date.slice(0, 7), dd = date.slice(8, 10);
+  const snap = await getDocs(query(collection(db, coll), where('month', '==', month)));
+  const targets = [];
+  snap.forEach(d => {
+    const items = (d.data() || {}).items || {};
+    const paths = Object.keys(items).filter(it => items[it] && dd in items[it]);
+    if (paths.length) targets.push({ ref: d.ref, paths });
+  });
+  for (let i = 0; i < targets.length; i += 450) {
+    const batch = writeBatch(db);
+    targets.slice(i, i + 450).forEach(t => {
+      const args = [];
+      t.paths.forEach(it => { args.push(new FieldPath('items', it, dd), deleteField()); });
+      batch.update(t.ref, ...args);
+    });
+    await batch.commit();
+  }
+}
+
+async function ledgerDeleteAll(coll) {
+  const snap = await getDocs(collection(db, coll));
+  const refs = []; snap.forEach(d => refs.push(d.ref));
+  for (let i = 0; i < refs.length; i += 450) {
+    const batch = writeBatch(db);
+    refs.slice(i, i + 450).forEach(r => batch.delete(r));
+    await batch.commit();
+  }
+}
+
+// 한 매장의 원장 → { item: { 'YYYY-MM-DD': qty } }
+async function ledgerLoadStore(coll, storeCode) {
+  const snap = await getDocs(query(collection(db, coll), where('storeCode', '==', storeCode)));
+  const out = {}; let storeName = '';
+  snap.forEach(d => {
+    const data = d.data() || {};
+    if (data.storeName) storeName = data.storeName;
+    Object.entries(data.items || {}).forEach(([item, days]) => {
+      if (!out[item]) out[item] = {};
+      Object.entries(days || {}).forEach(([dd, q]) => { out[item][`${data.month}-${dd}`] = Number(q) || 0; });
+    });
+  });
+  return { byItem: out, storeName };
+}
+
+// 예전 방식(날짜×매장별 consumption 문서)으로 저장된 판매 소진 데이터를 원장으로 옮긴다.
+async function migrateConsumptionToLedger() {
+  const el = document.getElementById('ledgerMigrateStatus');
+  if (!confirm('예전 방식으로 저장된 판매 소진 데이터를 새 원장(매장×월)으로 옮깁니다. 한 번만 하면 됩니다. 진행할까요?')) return;
+  el.innerHTML = `<span class="pill pill-neutral">예전 데이터 읽는 중...</span>`;
+  try {
+    const snap = await getDocs(collection(db, 'consumption'));
+    const rows = [];
+    snap.forEach(d => {
+      const data = unwrapDoc(d.data());
+      if (!data || !/^\d{4}-\d{2}-\d{2}$/.test(data.date || '')) return;
+      (data.entries || []).forEach(e => rows.push({ storeCode: e.storeCode, storeName: e.storeName, date: data.date, item: e.orderItem, qty: e.qty }));
+    });
+    if (rows.length === 0) { el.innerHTML = `<span class="pill pill-warn">옮길 예전 데이터가 없습니다.</span>`; return; }
+    // 날짜별로 나눠 써야 "파일에 나온 품목 0 채우기"가 날짜 단위로 올바르게 적용된다.
+    const byDate = {}; rows.forEach(r => { (byDate[r.date] = byDate[r.date] || []).push(r); });
+    const dates = Object.keys(byDate).sort(); let n = 0;
+    for (const dt of dates) {
+      await ledgerWriteRows(LEDGER_SOLD, byDate[dt]);
+      n++; el.innerHTML = `<span class="pill pill-neutral">옮기는 중... ${n}/${dates.length}일</span>`;
+    }
+    el.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${dates.length}일치(${dates[0]} ~ ${dates[dates.length-1]}) 판매 소진 데이터를 옮겼습니다.</span>`;
+  } catch (err) {
+    el.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`;
+  }
+}
+
+
+// ==========================================================================
 // 발주/재고 — 가맹점별 발주(배송) 데이터
 // ==========================================================================
 function resolveOrderDataCols(header) {
@@ -3487,6 +3622,37 @@ async function handleCumulativeOrderFile(file, json) {
   await loadOrdersIndex();
 }
 
+// 배송일자별 입고 데이터를 원장(recv_m)에 저장하고, 배송일자 목록(meta/recv_dates)을 갱신한다.
+// byDate: { date: { "매장|품목": {storeCode, storeName, orderItem, qty} } }
+async function saveDatedOrders(file, byDate, statusEl) {
+  const rows = [];
+  const summary = {};
+  Object.entries(byDate).forEach(([dk, m]) => {
+    const entries = Object.values(m);
+    entries.forEach(e => rows.push({ storeCode: e.storeCode, storeName: e.storeName, date: dk, item: e.orderItem, qty: e.qty }));
+    summary[dk] = {
+      fileName: file.name, uploadedAt: nowISO(),
+      storeCount: new Set(entries.map(e => e.storeCode)).size,
+      itemCount: new Set(entries.map(e => e.orderItem)).size,
+      totalQty: entries.reduce((s, e) => s + e.qty, 0),
+    };
+  });
+  const { failed } = await ledgerWriteRows(LEDGER_RECV, rows, (done, total) => {
+    if (statusEl) statusEl.innerHTML = `<span class="pill pill-neutral">저장 중... 매장·월 문서 ${done}/${total}</span>`;
+  });
+  await setDoc(doc(db, 'meta', 'recv_dates'), { dates: summary }, { merge: true });
+  return failed.length;
+}
+
+// 2단 헤더 원장 양식(1행: 거래처정보/물류배송…, 2행: 컬럼명)에 배송일자 컬럼이 있으면
+// 그 위치를 돌려준다. 없으면 -1(→ 예전처럼 날짜 없는 누적으로 처리).
+function findDateColInCumulativeFormat(json) {
+  const row2 = (json[1] || []).map(v => String(v ?? '').replace(/\s/g, ''));
+  let i = row2.findIndex(v => v === '배송일자' || v === '배송일');
+  if (i < 0) i = row2.findIndex(v => /배송일|출고일|일자/.test(v));
+  return i;
+}
+
 async function handleOrderDataFile(file) {
   const statusEl = document.getElementById('orderDataStatus');
   if (orderCodeEntries.length === 0) {
@@ -3498,7 +3664,34 @@ async function handleOrderDataFile(file) {
     const json = await readWorkbook(file);
     if (json.length < 2) throw new Error('데이터가 없는 파일입니다.');
     if (looksLikeCumulativeOrderFormat(json)) {
-      await handleCumulativeOrderFile(file, json);
+      const dateCol = findDateColInCumulativeFormat(json);
+      if (dateCol < 0) { await handleCumulativeOrderFile(file, json); return; }
+      // 같은 원장 양식인데 배송일자가 있는 경우 — 위치 기준(A/B/G/H/P)으로 읽고 날짜별로 저장.
+      statusEl.innerHTML = `<span class="pill pill-neutral">분석 중...</span>`;
+      const byDate = {}; const unmatched = new Set();
+      for (let i = 2; i < json.length; i++) {
+        const r = json[i];
+        const storeCode = String(r[0] ?? '').trim();
+        if (!storeCode || storeCode.startsWith('<')) continue;
+        const dv = r[dateCol];
+        if (dv === '' || dv == null) continue;
+        const orderCode = normCode(r[6]);
+        const codeName = orderCodeMap[orderCode];
+        if (!codeName) { if (orderCode) unmatched.add(orderCode); continue; }
+        const dk = orderDeliveryDateKey(dv);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dk)) continue;
+        if (!byDate[dk]) byDate[dk] = {};
+        const key = storeCode + '|' + codeName;
+        if (!byDate[dk][key]) byDate[dk][key] = { storeCode, storeName: String(r[1] ?? '').trim(), orderItem: codeName, qty: 0 };
+        byDate[dk][key].qty += toNum(r[15]);
+      }
+      const dates = Object.keys(byDate).sort();
+      if (dates.length === 0) throw new Error('배송일자가 있는 행을 찾지 못했습니다.');
+      const failed = await saveDatedOrders(file, byDate, statusEl);
+      let msg = `<span class="pill ${failed ? 'pill-bad' : 'pill-ok'}">${failed ? '⚠ 일부 실패' : '✓ 완료'}</span><span>${esc(file.name)} · ${dates.length}개 배송일(${dates[0]} ~ ${dates[dates.length-1]}) 저장</span>`;
+      if (unmatched.size) msg += `<div class="note" style="margin-top:4px;">발주코드 매핑표에 없는 품목코드 ${unmatched.size}개는 제외되었습니다: ${[...unmatched].slice(0,10).join(', ')}${unmatched.size>10?' 외':''}</div>`;
+      statusEl.innerHTML = msg;
+      await loadOrdersIndex();
       return;
     }
     // 첫 몇 줄에 "거래처정보" 같은 그룹 헤더가 있을 수 있으니, "거래처코드"가 있는 줄을 찾는다.
@@ -3533,14 +3726,8 @@ async function handleOrderDataFile(file) {
     const dates = Object.keys(byDate).sort();
     if (dates.length === 0) throw new Error('처리할 수 있는 배송 데이터가 없습니다. 발주코드 매핑표에 없는 품목코드만 있을 수 있습니다.');
 
-    for (const dk of dates) {
-      const entries = Object.values(byDate[dk]);
-      const storeCount = new Set(entries.map(e => e.storeCode)).size;
-      const totalQty = entries.reduce((s, e) => s + e.qty, 0);
-      await storageSet('orders:' + dk, JSON.stringify({ date: dk, fileName: file.name, uploadedAt: nowISO(), entries }));
-    }
-
-    let msg = `<span class="pill pill-ok">✓ 완료</span><span>${esc(file.name)} · ${dates.length}개 날짜(${dates.join(', ')}) 저장</span>`;
+    const failed = await saveDatedOrders(file, byDate, statusEl);
+    let msg = `<span class="pill ${failed ? 'pill-bad' : 'pill-ok'}">${failed ? '⚠ 일부 실패' : '✓ 완료'}</span><span>${esc(file.name)} · ${dates.length}개 배송일(${dates[0]} ~ ${dates[dates.length-1]}) 저장${failed ? ` — 매장·월 문서 ${failed}개 저장 실패(다시 올리면 해당 부분만 덮어씁니다)` : ''}</span>`;
     if (unmatchedCodes.size > 0) {
       msg += `<div class="note" style="margin-top:4px;">발주코드 매핑표에 없는 품목코드 ${unmatchedCodes.size}개는 제외되었습니다: ${[...unmatchedCodes].slice(0,10).join(', ')}${unmatchedCodes.size>10?' 외':''}</div>`;
     }
@@ -3552,8 +3739,10 @@ async function handleOrderDataFile(file) {
 }
 setupDropZone('orderDataDropZone', 'orderDataFileInput', handleOrderDataFile);
 
+let ordersIndexLoadSeq = 0;
 async function loadOrdersIndex() {
-  ordersIndex = [];
+  const seq = ++ordersIndexLoadSeq;
+  const ordersIndex = []; // 지역 배열에 모은 뒤 끝에서 한 번에 교체(동시 호출 시 중복 방지)
   try {
     const snap = await getDocs(collection(db, 'orders'));
     // "누적" 데이터는 매장별로 문서가 나뉘어 저장되어 있으므로(1MB 문서 용량 한도
@@ -3578,6 +3767,11 @@ async function loadOrdersIndex() {
         totalQty: entries.reduce((s, e) => s + e.qty, 0),
       });
     });
+    try {
+      const rd = await getDoc(doc(db, 'meta', 'recv_dates'));
+      const dates = rd.exists() ? (rd.data().dates || {}) : {};
+      Object.entries(dates).forEach(([date, v]) => ordersIndex.push({ date, ledger: true, ...v }));
+    } catch (e) { console.error('load recv dates failed', e); }
     if (cumStoreCount > 0) {
       ordersIndex.push({
         date: '_cumulative_', fileName: cumFileName, uploadedAt: cumUploadedAt,
@@ -3586,7 +3780,10 @@ async function loadOrdersIndex() {
         totalQty: cumEntries.reduce((s, e) => s + e.qty, 0),
       });
     }
-  } catch (e) { console.error('load orders index failed', e); }
+  } catch (e) { console.error('load orders index failed', e); return; }
+  if (seq !== ordersIndexLoadSeq) return;
+  const seen = new Map(); ordersIndex.forEach(x => seen.set(x.date + (x.ledger ? '|L' : ''), x));
+  setOrdersIndex([...seen.values()]);
   renderOrderHistoryTable();
   populateStockStoreSelect();
 }
@@ -3607,7 +3804,7 @@ function renderOrderHistoryTable() {
         <td class="num">${d.storeCount}</td>
         <td class="num">${d.itemCount}</td>
         <td class="num">${fmtNum(d.totalQty)}</td>
-        <td><button class="btn btn-danger btn-sm" onclick="deleteOrderDay('${d.date}')">삭제</button></td>
+        <td><button class="btn btn-danger btn-sm" onclick="deleteOrderDay('${d.date}', ${d.ledger ? 'true' : 'false'})">삭제</button></td>
       </tr>`;
     });
   }
@@ -3615,10 +3812,13 @@ function renderOrderHistoryTable() {
   table.innerHTML = html;
 }
 
-async function deleteOrderDay(date) {
+async function deleteOrderDay(date, isLedger) {
   if (!confirm(`${date === '_cumulative_' ? '누적 입고' : date} 발주 이력을 삭제할까요?`)) return;
   if (date === '_cumulative_') {
     await deleteAllCumulativeOrderDocs();
+  } else if (isLedger) {
+    await ledgerDeleteDate(LEDGER_RECV, date);
+    await updateDocSafe(doc(db, 'meta', 'recv_dates'), new FieldPath('dates', date));
   } else {
     await storageDelete('orders:' + date);
   }
@@ -3637,9 +3837,15 @@ async function deleteAllCumulativeOrderDocs() {
   await storageDelete('orders:_cum_index_');
 }
 
+async function updateDocSafe(ref, fieldPath) {
+  try { const b = writeBatch(db); b.update(ref, fieldPath, deleteField()); await b.commit(); } catch (e) { console.error('field delete failed', e); }
+}
+
 async function resetAllOrderHistory() {
   if (!confirm('저장된 모든 발주 이력을 삭제할까요? 발주코드 매핑표는 삭제되지 않습니다.')) return;
+  try { await ledgerDeleteAll(LEDGER_RECV); await deleteDoc(doc(db, 'meta', 'recv_dates')); } catch (e) { console.error('ledger recv reset failed', e); }
   for (const d of ordersIndex) {
+    if (d.ledger) continue;
     if (d.date === '_cumulative_') { await deleteAllCumulativeOrderDocs(); continue; }
     await storageDelete('orders:' + d.date);
   }
@@ -3654,28 +3860,24 @@ function populateStockStoreSelect() {
   // 직접 조회해야 정확한 매장 목록을 얻을 수 있기 때문).
 }
 
-let stockOrderDocs = null; // 캐시된 orders 문서들
-let stockConsumptionDocs = null; // 캐시된 consumption 문서들
-
+// 매장 목록: 원장 매장 목록(meta/ledger_stores) + 예전 누적 입고 매장.
+let stockStores = {};
 async function loadStockData() {
   const sel = document.getElementById('stockStoreSelect');
   sel.innerHTML = '<option value="">불러오는 중...</option>';
   try {
-    const [orderSnap, consumeSnap] = await Promise.all([
-      getDocs(collection(db, 'orders')),
-      getDocs(collection(db, 'consumption')),
-    ]);
-    stockOrderDocs = []; orderSnap.forEach(d => stockOrderDocs.push(unwrapDoc(d.data())));
-    stockConsumptionDocs = []; consumeSnap.forEach(d => stockConsumptionDocs.push(unwrapDoc(d.data())));
-
-    const stores = {}; // storeCode -> storeName
-    stockOrderDocs.forEach(doc => (doc.entries||[]).forEach(e => { if (e.storeCode) stores[e.storeCode] = e.storeName || stores[e.storeCode] || ''; }));
-    stockConsumptionDocs.forEach(doc => (doc.entries||[]).forEach(e => { if (e.storeCode) stores[e.storeCode] = stores[e.storeCode] || e.storeName || ''; }));
-
-    const codes = Object.keys(stores).sort();
+    stockStores = {};
+    const ls = await getDoc(doc(db, 'meta', 'ledger_stores'));
+    if (ls.exists()) Object.assign(stockStores, ls.data().stores || {});
+    try {
+      const idxRaw = await storageGet('orders:_cum_index_');
+      if (idxRaw) (JSON.parse(idxRaw).storeCodes || []).forEach(c => { if (!(c in stockStores)) stockStores[c] = ''; });
+    } catch (e) { /* 무시 */ }
+    Object.keys(stockStores).forEach(c => { if (!stockStores[c] && storeInfoMap[c]) stockStores[c] = storeInfoMap[c].name || ''; });
+    const codes = Object.keys(stockStores).sort();
     const prevSelected = sel.value;
     sel.innerHTML = '<option value="">매장을 선택하세요</option>' +
-      codes.map(c => `<option value="${esc(c)}">${esc(c)} ${esc(stores[c]||'')}</option>`).join('');
+      codes.map(c => `<option value="${esc(c)}">${esc(c)} ${esc(stockStores[c]||'')}</option>`).join('');
     if (codes.includes(prevSelected)) sel.value = prevSelected;
     renderStockTable();
   } catch (err) {
@@ -3684,80 +3886,109 @@ async function loadStockData() {
   }
 }
 
-function renderStockTable() {
+function addDaysStr(d, n) { const t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); }
+
+// 발주품목별 포장 하나당 개수(bag/box → 개). 무게만 적힌 품목(빅싸이순살·와우순살 등)은
+// "1개 판매 = 1bag 사용" 원칙에 따라 1로 환산된다(parseOrderSpec).
+function packInfoMap() {
+  const m = {};
+  orderCodeEntries.forEach(e => {
+    if (!m[e.codeName] && e.unitsPerPack != null) m[e.codeName] = { unitsPerPack: e.unitsPerPack, packUnit: e.packUnit };
+    else if (!(e.codeName in m)) m[e.codeName] = null;
+  });
+  return m;
+}
+
+const STOCK_INIT_DAYS = 7;   // 추적 시작 후 이 기간의 부족분은 "기초재고"로 본다
+const STOCK_WINDOW_DAYS = 28; // 충족률 계산 기간(최근 4주)
+
+async function renderStockTable() {
   const wrap = document.getElementById('stockTableWrap');
   const storeCode = document.getElementById('stockStoreSelect').value;
   if (!storeCode) { wrap.innerHTML = '<div class="empty">매장을 선택하면 재고 현황이 표시됩니다.</div>'; return; }
-  if (!stockOrderDocs || !stockConsumptionDocs) { wrap.innerHTML = '<div class="empty">🔄 새로고침을 눌러 데이터를 불러와주세요.</div>'; return; }
+  wrap.innerHTML = '<div class="empty">불러오는 중...</div>';
+  try {
+    const [recv, sold] = await Promise.all([ledgerLoadStore(LEDGER_RECV, storeCode), ledgerLoadStore(LEDGER_SOLD, storeCode)]);
+    const pack = packInfoMap();
+    const toUnits = (item, q) => { const p = pack[item]; return p && p.unitsPerPack ? q * p.unitsPerPack : q; };
+    const hasDatedRecv = Object.keys(recv.byItem).length > 0;
 
-  // 발주품목(상품별코드명) 단위로 "포장 하나(bag/box)당 실제 개수" 대표값을 만든다.
-  // 발주코드가 여러 개라도(지역별 소싱 등) 보통 포장 단위는 같으므로, 처음 찾은
-  // 값을 대표로 쓴다. 무게(g) 표기뿐이라 개수로 못 바꾸는 항목은 null로 남는다.
-  const packInfoByCodeName = {};
-  orderCodeEntries.forEach(e => {
-    if (!packInfoByCodeName[e.codeName] && e.unitsPerPack != null) {
-      packInfoByCodeName[e.codeName] = { unitsPerPack: e.unitsPerPack, packUnit: e.packUnit };
-    } else if (!(e.codeName in packInfoByCodeName)) {
-      packInfoByCodeName[e.codeName] = null; // 아직 모름 — 나중에 환산 가능한 값이 나오면 덮어씀
+    if (!hasDatedRecv) {
+      // 배송일자 데이터가 아직 없으면 예전 누적 입고로 단순 비교(참고용)
+      const cumRaw = await storageGet('orders:_cum_:' + storeCode);
+      const cum = cumRaw ? (JSON.parse(cumRaw).entries || []) : [];
+      if (!cum.length && !Object.keys(sold.byItem).length) { wrap.innerHTML = '<div class="empty">이 매장의 발주/판매 데이터가 없습니다.</div>'; return; }
+      const rq = {}; cum.forEach(e => { rq[e.orderItem] = (rq[e.orderItem] || 0) + e.qty; });
+      const items = [...new Set([...Object.keys(rq), ...Object.keys(sold.byItem)])].sort();
+      let html = '<div class="note" style="margin-bottom:8px;">⚠ 배송일자별 입고 데이터가 없어 예전 "누적(날짜없음)" 입고와 전체 판매를 단순 비교합니다. 배송일자 파일을 올리면 아래의 추정 재고·충족률 방식으로 바뀝니다.</div>';
+      html += '<div class="table-wrap"><table><thead><tr><th>발주품목</th><th class="num">누적 입고(개)</th><th class="num">누적 판매(개)</th><th class="num">차이</th></tr></thead><tbody>';
+      items.forEach(it => {
+        const r = toUnits(it, rq[it] || 0), sq = Object.values(sold.byItem[it] || {}).reduce((a, b) => a + b, 0);
+        html += `<tr><td>${esc(it)}</td><td class="num">${fmtNum(r)}</td><td class="num">${fmtNum(sq)}</td><td class="num">${fmtNum(r - sq)}</td></tr>`;
+      });
+      wrap.innerHTML = html + '</tbody></table></div>';
+      return;
     }
-  });
 
-  const received = {}; // 발주품목 -> {qty, lastDate}
-  stockOrderDocs.forEach(doc => {
-    (doc.entries || []).forEach(e => {
-      if (e.storeCode !== storeCode) return;
-      if (!received[e.orderItem]) received[e.orderItem] = { qty: 0, lastDate: '' };
-      received[e.orderItem].qty += e.qty;
-      // "누적" 문서는 실제 날짜가 아니므로(날짜 구분 없는 전체 누적값), 최근
-      // 입고일 갱신에는 쓰지 않는다.
-      if (doc.date !== '_cumulative_' && doc.date > received[e.orderItem].lastDate) received[e.orderItem].lastDate = doc.date;
+    // ── 추적 기간: 입고와 판매가 둘 다 있는 구간만(한쪽만 있는 앞부분은 왜곡이라 제외)
+    const allDates = (byItem) => Object.values(byItem).flatMap(o => Object.keys(o));
+    const rDates = allDates(recv.byItem).sort(), sDates = allDates(sold.byItem).sort();
+    if (!sDates.length) { wrap.innerHTML = '<div class="empty">이 매장의 판매 데이터가 아직 없습니다.</div>'; return; }
+    const start = rDates[0] > sDates[0] ? rDates[0] : sDates[0];
+    const end = sDates[sDates.length - 1] > rDates[rDates.length - 1] ? sDates[sDates.length - 1] : rDates[rDates.length - 1];
+    const salesDaySet = new Set(dailyIndex.map(d => d.date).filter(d => !isMonthKey(d)));
+    const days = []; for (let d = start; d <= end; d = addDaysStr(d, 1)) days.push(d);
+    const missingSales = days.filter(d => !salesDaySet.has(d) && d <= sDates[sDates.length - 1]);
+    const winStart = addDaysStr(end, -(STOCK_WINDOW_DAYS - 1));
+    const initEnd = addDaysStr(start, STOCK_INIT_DAYS - 1);
+
+    const items = [...new Set([...Object.keys(recv.byItem), ...Object.keys(sold.byItem)])].sort();
+    const rowsOut = items.map(item => {
+      const R = recv.byItem[item] || {}, S = sold.byItem[item] || {};
+      // 일자별 잔고: 입고는 받은 날부터 판매 가능. 잔고가 0 아래로 내려가면 실제로는
+      // 불가능하므로 0으로 되돌리고, 그만큼을 "본사 입고로 설명 안 되는 판매"로 쌓는다.
+      // → 기초재고를 몰라도 잔고가 매 부족 시점마다 다시 맞춰져서 빠르게 수렴한다.
+      let bal = 0, initShort = 0, unexplained = 0, winRecvPack = 0, winSold = 0, lastRecv = '', lastSold = '';
+      days.forEach(d => {
+        const rp = R[d] || 0, sq = S[d] || 0;
+        if (rp) lastRecv = d; if (sq) lastSold = d;
+        bal += toUnits(item, rp) - sq;
+        if (bal < 0) { if (d <= initEnd) initShort += -bal; else unexplained += -bal; bal = 0; }
+        if (d >= winStart) { winRecvPack += rp; winSold += sq; }
+      });
+      const winRecv = toUnits(item, winRecvPack);
+      const fill = winSold > 0 ? winRecv / winSold : null;
+      return { item, bal, initShort, unexplained, winRecvPack, winRecv, winSold, fill, lastRecv, lastSold };
     });
-  });
 
-  const sold = {}; // 발주품목 -> {qty, lastDate}
-  stockConsumptionDocs.forEach(doc => {
-    (doc.entries || []).forEach(e => {
-      if (e.storeCode !== storeCode) return;
-      if (!sold[e.orderItem]) sold[e.orderItem] = { qty: 0, lastDate: '' };
-      sold[e.orderItem].qty += e.qty;
-      if (doc.date > sold[e.orderItem].lastDate) sold[e.orderItem].lastDate = doc.date;
+    const fillPill = f => f == null ? '<span class="pill pill-neutral">-</span>'
+      : f < 0.9 ? `<span class="pill pill-bad">${Math.round(f*100)}%</span>`
+      : f > 1.3 ? `<span class="pill pill-warn">${Math.round(f*100)}%</span>`
+      : `<span class="pill pill-ok">${Math.round(f*100)}%</span>`;
+    let html = `<div class="note" style="margin-bottom:8px;">추적 기간 ${start} ~ ${end} (${days.length}일) · 충족률은 최근 ${STOCK_WINDOW_DAYS}일(${winStart} ~ ${end}) 기준`
+      + (missingSales.length ? ` · <strong style="color:#b91c1c;">판매 데이터가 없는 날 ${missingSales.length}일</strong>(${missingSales.slice(0,5).join(', ')}${missingSales.length>5?' 외':''}) — 이 날은 판매 0으로 계산되어 재고가 부풀려질 수 있습니다` : '') + `</div>`;
+    html += '<div class="table-wrap"><table><thead><tr><th>발주품목</th><th class="num">4주 입고(포장)</th><th class="num">4주 입고(개)</th><th class="num">4주 판매(개)</th><th class="num">충족률</th><th class="num">추정 재고(개)</th><th class="num">초기 부족<br><span style="font-weight:400;">(기초재고 추정)</span></th><th class="num">입고로 설명 안 되는 판매<br><span style="font-weight:400;">(사입 등 추정)</span></th><th>최근 입고일</th><th>최근 판매일</th></tr></thead><tbody>';
+    rowsOut.forEach(r => {
+      const p = pack[r.item];
+      const style = r.fill != null && r.fill < 0.9 ? ' style="background:#fef2f2;"' : '';
+      html += `<tr${style}>
+        <td>${esc(r.item)}</td>
+        <td class="num">${fmtNum(r.winRecvPack)} ${esc(p && p.packUnit || '')}</td>
+        <td class="num">${fmtNum(r.winRecv)}${p && p.unitsPerPack ? '' : ' <span title="포장 단위 환산 정보가 없어 입고량을 그대로 개수로 계산했습니다.">⚠</span>'}</td>
+        <td class="num">${fmtNum(r.winSold)}</td>
+        <td class="num">${fillPill(r.fill)}</td>
+        <td class="num">${fmtNum(r.bal)}</td>
+        <td class="num">${r.initShort ? fmtNum(r.initShort) : '-'}</td>
+        <td class="num">${r.unexplained ? `<span class="pill pill-bad">${fmtNum(r.unexplained)}</span>` : '-'}</td>
+        <td>${esc(r.lastRecv || '-')}</td>
+        <td>${esc(r.lastSold || '-')}</td>
+      </tr>`;
     });
-  });
-
-  const items = [...new Set([...Object.keys(received), ...Object.keys(sold)])].sort();
-  if (items.length === 0) { wrap.innerHTML = '<div class="empty">이 매장의 발주/판매 데이터가 없습니다.</div>'; return; }
-
-  let html = '<div class="table-wrap"><table><thead><tr><th>발주품목</th><th class="num">누적 입고(포장 단위)</th><th class="num">입고 환산(개)</th><th class="num">누적 판매(환산·개)</th><th class="num">현재 재고(개)</th><th>최근 입고일</th><th>최근 판매일</th></tr></thead><tbody>';
-  items.forEach(item => {
-    const rQtyRaw = received[item] ? received[item].qty : 0;
-    const sQty = sold[item] ? sold[item].qty : 0;
-    const pack = packInfoByCodeName[item];
-    // 판매(소진)는 이미 "개" 단위(보정값 반영)로 기록되어 있다. 입고는 발주 데이터가
-    // 보통 팩/박스 단위이므로, 포장 단위 환산값이 있으면 개수로 바꿔서 비교하고,
-    // 없으면(무게 표기뿐이거나 매핑표에 없는 품목) 입고량을 그대로 개로 간주한다
-    // (기존 방식과 동일하게 동작 — 환산이 아예 불가능한 경우의 안전한 기본값).
-    const rQty = pack && pack.unitsPerPack ? rQtyRaw * pack.unitsPerPack : rQtyRaw;
-    const stock = rQty - sQty;
-    const rowStyle = stock < 0 ? ' style="background:#fef2f2;"' : (stock === 0 ? ' style="background:#fffbeb;"' : '');
-    const stockLabel = stock < 0
-      ? `<span class="pill pill-bad">부족 ${fmtNum(Math.abs(stock))}</span>`
-      : (stock === 0 ? `<span class="pill pill-warn">소진</span>` : `<span class="pill pill-ok">${fmtNum(stock)}</span>`);
-    const rawLabel = pack && pack.unitsPerPack ? `${fmtNum(rQtyRaw)} ${esc(pack.packUnit || '')}` : fmtNum(rQtyRaw);
-    const convertedLabel = pack && pack.unitsPerPack
-      ? fmtNum(rQty)
-      : `<span title="포장 단위 환산 정보가 없어 입고량을 그대로 개수로 계산했습니다.">${fmtNum(rQty)} ⚠</span>`;
-    html += `<tr${rowStyle}>
-      <td>${esc(item)}</td>
-      <td class="num">${rawLabel}</td>
-      <td class="num">${convertedLabel}</td>
-      <td class="num">${fmtNum(sQty)}</td>
-      <td class="num">${stockLabel}</td>
-      <td>${esc(received[item]?.lastDate || '-')}</td>
-      <td>${esc(sold[item]?.lastDate || '-')}</td>
-    </tr>`;
-  });
-  html += '</tbody></table></div>';
-  wrap.innerHTML = html;
+    wrap.innerHTML = html + '</tbody></table></div>';
+  } catch (err) {
+    console.error('render stock failed', err);
+    wrap.innerHTML = `<div class="empty">불러오기 실패: ${esc(err.message)}</div>`;
+  }
 }
 
 // ==========================================================================
@@ -3848,7 +4079,7 @@ Object.assign(window, {
   manualAddCode, toggleDay, toggleAddForm, addAnomalyToMaster, updateMasterName,
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
-  deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable,
+  deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger,
   addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
