@@ -383,7 +383,27 @@
       </div>
       <div class="status-line" id="cycleStatus" style="margin:8px 0;"></div>
       <div id="cycleOverviewWrap"><div class="empty">배송회차를 고르고 조회를 누르세요.</div></div>
-      <div class="note">※ 판정: 충족률(배송 ÷ 사용) 90% 미만 = 부족(과소발주·사입 의심), 130% 초과 = 과다, 배송 0인데 사용 있음 = 미발주. 회차 하나만 보면 전 회차 재고 이월 때문에 흔들리므로, 같은 매장이 여러 회차 연속으로 부족인지 함께 보세요.</div>
+      <div class="note">※ 입고 합계 = 정상발주분 + 추가발주분(월 10~15시 추가 주문처럼 다음 날 전산에 잡혀도 같은 회차에 입고). 판정: 충족률(입고 ÷ 사용) 90% 미만 = 부족(과소발주·사입 의심), 130% 초과 = 과다, 배송 0인데 사용 있음 = 미발주. 회차 하나만 보면 전 회차 재고 이월 때문에 흔들리므로, 같은 매장이 여러 회차 연속으로 부족인지 함께 보세요.</div>
+    </div>
+    <div class="card">
+      <h2>권장 발주량 (가맹점 코칭용 예측)</h2>
+      <div class="card-sub">발주일(월·수·금 10시 마감) 기준으로, 전날까지의 실제 판매·입고로 재고를 추정하고, 매장별 요일 패턴과 최근 추세로 다음 입고 회차 사용량을 예측해 권장 발주량(포장 단위)을 계산합니다. 지난 발주일을 고르면 그날 실제 발주와 비교해 과소/과다 발주 매장을 보여줍니다(그 발주일 전날까지의 데이터만 사용).</div>
+      <div class="toolbar" style="flex-wrap:wrap; gap:8px;">
+        <select id="recOrderDate" class="search-input" style="flex:none; min-width:260px;"></select>
+        <select id="recItemSelect" class="search-input" style="flex:none; min-width:150px;"></select>
+        <select id="recSafety" class="search-input" style="flex:none;">
+          <option value="0">안전재고 없음</option>
+          <option value="0.5">안전재고 낮음(0.5σ)</option>
+          <option value="1" selected>안전재고 보통(1σ)</option>
+          <option value="1.65">안전재고 높음(1.65σ)</option>
+        </select>
+        <input id="recStoreFilter" class="search-input" style="flex:none; width:160px;" placeholder="매장코드/매장명 (선택)">
+        <button class="btn btn-primary btn-sm" onclick="renderRecommendation()">계산</button>
+        <button class="btn btn-ghost btn-sm" onclick="downloadRecommendation()">엑셀 다운로드</button>
+      </div>
+      <div class="status-line" id="recStatus" style="margin:8px 0;"></div>
+      <div id="recWrap"><div class="empty">발주일을 고르고 계산을 누르세요.</div></div>
+      <div class="note">※ 권장(개) = 회차 예상 사용 + 안전재고 − (전날 마감 추정재고 − 발주일~입고 전날 예상 판매). 일별 예상 = 최근 4주 같은 요일 가중평균(4:3:2:1) × 추세계수(최근 2주 ÷ 직전 4주, 0.8~1.25 제한). 안전재고 = 계수 × 일별 편차(σ) × √회차일수. 추정재고는 최근 8주 입고·판매를 날짜순으로 따라가며 0 아래로는 내려가지 않게 계산합니다.</div>
     </div>
   </section>
 
@@ -2941,6 +2961,7 @@ async function loadDailyIndex() {
   const byDate = new Map(); list.forEach(x => byDate.set(x.date, x)); // 혹시 모를 중복 방지(날짜당 1개)
   dailyIndex = [...byDate.values()];
   renderHistoryTab();
+  try { populateRecOrderDates(); } catch (e) { /* 발주 탭 준비 전 */ }
 }
 
 function renderHistoryTab() {
@@ -3042,7 +3063,7 @@ async function deleteDayReport(date) {
   await storageDelete('daily:' + date);
   await deleteCatQtyForDate(date);
   await deleteConsumptionForDate(date);
-  try { await ledgerDeleteDate(LEDGER_SOLD, date); } catch (e) { console.error('ledger delete failed', e); }
+  try { await ledgerDeleteDate(LEDGER_SOLD, date); await updateDocSafe(doc(db, 'meta', 'sold_dates'), new FieldPath('dates', date)); if (soldDates) soldDates.delete(date); } catch (e) { console.error('ledger delete failed', e); }
   document.getElementById('historyDetail').innerHTML = '';
   await loadDailyIndex();
 }
@@ -3054,7 +3075,7 @@ async function resetAllHistory() {
     await deleteCatQtyForDate(d.date);
     await deleteConsumptionForDate(d.date);
   }
-  try { await ledgerDeleteAll(LEDGER_SOLD); } catch (e) { console.error('ledger reset failed', e); }
+  try { await ledgerDeleteAll(LEDGER_SOLD); await deleteDoc(doc(db, 'meta', 'sold_dates')); soldDates = new Set(); } catch (e) { console.error('ledger reset failed', e); }
   document.getElementById('historyDetail').innerHTML = '';
   await loadDailyIndex();
 }
@@ -3413,11 +3434,24 @@ async function downloadCategoryExtract() {
 // - merge 저장이라 같은 날짜를 다시 올리면 그 날짜 값만 덮어씀(읽기 없이 빠름)
 // - 재고 화면은 선택한 매장의 문서만 읽음(보통 1~3개)
 const LEDGER_RECV = 'recv_m', LEDGER_SOLD = 'sold_m';
+// ④ 탭(재고·회차·권장발주)은 발주코드 매핑표에 등록된 발주품목만 보여준다.
+function registeredOrderItems() { return new Set(orderCodeEntries.map(e => e.codeName)); }
+// 판매 소진이 원장(sold_m)에 실제로 기록된 날짜. 일별 대조 이력이 있어도 이 기능 이전에
+// 저장해서 원장에 안 옮긴 날은 여기에 없다 → "판매 데이터 없는 날"로 경고하기 위함.
+let soldDates = null;
+async function loadSoldDates() {
+  try { const d = await getDoc(doc(db, 'meta', 'sold_dates')); soldDates = new Set(Object.keys(d.exists() ? (d.data().dates || {}) : {})); }
+  catch (e) { console.error('load sold dates failed', e); soldDates = null; }
+}
+function salesDaySetNow() {
+  return soldDates && soldDates.size ? new Set(soldDates) : new Set(dailyIndex.map(d => d.date).filter(d => !isMonthKey(d)));
+}
 
 // rows: [{storeCode, storeName, date:'YYYY-MM-DD', item, qty}]
 // 파일에 들어있는 (매장, 날짜)마다 파일에 나온 모든 품목을 0부터 채워서 쓴다 —
 // 재업로드 때 예전 값이 남지 않게(그 매장·그 날짜 기준으로 완전히 교체) 하기 위함.
 async function ledgerWriteRows(coll, rows, onProgress) {
+  Object.keys(recMonthCache).forEach(k => delete recMonthCache[k]); // 예측용 캐시 비우기
   const itemsAll = [...new Set(rows.map(r => r.item))];
   const byDoc = {}; const storeNames = {};
   rows.forEach(r => {
@@ -3449,6 +3483,10 @@ async function ledgerWriteRows(coll, rows, onProgress) {
     try { await batch.commit(); } catch (e) { console.error('ledger write failed', coll, e); failed.push(...chunk); }
     done += chunk.length;
     if (onProgress) onProgress(done, ids.length);
+  }
+  if (coll === LEDGER_SOLD) {
+    const dts = {}; rows.forEach(r => { dts[r.date] = true; });
+    try { await setDoc(doc(db, 'meta', 'sold_dates'), { dates: dts }, { merge: true }); Object.keys(dts).forEach(d => soldDates && soldDates.add(d)); } catch (e) { console.error('sold dates save failed', e); }
   }
   // 매장 목록(재고 화면 선택 상자용) — 이름이 있는 것만 갱신
   const named = {}; Object.entries(storeNames).forEach(([c, n]) => { named[c] = n; });
@@ -3775,11 +3813,11 @@ function renderPendingOrders() {
       <span><button class="btn btn-primary btn-sm" onclick="savePendingOrders()">💾 저장</button>
       <button class="btn btn-ghost btn-sm" onclick="cancelPendingOrders()">취소</button></span>
     </div>
-    <div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>배송일자</th><th>배송회차</th><th class="num">매장수</th><th class="num">품목수</th><th class="num">배송량(포장 합)</th><th>상태</th></tr></thead><tbody>`;
+    <div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>전산 배송일자</th><th>실제 입고</th><th class="num">매장수</th><th class="num">품목수</th><th class="num">배송량(포장 합)</th><th>상태</th></tr></thead><tbody>`;
   dates.forEach(d => {
     const es = Object.values(pendingOrders.byDate[d]);
     const isOver = saved.has(d); if (isOver) over++;
-    html += `<tr><td><strong>${d}</strong> (${DOW_KO[dowOf(d)]})</td><td>${esc(cycleKind(cycleStartOf(d)))}${cycleStartOf(d) !== d ? ' <span class="pill pill-warn">화·목·토 아님</span>' : ''}</td>
+    html += `<tr><td><strong>${d}</strong> (${DOW_KO[dowOf(d)]})</td><td>${isAdditionalRecv(d) ? `<span class="pill pill-warn">${esc(recvDateLabel(d))}</span>` : esc(recvDateLabel(d))}</td>
       <td class="num">${fmtNum(new Set(es.map(e => e.storeCode)).size)}</td><td class="num">${fmtNum(new Set(es.map(e => e.orderItem)).size)}</td>
       <td class="num">${fmtNum(es.reduce((a, e) => a + e.qty, 0))}</td>
       <td>${isOver ? '<span class="pill pill-warn">이미 저장됨 → 덮어쓰기</span>' : '<span class="pill pill-ok">신규</span>'}</td></tr>`;
@@ -3814,14 +3852,18 @@ function renderOrderCoverage() {
   const el = document.getElementById('orderCoverage'); if (!el) return;
   const dates = ordersIndex.filter(o => o.ledger).map(o => o.date).sort();
   if (!dates.length) { el.innerHTML = '<div class="note">배송일자별로 저장된 데이터가 아직 없습니다.</div>'; return; }
-  const have = new Set(dates), first = dates[0], last = dates[dates.length - 1];
+  // 입고일(화·목·토) 기준으로 본다 — 추가발주분(수·금·일·월 전산)은 그 회차에 포함.
+  const haveCycle = new Set(dates.map(actualRecvDate));
+  const first = dates[0], last = dates[dates.length - 1];
   const missing = [];
-  for (let d = first; d <= last; d = addDaysStr(d, 1)) if ([2, 4, 6].includes(dowOf(d)) && !have.has(d)) missing.push(d);
+  for (let d = actualRecvDate(first); d <= last; d = addDaysStr(d, 1)) if ([2, 4, 6].includes(dowOf(d)) && !haveCycle.has(d)) missing.push(d);
   const today = formatDate(new Date());
+  const next = addDaysStr(last, 1);
+  const cycles = [...haveCycle].sort();
   el.innerHTML = `<div class="status-line" style="flex-wrap:wrap;">
-    <span class="pill pill-ok">저장된 배송일 ${dates.length}일</span><span>${first} ~ ${last}</span>
-    <span class="pill pill-neutral">다음에 조회할 기간</span><span><strong>${addDaysStr(last, 1)} ~ ${today}</strong> (배송일자 기준)</span>
-    ${missing.length ? `<span class="pill pill-warn">중간에 빠진 배송일 ${missing.length}일</span><span>${missing.slice(0, 8).map(d => `${d.slice(5)}(${DOW_KO[dowOf(d)]})`).join(', ')}${missing.length > 8 ? ' 외' : ''} — 공휴일 휴배송이 아니면 이 날짜도 받아서 올려주세요</span>` : ''}
+    <span class="pill pill-ok">저장된 입고 회차 ${cycles.length}회</span><span>${cycles[0]} ~ ${cycles[cycles.length - 1]} (전산일 ${first} ~ ${last})</span>
+    <span class="pill pill-neutral">다음에 조회할 기간</span><span>${next > today ? '<strong>최신 상태</strong> — 오늘까지의 전산 배송일이 모두 저장되어 있습니다' : `<strong>${next} ~ ${today}</strong> (전산 배송일자 기준)`}</span>
+    ${missing.length ? `<span class="pill pill-warn">빠진 입고일 ${missing.length}일</span><span>${missing.slice(0, 8).map(d => `${d.slice(5)}(${DOW_KO[dowOf(d)]})`).join(', ')}${missing.length > 8 ? ' 외' : ''} — 공휴일 휴배송이 아니면 이 날짜도 받아서 올려주세요</span>` : ''}
   </div>`;
 }
 
@@ -3874,6 +3916,8 @@ async function loadOrdersIndex() {
   renderOrderCoverage();
   renderPendingOrders();
   populateCycleSelect();
+  if (!soldDates) await loadSoldDates();
+  populateRecOrderDates();
   populateStockStoreSelect();
 }
 
@@ -3881,14 +3925,15 @@ function renderOrderHistoryTable() {
   const table = document.getElementById('orderHistoryTable');
   if (!table) return;
   const sorted = [...ordersIndex].sort((a,b) => b.date.localeCompare(a.date));
-  let html = '<thead><tr><th>배송일자</th><th>파일명</th><th class="num">매장수</th><th class="num">품목수</th><th class="num">총 배송량</th><th></th></tr></thead><tbody>';
+  let html = '<thead><tr><th>전산 배송일자</th><th>실제 입고</th><th>파일명</th><th class="num">매장수</th><th class="num">품목수</th><th class="num">총 배송량</th><th></th></tr></thead><tbody>';
   if (sorted.length === 0) {
-    html += `<tr><td colspan="5"><div class="empty">저장된 발주 이력이 없습니다.</div></td></tr>`;
+    html += `<tr><td colspan="7"><div class="empty">저장된 발주 이력이 없습니다.</div></td></tr>`;
   } else {
     sorted.forEach(d => {
       const dateLabel = d.date === '_cumulative_' ? '📦 누적(날짜없음)' : d.date;
       html += `<tr>
         <td><strong>${esc(dateLabel)}</strong></td>
+        <td>${d.ledger ? (isAdditionalRecv(d.date) ? `<span class="pill pill-warn">${esc(recvDateLabel(d.date))}</span>` : esc(recvDateLabel(d.date))) : '-'}</td>
         <td>${esc(d.fileName||'-')}</td>
         <td class="num">${d.storeCount}</td>
         <td class="num">${d.itemCount}</td>
@@ -3953,6 +3998,7 @@ function populateStockStoreSelect() {
 let stockStores = {};
 async function loadStockData() {
   const sel = document.getElementById('stockStoreSelect');
+  await loadSoldDates();
   sel.innerHTML = '<option value="">불러오는 중...</option>';
   try {
     stockStores = {};
@@ -3999,7 +4045,7 @@ async function renderStockTable() {
   if (!storeCode) { wrap.innerHTML = '<div class="empty">매장을 선택하면 재고 현황이 표시됩니다.</div>'; return; }
   wrap.innerHTML = '<div class="empty">불러오는 중...</div>';
   try {
-    const [recv, sold] = await Promise.all([ledgerLoadStore(LEDGER_RECV, storeCode), ledgerLoadStore(LEDGER_SOLD, storeCode)]);
+    let [recv, sold] = await Promise.all([ledgerLoadStore(LEDGER_RECV, storeCode), ledgerLoadStore(LEDGER_SOLD, storeCode)]);
     const pack = packInfoMap();
     const toUnits = (item, q) => { const p = pack[item]; return p && p.unitsPerPack ? q * p.unitsPerPack : q; };
     const hasDatedRecv = Object.keys(recv.byItem).length > 0;
@@ -4010,7 +4056,8 @@ async function renderStockTable() {
       const cum = cumRaw ? (JSON.parse(cumRaw).entries || []) : [];
       if (!cum.length && !Object.keys(sold.byItem).length) { wrap.innerHTML = '<div class="empty">이 매장의 발주/판매 데이터가 없습니다.</div>'; return; }
       const rq = {}; cum.forEach(e => { rq[e.orderItem] = (rq[e.orderItem] || 0) + e.qty; });
-      const items = [...new Set([...Object.keys(rq), ...Object.keys(sold.byItem)])].sort();
+      const reg = registeredOrderItems();
+      const items = [...new Set([...Object.keys(rq), ...Object.keys(sold.byItem)])].filter(i => reg.has(i)).sort();
       let html = '<div class="note" style="margin-bottom:8px;">⚠ 배송일자별 입고 데이터가 없어 예전 "누적(날짜없음)" 입고와 전체 판매를 단순 비교합니다. 배송일자 파일을 올리면 아래의 추정 재고·충족률 방식으로 바뀝니다.</div>';
       html += '<div class="table-wrap"><table><thead><tr><th>발주품목</th><th class="num">누적 입고(개)</th><th class="num">누적 판매(개)</th><th class="num">차이</th></tr></thead><tbody>';
       items.forEach(it => {
@@ -4021,19 +4068,23 @@ async function renderStockTable() {
       return;
     }
 
+    // 추가발주분(수·금·일·월 전산)을 실제 입고일(화·목·토)로 옮겨서 계산한다.
+    recv = { ...recv, byItem: remapRecvByItem(recv.byItem) };
     // ── 추적 기간: 입고와 판매가 둘 다 있는 구간만(한쪽만 있는 앞부분은 왜곡이라 제외)
     const allDates = (byItem) => Object.values(byItem).flatMap(o => Object.keys(o));
     const rDates = allDates(recv.byItem).sort(), sDates = allDates(sold.byItem).sort();
     if (!sDates.length) { wrap.innerHTML = '<div class="empty">이 매장의 판매 데이터가 아직 없습니다.</div>'; return; }
     const start = rDates[0] > sDates[0] ? rDates[0] : sDates[0];
     const end = sDates[sDates.length - 1] > rDates[rDates.length - 1] ? sDates[sDates.length - 1] : rDates[rDates.length - 1];
-    const salesDaySet = new Set(dailyIndex.map(d => d.date).filter(d => !isMonthKey(d)));
+    const salesDaySet = salesDaySetNow();
     const days = []; for (let d = start; d <= end; d = addDaysStr(d, 1)) days.push(d);
     const missingSales = days.filter(d => !salesDaySet.has(d) && d <= sDates[sDates.length - 1]);
-    const winStart = addDaysStr(end, -(STOCK_WINDOW_DAYS - 1));
+    const winStart = (() => { const w = addDaysStr(end, -(STOCK_WINDOW_DAYS - 1)); return w > start ? w : start; })(); // 추적 기간이 4주보다 짧으면 추적 시작일부터
     const initEnd = addDaysStr(start, STOCK_INIT_DAYS - 1);
 
-    const items = [...new Set([...Object.keys(recv.byItem), ...Object.keys(sold.byItem)])].sort();
+    const reg = registeredOrderItems();
+    const items = [...new Set([...Object.keys(recv.byItem), ...Object.keys(sold.byItem)])].filter(i => reg.has(i)).sort();
+    if (!items.length) { wrap.innerHTML = '<div class="empty">발주코드 매핑표에 등록된 발주품목의 데이터가 없습니다.</div>'; return; }
     const rowsOut = items.map(item => {
       const R = recv.byItem[item] || {}, S = sold.byItem[item] || {};
       // 일자별 잔고: 입고는 받은 날부터 판매 가능. 잔고가 0 아래로 내려가면 실제로는
@@ -4056,9 +4107,9 @@ async function renderStockTable() {
       : f < 0.9 ? `<span class="pill pill-bad">${Math.round(f*100)}%</span>`
       : f > 1.3 ? `<span class="pill pill-warn">${Math.round(f*100)}%</span>`
       : `<span class="pill pill-ok">${Math.round(f*100)}%</span>`;
-    let html = `<div class="note" style="margin-bottom:8px;">추적 기간 ${start} ~ ${end} (${days.length}일) · 충족률은 최근 ${STOCK_WINDOW_DAYS}일(${winStart} ~ ${end}) 기준`
+    let html = `<div class="note" style="margin-bottom:8px;">추적 기간 ${start} ~ ${end} (${days.length}일) · 충족률은 ${winStart} ~ ${end} 기준(최대 최근 ${STOCK_WINDOW_DAYS}일)`
       + (missingSales.length ? ` · <strong style="color:#b91c1c;">판매 데이터가 없는 날 ${missingSales.length}일</strong>(${missingSales.slice(0,5).join(', ')}${missingSales.length>5?' 외':''}) — 이 날은 판매 0으로 계산되어 재고가 부풀려질 수 있습니다` : '') + `</div>`;
-    html += '<div class="table-wrap"><table><thead><tr><th>발주품목</th><th class="num">4주 입고(포장)</th><th class="num">4주 입고(개)</th><th class="num">4주 판매(개)</th><th class="num">충족률</th><th class="num">추정 재고(개)</th><th class="num">초기 부족<br><span style="font-weight:400;">(기초재고 추정)</span></th><th class="num">입고로 설명 안 되는 판매<br><span style="font-weight:400;">(사입 등 추정)</span></th><th>최근 입고일</th><th>최근 판매일</th></tr></thead><tbody>';
+    html += '<div class="table-wrap"><table><thead><tr><th>발주품목</th><th class="num">기간 입고(포장)</th><th class="num">기간 입고(개)</th><th class="num">기간 판매(개)</th><th class="num">충족률</th><th class="num">추정 재고(개)</th><th class="num">초기 부족<br><span style="font-weight:400;">(기초재고 추정)</span></th><th class="num">입고로 설명 안 되는 판매<br><span style="font-weight:400;">(사입 등 추정)</span></th><th>최근 입고일</th><th>최근 판매일</th></tr></thead><tbody>';
     rowsOut.forEach(r => {
       const p = pack[r.item];
       const style = r.fill != null && r.fill < 0.9 ? ' style="background:#fef2f2;"' : '';
@@ -4099,6 +4150,24 @@ function cycleDays(start) {
   return Array.from({ length: len }, (_, i) => addDaysStr(start, i));
 }
 function cycleKind(start) { return { 6: '주말(토·일·월)', 2: '화·수', 4: '목·금' }[dowOf(start)] || '기타'; }
+// 전산 배송일자 → 실제 입고일. 발주는 월·수·금, 입고는 화·목·토.
+// 정상 발주(월 10시 전)는 화요일 전산, 추가 발주(월 10~15시)는 수요일 전산으로 잡히지만
+// 둘 다 화요일에 입고된다. 목(정상)/금(추가) → 목 입고, 토(정상)/일·월(추가) → 토 입고도 같다.
+// 그래서 전산일자는 원장에 그대로 보관하고, 계산할 때만 실제 입고일로 옮긴다.
+function actualRecvDate(d) { return cycleStartOf(d); }
+function isAdditionalRecv(d) { return actualRecvDate(d) !== d; }
+// { item: { 전산일: 수량 } } → { item: { 실제입고일: 수량 } }
+function remapRecvByItem(byItem) {
+  const out = {};
+  Object.entries(byItem).forEach(([item, days]) => {
+    const o = out[item] = {};
+    Object.entries(days).forEach(([d, q]) => { const a = actualRecvDate(d); o[a] = (o[a] || 0) + q; });
+  });
+  return out;
+}
+function recvDateLabel(d) {
+  return isAdditionalRecv(d) ? `${actualRecvDate(d).slice(5)}(${DOW_KO[dowOf(actualRecvDate(d))]}) 입고 · 추가발주분` : `${d.slice(5)}(${DOW_KO[dowOf(d)]}) 입고 · 정상발주분`;
+}
 function cycleLabel(start) {
   const ds = cycleDays(start), e = ds[ds.length - 1];
   return `${start.slice(5)}(${DOW_KO[dowOf(start)]}) ~ ${e.slice(5)}(${DOW_KO[dowOf(e)]}) · ${cycleKind(start)}`;
@@ -4113,13 +4182,14 @@ function renderStoreCycles(recv, sold, toUnits, pack) {
     ((cycles[c] = cycles[c] || {})[item] = cycles[c][item] || { rp: 0, sq: 0 })[field] += q;
   }));
   add(recv.byItem, 'rp'); add(sold.byItem, 'sq');
-  const salesDaySet = new Set(dailyIndex.map(d => d.date).filter(d => !isMonthKey(d)));
+  const salesDaySet = salesDaySetNow();
   const starts = Object.keys(cycles).sort().reverse().slice(0, 12);
   if (!starts.length) { wrap.innerHTML = '<div class="empty">데이터가 없습니다.</div>'; return; }
   let html = '<div class="table-wrap"><table><thead><tr><th>배송회차</th><th>품목</th><th class="num">배송(포장)</th><th class="num">배송(개)</th><th class="num">사용(개)</th><th class="num">차이</th><th class="num">충족률</th></tr></thead><tbody>';
   starts.forEach(c => {
     const missing = cycleDays(c).filter(d => !salesDaySet.has(d)).length;
-    Object.keys(cycles[c]).sort().forEach((item, i) => {
+    const reg = registeredOrderItems();
+    Object.keys(cycles[c]).filter(i => reg.has(i)).sort().forEach((item, i) => {
       const v = cycles[c][item]; if (!v.rp && !v.sq) return;
       const ru = toUnits(item, v.rp), diff = ru - v.sq, f = v.sq ? ru / v.sq : null;
       html += `<tr${f != null && f < 0.9 ? ' style="background:#fef2f2;"' : ''}>
@@ -4174,33 +4244,41 @@ async function renderCycleOverview() {
     const [R, S] = await Promise.all([ledgerLoadMonths(LEDGER_RECV, months), ledgerLoadMonths(LEDGER_SOLD, months)]);
     const pack = packInfoMap();
     const toUnits = (item, q) => { const p = pack[item]; return p && p.unitsPerPack ? q * p.unitsPerPack : q; };
-    const salesDaySet = new Set(dailyIndex.map(d => d.date).filter(d => !isMonthKey(d)));
+    const salesDaySet = salesDaySetNow();
     const missing = days.filter(d => !salesDaySet.has(d));
     const rows = [];
     new Set([...Object.keys(R), ...Object.keys(S)]).forEach(code => {
       const r = R[code] || { byItem: {} }, sv = S[code] || { byItem: {} };
       const items = new Set([...Object.keys(r.byItem), ...Object.keys(sv.byItem)]);
+      const reg = registeredOrderItems();
       items.forEach(item => {
+        if (!reg.has(item)) return;
         if (itemFilter && item !== itemFilter) return;
-        const rp = (r.byItem[item] || {})[start] || 0; // 회차 배송량 = 배송일 하루치
+        // 회차 입고 = 정상발주분(배송일 전산) + 추가발주분(같은 회차의 다음 날 전산)
+        const rd = r.byItem[item] || {};
+        const rpNormal = rd[start] || 0;
+        const rpAdd = days.slice(1).reduce((a, d) => a + (rd[d] || 0), 0);
+        const rp = rpNormal + rpAdd;
         const sq = days.reduce((a, d) => a + ((sv.byItem[item] || {})[d] || 0), 0);
         if (!rp && !sq) return;
         const ru = toUnits(item, rp), f = sq ? ru / sq : null;
         const flag = !rp && sq ? '미발주' : f == null ? '판매없음' : f < 0.9 ? '부족' : f > 1.3 ? '과다' : '적정';
         const info = storeInfoMap[code] || {};
-        rows.push({ code, name: r.storeName || sv.storeName || info.name || '', team: info.team || '', item, rp, packUnit: pack[item]?.packUnit || '', ru, sq, diff: ru - sq, fill: f, flag });
+        rows.push({ code, name: r.storeName || sv.storeName || info.name || '', team: info.team || '', item, rp, rpNormal, rpAdd, packUnit: pack[item]?.packUnit || '', ru, sq, diff: ru - sq, fill: f, flag });
       });
     });
     const order = { 미발주: 0, 부족: 1, 과다: 2, 적정: 3, 판매없음: 4 };
     rows.sort((a, b) => order[a.flag] - order[b.flag] || a.diff - b.diff);
     cycleOverviewRows = rows; cycleOverviewMeta = { start, itemFilter };
     const cnt = {}; rows.forEach(x => { cnt[x.flag] = (cnt[x.flag] || 0) + 1; });
-    st.innerHTML = `<span class="pill pill-ok">✓ ${esc(cycleLabel(start))}</span><span>${rows.length}건 · 미발주 ${cnt['미발주']||0} · 부족 ${cnt['부족']||0} · 과다 ${cnt['과다']||0} · 적정 ${cnt['적정']||0}</span>`
+    const addStores = new Set(rows.filter(x => x.rpAdd > 0).map(x => x.code)).size;
+    st.innerHTML = `<span class="pill pill-ok">✓ ${esc(cycleLabel(start))}</span><span>${rows.length}건 · 미발주 ${cnt['미발주']||0} · 부족 ${cnt['부족']||0} · 과다 ${cnt['과다']||0} · 적정 ${cnt['적정']||0} · 추가발주 매장 ${addStores}</span>`
       + (missing.length ? `<div class="note" style="margin-top:4px; color:#b91c1c;">⚠ 이 회차 사용기간 중 판매 데이터가 없는 날: ${missing.join(', ')} — 사용량이 적게 잡혀 부족이 덜 보이거나 과다로 보일 수 있습니다(회차가 끝나고 판매를 올린 뒤 다시 조회하세요).</div>` : '');
     const pill = f => ({ 미발주: 'pill-bad', 부족: 'pill-bad', 과다: 'pill-warn', 적정: 'pill-ok' }[f] || 'pill-neutral');
-    let html = '<div class="table-wrap"><table><thead><tr><th>매장코드</th><th>매장명</th><th>팀</th><th>품목</th><th class="num">배송(포장)</th><th class="num">배송(개)</th><th class="num">사용(개)</th><th class="num">차이</th><th class="num">충족률</th><th>판정</th></tr></thead><tbody>';
+    let html = '<div class="table-wrap"><table><thead><tr><th>매장코드</th><th>매장명</th><th>팀</th><th>품목</th><th class="num">정상발주(포장)</th><th class="num">추가발주(포장)</th><th class="num">입고 합계(포장)</th><th class="num">배송(개)</th><th class="num">사용(개)</th><th class="num">차이</th><th class="num">충족률</th><th>판정</th></tr></thead><tbody>';
     rows.slice(0, 500).forEach(x => {
       html += `<tr><td>${esc(x.code)}</td><td>${esc(x.name)}</td><td>${esc(x.team)}</td><td>${esc(x.item)}</td>
+        <td class="num">${fmtNum(x.rpNormal)}</td><td class="num">${x.rpAdd ? `<span class="pill pill-warn">${fmtNum(x.rpAdd)}</span>` : '-'}</td>
         <td class="num">${fmtNum(x.rp)} ${esc(x.packUnit)}</td><td class="num">${fmtNum(x.ru)}</td><td class="num">${fmtNum(x.sq)}</td>
         <td class="num">${fmtNum(x.diff)}</td><td class="num">${x.fill == null ? '-' : Math.round(x.fill*100) + '%'}</td>
         <td><span class="pill ${pill(x.flag)}">${x.flag}</span></td></tr>`;
@@ -4216,12 +4294,187 @@ async function renderCycleOverview() {
 
 function downloadCycleOverview() {
   if (!cycleOverviewRows.length) { alert('먼저 조회해주세요.'); return; }
-  const aoa = [['배송회차', '매장코드', '매장명', '팀', '품목', '배송(포장)', '포장단위', '배송(개)', '사용(개)', '차이(개)', '충족률', '판정']];
+  const aoa = [['배송회차', '매장코드', '매장명', '팀', '품목', '정상발주(포장)', '추가발주(포장)', '입고합계(포장)', '포장단위', '배송(개)', '사용(개)', '차이(개)', '충족률', '판정']];
   const label = cycleLabel(cycleOverviewMeta.start);
-  cycleOverviewRows.forEach(x => aoa.push([label, x.code, x.name, x.team, x.item, x.rp, x.packUnit, x.ru, x.sq, x.diff, x.fill == null ? '' : Math.round(x.fill * 1000) / 1000, x.flag]));
+  cycleOverviewRows.forEach(x => aoa.push([label, x.code, x.name, x.team, x.item, x.rpNormal, x.rpAdd, x.rp, x.packUnit, x.ru, x.sq, x.diff, x.fill == null ? '' : Math.round(x.fill * 1000) / 1000, x.flag]));
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '배송회차별');
   XLSX.writeFile(wb, `배송회차별_매장현황_${cycleOverviewMeta.start}${cycleOverviewMeta.itemFilter ? '_' + cycleOverviewMeta.itemFilter : ''}.xlsx`);
+}
+
+
+// ==========================================================================
+// 권장 발주량 예측
+// ==========================================================================
+// 발주일 O(월·수·금) → 입고 T = O+1(화·목·토), 회차 사용일 = cycleDays(T).
+// 기준 시점: O의 10시 마감 전 — 판매는 O-1까지(일요일 POS는 월 10시 전 업로드).
+const REC_BALANCE_DAYS = 56, REC_HISTORY_DAYS = 42;
+
+
+// 한 매장·한 품목의 권장 발주 계산. recvRaw: {전산일:포장}, sold: {일:개}
+function computeRec({ recvRaw, sold, orderDate, salesDays, unitsPerPack, k }) {
+  const T = addDaysStr(orderDate, 1);
+  const cdays = cycleDays(T);
+  const cutoff = (() => { let c = addDaysStr(orderDate, -1); for (let i = 0; i < 7 && !salesDays.has(c); i++) c = addDaysStr(c, -1); return c; })();
+  const upp = unitsPerPack || 1;
+  const recvAct = {}; Object.entries(recvRaw || {}).forEach(([d, q]) => { const a = actualRecvDate(d); recvAct[a] = (recvAct[a] || 0) + q * upp; });
+  const S = sold || {};
+  // ① 전날 마감 추정 재고(0 아래로 안 내려가는 잔고)
+  let bal = 0;
+  for (let d = addDaysStr(cutoff, -(REC_BALANCE_DAYS - 1)); d <= cutoff; d = addDaysStr(d, 1)) {
+    bal += (recvAct[d] || 0) - (salesDays.has(d) ? (S[d] || 0) : 0);
+    if (bal < 0) bal = 0;
+  }
+  // ② 일별 예측: 같은 요일 최근 4회 가중평균 × 추세
+  const avgRange = (from, to) => { let sum = 0, n = 0; for (let d = from; d <= to; d = addDaysStr(d, 1)) if (salesDays.has(d)) { sum += S[d] || 0; n++; } return n ? { avg: sum / n, n } : null; };
+  const recent = avgRange(addDaysStr(cutoff, -13), cutoff), prior = avgRange(addDaysStr(cutoff, -41), addDaysStr(cutoff, -14));
+  let trend = 1;
+  if (recent && prior && recent.n >= 7 && prior.n >= 14 && prior.avg > 0) trend = Math.min(1.25, Math.max(0.8, recent.avg / prior.avg));
+  let thin = false;
+  const dayFcst = d => {
+    const vals = [];
+    for (let w = 1; vals.length < 4 && w <= 8; w++) { const x = addDaysStr(d, -7 * w); if (x <= cutoff && salesDays.has(x)) vals.push(S[x] || 0); }
+    if (vals.length < 2) thin = true;
+    if (!vals.length) return 0;
+    const wts = [4, 3, 2, 1].slice(0, vals.length);
+    return vals.reduce((a, v, i) => a + v * wts[i], 0) / wts.reduce((a, b) => a + b, 0) * trend;
+  };
+  // ③ 입고 전 판매(마감 다음날 ~ 입고 전날) + 그 사이 입고
+  let preSales = 0, preRecv = 0;
+  for (let d = addDaysStr(cutoff, 1); d < T; d = addDaysStr(d, 1)) { preSales += dayFcst(d); preRecv += recvAct[d] || 0; }
+  const projected = Math.max(0, bal + preRecv - preSales);
+  const cycleF = cdays.map(dayFcst);
+  const cycleUse = cycleF.reduce((a, b) => a + b, 0);
+  // ④ 안전재고: 최근 4주 같은 요일 평균 대비 편차의 표준편차
+  const byDow = {}; const win = [];
+  for (let d = addDaysStr(cutoff, -27); d <= cutoff; d = addDaysStr(d, 1)) if (salesDays.has(d)) { win.push(d); (byDow[dowOf(d)] = byDow[dowOf(d)] || []).push(S[d] || 0); }
+  const dowMean = {}; Object.entries(byDow).forEach(([w, a]) => { dowMean[w] = a.reduce((x, y) => x + y, 0) / a.length; });
+  const resid = win.map(d => (S[d] || 0) - dowMean[dowOf(d)]);
+  const sigma = resid.length > 1 ? Math.sqrt(resid.reduce((a, r) => a + r * r, 0) / (resid.length - 1)) : 0;
+  const safety = k * sigma * Math.sqrt(cdays.length);
+  const needUnits = Math.max(0, cycleUse + safety - projected);
+  const recPacks = Math.ceil(needUnits / upp - 1e-9);
+  // ⑤ 실제 발주(해당 회차 정상 + 추가)
+  const R = recvRaw || {};
+  const actNormal = R[T] || 0, actAdd = cdays.slice(1).reduce((a, d) => a + (R[d] || 0), 0);
+  const hasActual = Object.keys(R).some(d => d >= T && d <= cdays[cdays.length - 1]);
+  return { T, cdays, cutoff, bal, preSales, preRecv, projected, cycleF, cycleUse, trend, sigma, safety, needUnits, recPacks, actNormal, actAdd, actTotal: actNormal + actAdd, hasActual, thin };
+}
+
+function populateRecOrderDates() {
+  const sel = document.getElementById('recOrderDate'); if (!sel) return;
+  const sd = [...salesDaySetNow()].sort();
+  const itemSel = document.getElementById('recItemSelect');
+  const items = [...new Set(orderCodeEntries.map(e => e.codeName))].sort();
+  if (itemSel) { const prev = itemSel.value; itemSel.innerHTML = '<option value="">전체 품목</option>' + items.map(i => `<option value="${esc(i)}">${esc(i)}</option>`).join(''); itemSel.value = prev; }
+  if (!sd.length) { sel.innerHTML = '<option value="">판매 데이터 없음</option>'; return; }
+  const latest = sd[sd.length - 1];
+  let next = addDaysStr(latest, 1); while (![1, 3, 5].includes(dowOf(next))) next = addDaysStr(next, 1);
+  const opts = [];
+  for (let d = next, i = 0; i < 12; d = addDaysStr(d, -1)) {
+    if ([1, 3, 5].includes(dowOf(d))) { opts.push(d); i++; }
+    if (d < sd[0]) break;
+  }
+  const prev = sel.value;
+  sel.innerHTML = opts.map(d => {
+    const T = addDaysStr(d, 1), cd = cycleDays(T);
+    const tag = d === next ? ' ← 다음 발주' : ' (지난 발주 · 실제와 비교)';
+    return `<option value="${d}">${d.slice(5)}(${DOW_KO[dowOf(d)]}) 발주 → ${T.slice(5)}(${DOW_KO[dowOf(T)]}) 입고 · ${cd[0].slice(5)}~${cd[cd.length-1].slice(5)} 사용${tag}</option>`;
+  }).join('');
+  if (opts.includes(prev)) sel.value = prev;
+}
+
+const recMonthCache = {};
+async function ledgerLoadMonthsCached(coll, months) {
+  const need = months.filter(m => !recMonthCache[coll + m]);
+  if (need.length) {
+    const got = await ledgerLoadMonths(coll, need);
+    need.forEach(m => { recMonthCache[coll + m] = {}; });
+    Object.entries(got).forEach(([code, o]) => Object.entries(o.byItem).forEach(([item, days]) => Object.entries(days).forEach(([d, q]) => {
+      const c = recMonthCache[coll + d.slice(0, 7)];
+      const s = c[code] = c[code] || { storeName: o.storeName, byItem: {} };
+      (s.byItem[item] = s.byItem[item] || {})[d] = q;
+    })));
+  }
+  const out = {};
+  months.forEach(m => Object.entries(recMonthCache[coll + m] || {}).forEach(([code, o]) => {
+    const s = out[code] = out[code] || { storeName: o.storeName, byItem: {} };
+    Object.entries(o.byItem).forEach(([item, days]) => Object.assign(s.byItem[item] = s.byItem[item] || {}, days));
+  }));
+  return out;
+}
+
+let recRows = [], recMeta = null;
+async function renderRecommendation() {
+  const orderDate = document.getElementById('recOrderDate').value;
+  const itemFilter = document.getElementById('recItemSelect').value;
+  const k = Number(document.getElementById('recSafety').value) || 0;
+  const storeQ = (document.getElementById('recStoreFilter').value || '').trim();
+  const st = document.getElementById('recStatus'), wrap = document.getElementById('recWrap');
+  if (!orderDate) { st.innerHTML = '<span class="pill pill-warn">판매 데이터를 먼저 저장해주세요.</span>'; return; }
+  const T = addDaysStr(orderDate, 1), cd = cycleDays(T);
+  const from = addDaysStr(orderDate, -(REC_BALANCE_DAYS + 7));
+  const months = []; for (let m = from.slice(0, 7); m <= cd[cd.length - 1].slice(0, 7); m = addDaysStr(m + '-28', 5).slice(0, 7)) months.push(m);
+  st.innerHTML = `<span class="pill pill-neutral">불러오는 중... (${months.join(', ')} 전체 매장)</span>`;
+  try {
+    const [R, S] = await Promise.all([ledgerLoadMonthsCached(LEDGER_RECV, months), ledgerLoadMonthsCached(LEDGER_SOLD, months)]);
+    const pack = packInfoMap(); const salesDays = salesDaySetNow();
+    const rows = [];
+    new Set([...Object.keys(R), ...Object.keys(S)]).forEach(code => {
+      const r = R[code] || { byItem: {} }, sv = S[code] || { byItem: {} };
+      const info = storeInfoMap[code] || {};
+      const name = r.storeName || sv.storeName || info.name || '';
+      if (storeQ && !code.includes(storeQ) && !name.includes(storeQ)) return;
+      const reg = registeredOrderItems();
+      new Set([...Object.keys(r.byItem), ...Object.keys(sv.byItem)]).forEach(item => {
+        if (!reg.has(item)) return;
+        if (itemFilter && item !== itemFilter) return;
+        const upp = pack[item]?.unitsPerPack || 1;
+        const x = computeRec({ recvRaw: r.byItem[item], sold: sv.byItem[item], orderDate, salesDays, unitsPerPack: upp, k });
+        if (!x.cycleUse && !x.actTotal && !x.recPacks) return;
+        const diff = x.actTotal - x.recPacks;
+        const flag = !x.hasActual ? '예정'
+          : x.actTotal < x.recPacks * 0.8 && diff <= -1 ? '과소발주'
+          : x.actTotal > x.recPacks * 1.3 && diff >= 2 ? '과다발주' : '적정';
+        rows.push({ code, name, team: info.team || '', item, packUnit: pack[item]?.packUnit || '', upp, ...x, diff, flag });
+      });
+    });
+    const ord = { 과소발주: 0, 과다발주: 1, 예정: 2, 적정: 3 };
+    rows.sort((a, b) => ord[a.flag] - ord[b.flag] || (a.flag === '과다발주' ? b.diff - a.diff : a.diff - b.diff) || a.code.localeCompare(b.code));
+    recRows = rows; recMeta = { orderDate, T, itemFilter, k };
+    const cutoff = rows[0]?.cutoff || addDaysStr(orderDate, -1);
+    const cnt = {}; rows.forEach(x => { cnt[x.flag] = (cnt[x.flag] || 0) + 1; });
+    const future = rows.every(x => !x.hasActual);
+    st.innerHTML = `<span class="pill pill-ok">✓ ${orderDate.slice(5)}(${DOW_KO[dowOf(orderDate)]}) 발주 → ${T.slice(5)}(${DOW_KO[dowOf(T)]}) 입고</span><span>${rows.length}건 · 판매 반영 ${cutoff}까지`
+      + (future ? ' · 아직 실제 발주 데이터가 없어 권장량만 표시' : ` · 과소 ${cnt['과소발주']||0} · 과다 ${cnt['과다발주']||0} · 적정 ${cnt['적정']||0}`) + '</span>'
+      + (cutoff !== addDaysStr(orderDate, -1) ? `<div class="note" style="color:#b91c1c; margin-top:4px;">⚠ 발주 전날(${addDaysStr(orderDate, -1)}) 판매가 아직 저장되지 않아 ${cutoff}까지만 반영했습니다. 그 사이 판매는 예측값으로 채웠습니다.</div>` : '');
+    const pill = f => ({ 과소발주: 'pill-bad', 과다발주: 'pill-warn', 적정: 'pill-ok' }[f] || 'pill-neutral');
+    let html = '<div class="table-wrap"><table><thead><tr><th>매장코드</th><th>매장명</th><th>팀</th><th>품목</th><th class="num">추정재고<br>(전날 마감)</th><th class="num">입고 전<br>예상판매</th><th class="num">회차<br>예상사용</th><th class="num">추세</th><th class="num">안전재고</th><th class="num">권장<br>(포장)</th><th class="num">실제 발주<br>(정상+추가)</th><th class="num">차이</th><th>판정</th></tr></thead><tbody>';
+    rows.slice(0, 500).forEach(x => {
+      html += `<tr><td>${esc(x.code)}</td><td>${esc(x.name)}</td><td>${esc(x.team)}</td><td>${esc(x.item)}${x.thin ? ' <span class="pill pill-neutral" title="같은 요일 판매 이력이 2주 미만이라 예측이 불안정합니다">이력부족</span>' : ''}</td>
+        <td class="num">${fmtNum(Math.round(x.bal))}</td><td class="num">${fmtNum(Math.round(x.preSales))}</td>
+        <td class="num" title="${x.cdays.map((d, i) => d.slice(5) + ' ' + Math.round(x.cycleF[i])).join(' / ')}">${fmtNum(Math.round(x.cycleUse))}</td>
+        <td class="num">${x.trend === 1 ? '-' : (x.trend > 1 ? '▲' : '▼') + Math.round(Math.abs(x.trend - 1) * 100) + '%'}</td>
+        <td class="num">${fmtNum(Math.round(x.safety))}</td>
+        <td class="num"><strong>${fmtNum(x.recPacks)}</strong> ${esc(x.packUnit)}</td>
+        <td class="num">${x.hasActual ? `${fmtNum(x.actTotal)}${x.actAdd ? ` <span style="color:#b45309;">(추가 ${fmtNum(x.actAdd)})</span>` : ''}` : '-'}</td>
+        <td class="num">${x.hasActual ? (x.diff > 0 ? '+' : '') + fmtNum(x.diff) : '-'}</td>
+        <td><span class="pill ${pill(x.flag)}">${x.flag}</span></td></tr>`;
+    });
+    wrap.innerHTML = html + '</tbody></table></div>' + (rows.length > 500 ? '<div class="note">화면에는 500건까지만 표시합니다. 전체는 엑셀로 받아주세요.</div>' : '');
+  } catch (err) {
+    console.error(err);
+    st.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`;
+  }
+}
+
+function downloadRecommendation() {
+  if (!recRows.length) { alert('먼저 계산해주세요.'); return; }
+  const aoa = [['발주일', '입고일', '매장코드', '매장명', '팀', '품목', '추정재고(전날마감,개)', '입고전 예상판매(개)', '회차 예상사용(개)', '추세계수', '안전재고(개)', '필요량(개)', '권장발주(포장)', '포장단위', '포장당 개수', '실제 정상발주(포장)', '실제 추가발주(포장)', '실제 합계(포장)', '차이(포장)', '판정', '이력부족']];
+  recRows.forEach(x => aoa.push([recMeta.orderDate, recMeta.T, x.code, x.name, x.team, x.item, Math.round(x.bal), Math.round(x.preSales), Math.round(x.cycleUse), Math.round(x.trend * 100) / 100, Math.round(x.safety), Math.round(x.needUnits), x.recPacks, x.packUnit, x.upp, x.hasActual ? x.actNormal : '', x.hasActual ? x.actAdd : '', x.hasActual ? x.actTotal : '', x.hasActual ? x.diff : '', x.flag, x.thin ? 'Y' : '']));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '권장발주');
+  XLSX.writeFile(wb, `권장발주_${recMeta.orderDate}발주_${recMeta.T}입고${recMeta.itemFilter ? '_' + recMeta.itemFilter : ''}.xlsx`);
 }
 
 // ==========================================================================
@@ -4312,7 +4565,7 @@ Object.assign(window, {
   manualAddCode, toggleDay, toggleAddForm, addAnomalyToMaster, updateMasterName,
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
-  deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders,
+  deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, renderRecommendation, downloadRecommendation,
   addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
