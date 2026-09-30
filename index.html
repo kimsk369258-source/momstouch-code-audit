@@ -366,6 +366,12 @@
         <button class="btn btn-ghost btn-sm" onclick="loadStockData()">🔄 새로고침</button>
       </div>
       <div id="stockTableWrap"><div class="empty">매장을 선택하면 재고 현황이 표시됩니다.</div></div>
+      <div class="toolbar" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
+        <span style="font-size:13px; color:#374151;">판매 소진 내역 확인</span>
+        <input type="date" id="soldCheckDate" class="search-input" style="flex:none; width:160px;">
+        <button class="btn btn-ghost btn-sm" onclick="checkSoldDetail()">상품별 내역 보기</button>
+      </div>
+      <div id="soldCheckWrap"></div>
       <h3 style="margin:18px 0 6px; font-size:15px;">배송회차별 입고 vs 사용 (선택 매장)</h3>
       <div class="card-sub">토 배송 = 토·일·월 사용분(주말), 화 배송 = 화·수 사용분, 목 배송 = 목·금 사용분. 배송일자 기준으로 묶습니다.</div>
       <div id="stockCycleWrap"><div class="empty">매장을 선택하면 표시됩니다.</div></div>
@@ -1414,21 +1420,29 @@ function classifyForRowInner(minorCode, majorName, midName, productName, minorNa
 // (세부구분1은 보정값만큼, 세부구분2는 기본 1개로 계산 — 필요시 조정 가능).
 // 예전 방식으로 별도 "발주품목" 필드를 채워둔 기준표도 하위 호환으로 계속 인식한다.
 // 반환값: [{ name, qtyPerUnit }, ...] — 상품 1개 판매당 소진되는 발주품목 목록.
-function orderItemsForRow(minorCode, majorName, midName, productName, minorName, productCode, sideProductCode, gubun) {
-  const { cat, detail1, detail2, factor } = classifyForRow(minorCode, majorName, midName, productName, minorName, productCode, sideProductCode, gubun);
-  if (cat === '제외') return []; // 제외 상품은 재고 소진량 추적 대상이 아니다.
-  const f = factor != null ? factor : 1;
-  const items = [];
-  if (detail1) items.push({ name: detail1, qtyPerUnit: f });
-  if (detail2 && detail2 !== detail1) items.push({ name: detail2, qtyPerUnit: 1 });
+// 재분류 때 판매 소진량(판매수량 × 보정값)을 다시 모은다 — 원장(sold_m) 재작성용.
+// 기준표 보정값을 고친 뒤 "전체 재분류"를 하면 합본의 보정값 열·매장별 분류 수량과 함께
+// 재고 계산용 판매 소진량도 새 보정값으로 다시 계산된다(예전엔 소진량만 옛 값으로 남았다).
+function addConsumptionRow(map, storeCode, storeName, qtySold, orderItems) {
+  orderItems.forEach(oi => {
+    const key = storeCode + '|' + oi.name;
+    if (!map[key]) map[key] = { storeCode, storeName, orderItem: oi.name, qty: 0 };
+    map[key].qty += qtySold * oi.qtyPerUnit;
+  });
+}
+async function saveConsumptionLedger(date, map) {
+  if (isMonthKey(date)) return; // 월합계는 재고 추적에 넣지 않는다
+  const rows = Object.values(map).map(e => ({ storeCode: e.storeCode, storeName: e.storeName, date, item: e.orderItem, qty: e.qty }));
+  if (rows.length) await ledgerWriteRows(LEDGER_SOLD, rows);
+}
 
-  // 하위 호환: 예전 방식대로 별도 "발주품목" 필드를 채워둔 경우도 포함한다
-  // (세부구분1/2와 겹치지 않을 때만 추가).
-  const legacy = legacyOrderItemForRow(minorCode, productName, productCode);
-  if (legacy && legacy !== detail1 && legacy !== detail2) {
-    items.push({ name: legacy, qtyPerUnit: f });
-  }
-  return items;
+function orderItemsForRow(minorCode, majorName, midName, productName, minorName, productCode, sideProductCode, gubun) {
+  // 엑셀 POS 매출보고와 같은 구조: 발주품목 = 세부구분1(Z열), 소진량 = 판매수량(R) × 보정값(AC).
+  // 세부구분2(AA열)와 예전 "발주품목" 필드는 현재 쓰지 않으므로 소진 계산에 넣지 않는다
+  // (기준표에 과거 값이 남아 있어도 엑셀과 수치가 어긋나지 않게).
+  const { cat, detail1, factor } = classifyForRow(minorCode, majorName, midName, productName, minorName, productCode, sideProductCode, gubun);
+  if (cat === '제외' || !detail1) return [];
+  return [{ name: detail1, qtyPerUnit: qtyMultiplier(factor) }];
 }
 
 function legacyOrderItemForRow(minorCode, productName, productCode) {
@@ -2744,6 +2758,7 @@ async function reclassifyOneDateSilently(date) {
 
   const items = [];
   const categoryQtyMap = {};
+  const consumptionMap = {};
   const rows = json.slice(1);
   const parentNameByCode = {}, childrenByCode = {};
   rows.forEach(r => {
@@ -2775,6 +2790,7 @@ async function reclassifyOneDateSilently(date) {
         const cqKey = storeCodeVal + '\u0001' + cat + '\u0001' + (detail1 || '');
         if (!categoryQtyMap[cqKey]) categoryQtyMap[cqKey] = { storeCode: storeCodeVal, storeName: storeNameVal, cat, detail1: detail1 || '', qty: 0 };
         categoryQtyMap[cqKey].qty += qtySold * qtyMultiplier(factor);
+        addConsumptionRow(consumptionMap, storeCodeVal, storeNameVal, qtySold, orderItemsForRow(minorCodeVal, majorName, midName, productName, minorNameRaw, productCodeVal, sideProductCodeVal, gubunVal));
       }
     }
     items.push({
@@ -2803,6 +2819,7 @@ async function reclassifyOneDateSilently(date) {
   const ok = await storageSet('daily:' + date, JSON.stringify(newReport));
   if (!ok) throw new Error('저장 실패');
   await saveCatQtyForDate(date, Object.values(categoryQtyMap));
+  await saveConsumptionLedger(date, consumptionMap);
   return { oldCount: oldReport ? oldReport.anomalyCount : null, newCount: newReport.anomalies.length };
 }
 
@@ -2853,6 +2870,7 @@ async function reclassifyAndRedownload(date, btnEl) {
 
     const items = [];
     const categoryQtyMap = {};
+    const consumptionMap = {};
     const rows = json.slice(1);
     const parentNameByCode = {}, childrenByCode = {};
     rows.forEach(r => {
@@ -2885,6 +2903,7 @@ async function reclassifyAndRedownload(date, btnEl) {
           const cqKey = storeCodeVal + '\u0001' + cat + '\u0001' + (detail1 || '');
           if (!categoryQtyMap[cqKey]) categoryQtyMap[cqKey] = { storeCode: storeCodeVal, storeName: storeNameVal, cat, detail1: detail1 || '', qty: 0 };
           categoryQtyMap[cqKey].qty += qtySold * qtyMultiplier(factor);
+          addConsumptionRow(consumptionMap, storeCodeVal, storeNameVal, qtySold, orderItemsForRow(minorCodeVal, majorName, midName, productName, minorNameRaw, productCodeVal, sideProductCodeVal, gubunVal));
         }
       }
       items.push({
@@ -2913,6 +2932,7 @@ async function reclassifyAndRedownload(date, btnEl) {
     const ok = await storageSet('daily:' + date, JSON.stringify(newReport));
     if (!ok) throw new Error('재분류된 대조 결과 저장에 실패했습니다.');
     await saveCatQtyForDate(date, Object.values(categoryQtyMap));
+    await saveConsumptionLedger(date, consumptionMap);
 
     triggerDownload(blob, mergedFileName(date));
     await loadDailyIndex();
@@ -4303,6 +4323,54 @@ function downloadCycleOverview() {
 }
 
 
+// 선택 매장·날짜의 합본 파일에서 발주품목으로 잡힌 상품 행을 모두 꺼내
+// 판매수량(R) · 보정값(AC) · R×AC를 보여주고, 원장에 저장된 판매 소진량과 비교한다.
+async function checkSoldDetail() {
+  const wrap = document.getElementById('soldCheckWrap');
+  const storeCode = document.getElementById('stockStoreSelect').value;
+  const date = document.getElementById('soldCheckDate').value;
+  if (!storeCode || !date) { wrap.innerHTML = '<div class="note">매장과 날짜를 선택해주세요.</div>'; return; }
+  wrap.innerHTML = '<div class="empty">합본 파일 읽는 중...</div>';
+  try {
+    const url = await getDownloadURL(exportStorageRef(date));
+    let text = await (await fetch(url)).text();
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    const wb = XLSX.read(text, { type: 'string', raw: true });
+    const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: true });
+    const header = json[0].map(String), cols = resolveRawCols(header);
+    const factorIdx = header.indexOf('보정값');
+    const reg = registeredOrderItems();
+    const lines = []; const siteSum = {}, acSum = {};
+    json.slice(1).forEach(r => {
+      if (String(r[cols.storeCode] ?? '').trim() !== storeCode) return;
+      const g = k => cols[k] >= 0 ? String(r[cols[k]] ?? '').trim() : '';
+      const ois = orderItemsForRow(normCode(r[cols.minorCode]), g('majorName'), g('midName'), g('productName'), g('minorName'),
+        cols.productCode >= 0 ? normCode(r[cols.productCode]) : '', cols.sideProductCode >= 0 ? normCode(r[cols.sideProductCode]) : '', g('gubun'));
+      const qty = cols.qty >= 0 ? toNum(r[cols.qty]) : 0;
+      const ac = factorIdx >= 0 ? r[factorIdx] : '';
+      ois.filter(oi => reg.has(oi.name)).forEach(oi => {
+        lines.push({ item: oi.name, name: g('productName'), gubun: g('gubun'), qty, ac, f: oi.qtyPerUnit, site: qty * oi.qtyPerUnit });
+        siteSum[oi.name] = (siteSum[oi.name] || 0) + qty * oi.qtyPerUnit;
+        acSum[oi.name] = (acSum[oi.name] || 0) + qty * qtyMultiplier(ac);
+      });
+    });
+    const saved = (await ledgerLoadStore(LEDGER_SOLD, storeCode)).byItem;
+    if (!lines.length) { wrap.innerHTML = `<div class="note">${date} 합본에서 이 매장의 등록 발주품목 판매 행이 없습니다.</div>`; return; }
+    lines.sort((a, b) => a.item.localeCompare(b.item) || b.site - a.site);
+    let html = '<div class="status-line" style="flex-wrap:wrap; margin:6px 0;">';
+    Object.keys(siteSum).sort().forEach(it => {
+      const sv = (saved[it] || {})[date];
+      const ok = sv != null && Math.abs(sv - acSum[it]) < 1e-6;
+      html += `<span class="pill ${ok ? 'pill-ok' : 'pill-bad'}">${esc(it)}</span><span>합본 R×AC 합계 <strong>${fmtNum(acSum[it])}</strong> · 재고화면에 저장된 값 <strong>${sv == null ? '없음' : fmtNum(sv)}</strong>${ok ? ' ✓ 일치' : ' — 불일치: "③ 이력 → 전체 재분류"로 다시 계산하세요'}</span>`;
+    });
+    html += '</div><div class="table-wrap"><table><thead><tr><th>발주품목</th><th>상품명</th><th>구분</th><th class="num">판매수량(R)</th><th class="num">보정값(AC)</th><th class="num">R×AC</th></tr></thead><tbody>';
+    lines.forEach(l => { html += `<tr><td>${esc(l.item)}</td><td>${esc(l.name)}</td><td>${esc(l.gubun)}</td><td class="num">${fmtNum(l.qty)}</td><td class="num">${esc(String(l.ac))}</td><td class="num">${fmtNum(l.qty * qtyMultiplier(l.ac))}</td></tr>`; });
+    wrap.innerHTML = html + '</tbody></table></div>';
+  } catch (err) {
+    wrap.innerHTML = `<div class="note" style="color:#b91c1c;">불러오기 실패: ${esc(err.message)} (그 날짜 합본 파일이 저장되어 있는지 확인해주세요)</div>`;
+  }
+}
+
 // ==========================================================================
 // 권장 발주량 예측
 // ==========================================================================
@@ -4565,7 +4633,7 @@ Object.assign(window, {
   manualAddCode, toggleDay, toggleAddForm, addAnomalyToMaster, updateMasterName,
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
-  deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, renderRecommendation, downloadRecommendation,
+  deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, checkSoldDetail, renderRecommendation, downloadRecommendation,
   addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
