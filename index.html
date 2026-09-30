@@ -336,11 +336,12 @@
       <div class="card-sub">거래처코드·품목코드·배송일자·배송량이 담긴 파일(또는 배송일자 컬럼이 있는 거래처별거래원장)을 올리면 배송일자별로 저장됩니다. 한 달치를 한 번에 올려도 되고, 같은 날짜를 다시 올리면 그 날짜 값만 교체됩니다. 배송일자가 없는 원장은 예전처럼 "누적"으로 저장됩니다.</div>
       <div class="drop-zone" id="orderDataDropZone">
         <div class="dz-icon">🚚</div>
-        <div class="dz-text">가맹점별 발주품목 파일을 여기로 드래그하거나 클릭</div>
-        <div class="dz-hint">.xlsx / .xls / .csv · 여러 날짜 한 파일에 섞여 있어도 자동으로 나눠 저장</div>
+        <div class="dz-text">가맹점별 발주품목 파일을 여기로 드래그하거나 클릭 (여러 개 가능)</div>
+        <div class="dz-hint">.xlsx / .xls / .csv · 올리면 먼저 미리보기 → 확인 후 "저장"을 누르면 서버에 보관됩니다</div>
       </div>
-      <input type="file" id="orderDataFileInput" accept=".xlsx,.xls,.csv">
+      <input type="file" id="orderDataFileInput" accept=".xlsx,.xls,.csv" multiple>
       <div class="status-line" id="orderDataStatus" style="margin-top:10px;"></div>
+      <div id="orderPendingWrap"></div>
     </div>
 
     <div class="card">
@@ -348,7 +349,8 @@
         <h2>발주 이력</h2>
         <button class="btn btn-danger btn-sm" onclick="resetAllOrderHistory()">전체 발주 이력 삭제</button>
       </div>
-      <div class="card-sub">배송일자별로 저장된 입고 데이터 목록입니다.</div>
+      <div class="card-sub">배송일자별로 저장된 입고 데이터 목록입니다. 한 번 저장한 날짜는 서버에 계속 남아 있으니, 다음부터는 아래 "다음에 조회할 기간"만 받아서 올리면 됩니다.</div>
+      <div id="orderCoverage" style="margin-bottom:10px;"></div>
       <div class="table-wrap">
         <table id="orderHistoryTable"><thead></thead><tbody></tbody></table>
       </div>
@@ -3701,13 +3703,8 @@ async function handleOrderDataFile(file) {
         if (!byDate[dk][key]) byDate[dk][key] = { storeCode, storeName: String(r[1] ?? '').trim(), orderItem: codeName, qty: 0 };
         byDate[dk][key].qty += toNum(r[15]);
       }
-      const dates = Object.keys(byDate).sort();
-      if (dates.length === 0) throw new Error('배송일자가 있는 행을 찾지 못했습니다.');
-      const failed = await saveDatedOrders(file, byDate, statusEl);
-      let msg = `<span class="pill ${failed ? 'pill-bad' : 'pill-ok'}">${failed ? '⚠ 일부 실패' : '✓ 완료'}</span><span>${esc(file.name)} · ${dates.length}개 배송일(${dates[0]} ~ ${dates[dates.length-1]}) 저장</span>`;
-      if (unmatched.size) msg += `<div class="note" style="margin-top:4px;">발주코드 매핑표에 없는 품목코드 ${unmatched.size}개는 제외되었습니다: ${[...unmatched].slice(0,10).join(', ')}${unmatched.size>10?' 외':''}</div>`;
-      statusEl.innerHTML = msg;
-      await loadOrdersIndex();
+      if (Object.keys(byDate).length === 0) throw new Error('배송일자가 있는 행을 찾지 못했습니다.');
+      addPendingOrders(file, byDate, unmatched);
       return;
     }
     // 첫 몇 줄에 "거래처정보" 같은 그룹 헤더가 있을 수 있으니, "거래처코드"가 있는 줄을 찾는다.
@@ -3742,18 +3739,91 @@ async function handleOrderDataFile(file) {
     const dates = Object.keys(byDate).sort();
     if (dates.length === 0) throw new Error('처리할 수 있는 배송 데이터가 없습니다. 발주코드 매핑표에 없는 품목코드만 있을 수 있습니다.');
 
-    const failed = await saveDatedOrders(file, byDate, statusEl);
-    let msg = `<span class="pill ${failed ? 'pill-bad' : 'pill-ok'}">${failed ? '⚠ 일부 실패' : '✓ 완료'}</span><span>${esc(file.name)} · ${dates.length}개 배송일(${dates[0]} ~ ${dates[dates.length-1]}) 저장${failed ? ` — 매장·월 문서 ${failed}개 저장 실패(다시 올리면 해당 부분만 덮어씁니다)` : ''}</span>`;
-    if (unmatchedCodes.size > 0) {
-      msg += `<div class="note" style="margin-top:4px;">발주코드 매핑표에 없는 품목코드 ${unmatchedCodes.size}개는 제외되었습니다: ${[...unmatchedCodes].slice(0,10).join(', ')}${unmatchedCodes.size>10?' 외':''}</div>`;
-    }
-    statusEl.innerHTML = msg;
-    await loadOrdersIndex();
+    addPendingOrders(file, byDate, unmatchedCodes);
   } catch (err) {
     statusEl.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`;
   }
 }
-setupDropZone('orderDataDropZone', 'orderDataFileInput', handleOrderDataFile);
+setupMultiDropZone('orderDataDropZone', 'orderDataFileInput', async files => {
+  const list = [...files]; // 입력칸 초기화 전에 목록을 복사
+  for (const f of list) await handleOrderDataFile(f);
+});
+
+// ── 업로드한 배송 데이터는 바로 저장하지 않고 미리보기로 모아뒀다가 "저장"을 눌러야 서버에 보관한다.
+// 여러 파일을 올리면 합쳐지고, 같은 (배송일·매장·품목)은 나중에 올린 파일 값으로 바뀐다.
+let pendingOrders = null; // { files:[], byDate:{date:{key:entry}}, unmatched:Set }
+function addPendingOrders(file, byDate, unmatched) {
+  if (!pendingOrders) pendingOrders = { files: [], byDate: {}, unmatched: new Set() };
+  pendingOrders.files.push(file.name);
+  Object.entries(byDate).forEach(([dk, m]) => {
+    pendingOrders.byDate[dk] = pendingOrders.byDate[dk] || {};
+    Object.entries(m).forEach(([k, e]) => { pendingOrders.byDate[dk][k] = e; });
+  });
+  (unmatched || []).forEach(c => pendingOrders.unmatched.add(c));
+  document.getElementById('orderDataStatus').innerHTML = `<span class="pill pill-neutral">미리보기</span><span>${esc(file.name)} 읽기 완료 — 아래 내용을 확인하고 "저장"을 눌러주세요.</span>`;
+  renderPendingOrders();
+}
+function renderPendingOrders() {
+  const wrap = document.getElementById('orderPendingWrap');
+  if (!pendingOrders) { wrap.innerHTML = ''; return; }
+  const saved = new Set(ordersIndex.filter(o => o.ledger).map(o => o.date));
+  const dates = Object.keys(pendingOrders.byDate).sort();
+  let over = 0;
+  let html = `<div class="card" style="margin:10px 0 0; border:1px solid #bfdbfe; background:#f8fbff;">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+      <strong>저장 전 미리보기 · 파일 ${pendingOrders.files.length}개 (${esc(pendingOrders.files.join(', '))})</strong>
+      <span><button class="btn btn-primary btn-sm" onclick="savePendingOrders()">💾 저장</button>
+      <button class="btn btn-ghost btn-sm" onclick="cancelPendingOrders()">취소</button></span>
+    </div>
+    <div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>배송일자</th><th>배송회차</th><th class="num">매장수</th><th class="num">품목수</th><th class="num">배송량(포장 합)</th><th>상태</th></tr></thead><tbody>`;
+  dates.forEach(d => {
+    const es = Object.values(pendingOrders.byDate[d]);
+    const isOver = saved.has(d); if (isOver) over++;
+    html += `<tr><td><strong>${d}</strong> (${DOW_KO[dowOf(d)]})</td><td>${esc(cycleKind(cycleStartOf(d)))}${cycleStartOf(d) !== d ? ' <span class="pill pill-warn">화·목·토 아님</span>' : ''}</td>
+      <td class="num">${fmtNum(new Set(es.map(e => e.storeCode)).size)}</td><td class="num">${fmtNum(new Set(es.map(e => e.orderItem)).size)}</td>
+      <td class="num">${fmtNum(es.reduce((a, e) => a + e.qty, 0))}</td>
+      <td>${isOver ? '<span class="pill pill-warn">이미 저장됨 → 덮어쓰기</span>' : '<span class="pill pill-ok">신규</span>'}</td></tr>`;
+  });
+  html += '</tbody></table></div>';
+  if (over) html += `<div class="note">이미 저장된 배송일 ${over}개는 이번 파일 값으로 교체됩니다(그 날짜의 다른 매장 데이터는 유지).</div>`;
+  if (pendingOrders.unmatched.size) html += `<div class="note">발주코드 매핑표에 없는 품목코드 ${pendingOrders.unmatched.size}개는 제외됩니다: ${esc([...pendingOrders.unmatched].slice(0, 10).join(', '))}${pendingOrders.unmatched.size > 10 ? ' 외' : ''}</div>`;
+  wrap.innerHTML = html + '</div>';
+}
+function cancelPendingOrders() {
+  pendingOrders = null; renderPendingOrders();
+  document.getElementById('orderDataStatus').innerHTML = '<span class="pill pill-neutral">취소했습니다.</span>';
+}
+async function savePendingOrders() {
+  if (!pendingOrders) return;
+  const statusEl = document.getElementById('orderDataStatus');
+  const dates = Object.keys(pendingOrders.byDate).sort();
+  const fileLabel = { name: pendingOrders.files.length > 1 ? `${pendingOrders.files[0]} 외 ${pendingOrders.files.length - 1}개` : pendingOrders.files[0] };
+  try {
+    const failed = await saveDatedOrders(fileLabel, pendingOrders.byDate, statusEl);
+    statusEl.innerHTML = `<span class="pill ${failed ? 'pill-bad' : 'pill-ok'}">${failed ? '⚠ 일부 실패' : '✓ 저장 완료'}</span><span>${dates.length}개 배송일(${dates[0]} ~ ${dates[dates.length - 1]})을 서버에 저장했습니다.${failed ? ` 매장·월 문서 ${failed}개 저장 실패 — 같은 파일을 다시 올려 저장하면 그 부분만 채워집니다.` : ''}</span>`;
+    if (!failed) pendingOrders = null;
+    renderPendingOrders();
+    await loadOrdersIndex();
+  } catch (err) {
+    statusEl.innerHTML = `<span class="pill pill-bad">✗ 저장 실패</span><span>${esc(err.message)}</span>`;
+  }
+}
+
+// 저장된 배송일 범위와 빠진 배송일(화·목·토 중 데이터 없는 날), 다음에 조회할 기간을 보여준다.
+function renderOrderCoverage() {
+  const el = document.getElementById('orderCoverage'); if (!el) return;
+  const dates = ordersIndex.filter(o => o.ledger).map(o => o.date).sort();
+  if (!dates.length) { el.innerHTML = '<div class="note">배송일자별로 저장된 데이터가 아직 없습니다.</div>'; return; }
+  const have = new Set(dates), first = dates[0], last = dates[dates.length - 1];
+  const missing = [];
+  for (let d = first; d <= last; d = addDaysStr(d, 1)) if ([2, 4, 6].includes(dowOf(d)) && !have.has(d)) missing.push(d);
+  const today = formatDate(new Date());
+  el.innerHTML = `<div class="status-line" style="flex-wrap:wrap;">
+    <span class="pill pill-ok">저장된 배송일 ${dates.length}일</span><span>${first} ~ ${last}</span>
+    <span class="pill pill-neutral">다음에 조회할 기간</span><span><strong>${addDaysStr(last, 1)} ~ ${today}</strong> (배송일자 기준)</span>
+    ${missing.length ? `<span class="pill pill-warn">중간에 빠진 배송일 ${missing.length}일</span><span>${missing.slice(0, 8).map(d => `${d.slice(5)}(${DOW_KO[dowOf(d)]})`).join(', ')}${missing.length > 8 ? ' 외' : ''} — 공휴일 휴배송이 아니면 이 날짜도 받아서 올려주세요</span>` : ''}
+  </div>`;
+}
 
 let ordersIndexLoadSeq = 0;
 async function loadOrdersIndex() {
@@ -3801,6 +3871,8 @@ async function loadOrdersIndex() {
   const seen = new Map(); ordersIndex.forEach(x => seen.set(x.date + (x.ledger ? '|L' : ''), x));
   setOrdersIndex([...seen.values()]);
   renderOrderHistoryTable();
+  renderOrderCoverage();
+  renderPendingOrders();
   populateCycleSelect();
   populateStockStoreSelect();
 }
@@ -4240,7 +4312,7 @@ Object.assign(window, {
   manualAddCode, toggleDay, toggleAddForm, addAnomalyToMaster, updateMasterName,
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
-  deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview,
+  deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders,
   addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
