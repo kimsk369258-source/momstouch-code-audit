@@ -376,7 +376,8 @@
       <div class="card-sub">토 배송 = 토·일·월 사용분(주말), 화 배송 = 화·수 사용분, 목 배송 = 목·금 사용분. 배송일자 기준으로 묶습니다.</div>
       <div id="stockCycleWrap"><div class="empty">매장을 선택하면 표시됩니다.</div></div>
       <div class="note">※ 충족률 = 최근 4주 입고(개) ÷ 최근 4주 판매(개). 90% 미만이 계속되면 과소발주 또는 사입 의심, 130% 초과는 과다발주입니다. 추적 시작 후 7일 안의 부족분은 기초재고로 봅니다.</div>
-      <div class="note">※ 이 기능 업데이트 전에 저장한 판매 데이터는 한 번 옮겨야 재고 계산에 포함됩니다. <button class="btn btn-ghost btn-sm" onclick="migrateConsumptionToLedger()">예전 판매 소진 데이터 옮기기</button> <span id="ledgerMigrateStatus"></span></div>
+      <div class="note">※ 일별 대조를 "저장"하면 판매 소진 원장에도 자동으로 기록됩니다. 원장에 빠진 날짜(이 기능 이전에 저장한 날짜 등)는 사이트를 열 때 저장된 합본 파일로 자동으로 채워집니다. <button class="btn btn-ghost btn-sm" onclick="backfillSoldLedger(true)">빠진 날짜 지금 채우기</button></div>
+      <div class="status-line" id="ledgerMigrateStatus" style="margin-top:4px;"></div>
     </div>
     <div class="card">
       <h2>배송회차별 전체 매장 현황 (본부 코칭용)</h2>
@@ -2982,6 +2983,7 @@ async function loadDailyIndex() {
   dailyIndex = [...byDate.values()];
   renderHistoryTab();
   try { populateRecOrderDates(); } catch (e) { /* 발주 탭 준비 전 */ }
+  backfillSoldLedger(false); // 원장에 빠진 날짜가 있으면 백그라운드로 채운다(세션당 1회)
 }
 
 function renderHistoryTab() {
@@ -4098,7 +4100,9 @@ async function renderStockTable() {
     const end = sDates[sDates.length - 1] > rDates[rDates.length - 1] ? sDates[sDates.length - 1] : rDates[rDates.length - 1];
     const salesDaySet = salesDaySetNow();
     const days = []; for (let d = start; d <= end; d = addDaysStr(d, 1)) days.push(d);
-    const missingSales = days.filter(d => !salesDaySet.has(d) && d <= sDates[sDates.length - 1]);
+    // 이 매장의 판매 원장에 기록이 아예 없는 날(전체 판매 업로드가 없거나, 이 매장만 빠진 날)
+    const storeSoldDays = new Set(sDates);
+    const missingSales = days.filter(d => (!salesDaySet.has(d) || !storeSoldDays.has(d)) && d <= sDates[sDates.length - 1]);
     const winStart = (() => { const w = addDaysStr(end, -(STOCK_WINDOW_DAYS - 1)); return w > start ? w : start; })(); // 추적 기간이 4주보다 짧으면 추적 시작일부터
     const initEnd = addDaysStr(start, STOCK_INIT_DAYS - 1);
 
@@ -4128,7 +4132,7 @@ async function renderStockTable() {
       : f > 1.3 ? `<span class="pill pill-warn">${Math.round(f*100)}%</span>`
       : `<span class="pill pill-ok">${Math.round(f*100)}%</span>`;
     let html = `<div class="note" style="margin-bottom:8px;">추적 기간 ${start} ~ ${end} (${days.length}일) · 충족률은 ${winStart} ~ ${end} 기준(최대 최근 ${STOCK_WINDOW_DAYS}일)`
-      + (missingSales.length ? ` · <strong style="color:#b91c1c;">판매 데이터가 없는 날 ${missingSales.length}일</strong>(${missingSales.slice(0,5).join(', ')}${missingSales.length>5?' 외':''}) — 이 날은 판매 0으로 계산되어 재고가 부풀려질 수 있습니다` : '') + `</div>`;
+      + (missingSales.length ? ` · <strong style="color:#b91c1c;">판매 데이터가 없는 날 ${missingSales.length}일</strong>(${missingSales.slice(0,5).join(', ')}${missingSales.length>5?' 외':''}) — 이 날은 판매 0으로 계산되어 재고가 부풀려집니다. "③ 이력 → 전체 재분류"를 실행하면 저장된 합본으로 판매 소진량이 다시 채워집니다` : '') + `</div>`;
     html += '<div class="table-wrap"><table><thead><tr><th>발주품목</th><th class="num">기간 입고(포장)</th><th class="num">기간 입고(개)</th><th class="num">기간 판매(개)</th><th class="num">충족률</th><th class="num">추정 재고(개)</th><th class="num">초기 부족<br><span style="font-weight:400;">(기초재고 추정)</span></th><th class="num">입고로 설명 안 되는 판매<br><span style="font-weight:400;">(사입 등 추정)</span></th><th>최근 입고일</th><th>최근 판매일</th></tr></thead><tbody>';
     rowsOut.forEach(r => {
       const p = pack[r.item];
@@ -4146,7 +4150,25 @@ async function renderStockTable() {
         <td>${esc(r.lastSold || '-')}</td>
       </tr>`;
     });
-    wrap.innerHTML = html + '</tbody></table></div>';
+    // 일자별 내역 — 어느 날 판매가 비었는지 바로 보이도록
+    html += '</tbody></table></div>';
+    html += '<details style="margin-top:8px;" open><summary style="cursor:pointer; font-size:13px;">일자별 입고·판매·추정재고</summary><div class="table-wrap"><table><thead><tr><th>날짜</th>'
+      + items.map(it => `<th class="num">${esc(it)} 입고(개)</th><th class="num">${esc(it)} 판매(개)</th><th class="num">${esc(it)} 추정재고</th>`).join('') + '<th>판매 기록</th></tr></thead><tbody>';
+    const balNow = {}; items.forEach(it => { balNow[it] = 0; });
+    days.forEach(d => {
+      let cells = '';
+      items.forEach(it => {
+        const ru = toUnits(it, (recv.byItem[it] || {})[d] || 0), sq = (sold.byItem[it] || {})[d] || 0;
+        balNow[it] = Math.max(0, balNow[it] + ru - sq);
+        cells += `<td class="num">${ru ? fmtNum(ru) : '-'}</td><td class="num">${fmtNum(sq)}</td><td class="num">${fmtNum(balNow[it])}</td>`;
+      });
+      const has = storeSoldDays.has(d) && salesDaySet.has(d);
+      html += `<tr${has ? '' : ' style="background:#fef2f2;"'}><td>${d.slice(5)}(${DOW_KO[dowOf(d)]})</td>${cells}<td>${has ? '있음' : '<span class="pill pill-bad">없음</span>'}</td></tr>`;
+    });
+    html += '</tbody></table></div></details>';
+    wrap.innerHTML = html;
+    const chk = document.getElementById('soldCheckDate');
+    if (chk && !chk.value) chk.value = sDates[sDates.length - 1];
     renderStoreCycles(recv, sold, toUnits, pack);
   } catch (err) {
     console.error('render stock failed', err);
@@ -4368,6 +4390,58 @@ async function checkSoldDetail() {
     wrap.innerHTML = html + '</tbody></table></div>';
   } catch (err) {
     wrap.innerHTML = `<div class="note" style="color:#b91c1c;">불러오기 실패: ${esc(err.message)} (그 날짜 합본 파일이 저장되어 있는지 확인해주세요)</div>`;
+  }
+}
+
+// ==========================================================================
+// 판매 소진 원장 자동 채우기 — 대조 이력에는 있는데 원장(sold_m)에 없는 날짜를
+// 저장된 합본 파일(보정값 열 포함)에서 바로 계산해 채운다. 기준표·분류는 건드리지 않고,
+// 합본에 저장된 세부구분1(Z) · 판매수량(R) · 보정값(AC) 그대로 R×AC를 쓴다(엑셀과 동일).
+// ==========================================================================
+let soldBackfillRunning = false, soldBackfillDone = false;
+async function consumptionFromStoredExport(date) {
+  const url = await getDownloadURL(exportStorageRef(date));
+  let text = await (await fetch(url)).text();
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const wb = XLSX.read(text, { type: 'string', raw: true });
+  const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: true });
+  const header = json[0].map(String), cols = resolveRawCols(header);
+  const catIdx = header.indexOf('분류');
+  const d1Idx = header.indexOf('세부구분1') >= 0 ? header.indexOf('세부구분1') : header.indexOf('세부구분');
+  const fIdx = header.indexOf('보정값');
+  if (cols.storeCode < 0 || cols.qty < 0 || d1Idx < 0) throw new Error('합본 형식 인식 실패');
+  const map = {};
+  json.slice(1).forEach(r => {
+    const cat = catIdx >= 0 ? String(r[catIdx] ?? '').trim() : '';
+    const item = String(r[d1Idx] ?? '').trim();
+    const storeCode = String(r[cols.storeCode] ?? '').trim();
+    const qty = toNum(r[cols.qty]);
+    if (!storeCode || !item || cat === '제외' || !qty) return;
+    const key = storeCode + '|' + item;
+    if (!map[key]) map[key] = { storeCode, storeName: cols.storeName >= 0 ? String(r[cols.storeName] ?? '').trim() : '', orderItem: item, qty: 0 };
+    map[key].qty += qty * qtyMultiplier(fIdx >= 0 ? r[fIdx] : '');
+  });
+  return map;
+}
+async function backfillSoldLedger(manual) {
+  if (soldBackfillRunning || (soldBackfillDone && !manual)) return;
+  soldBackfillRunning = true;
+  const el = document.getElementById('ledgerMigrateStatus');
+  try {
+    await loadSoldDates();
+    const have = soldDates || new Set();
+    const missing = dailyIndex.map(d => d.date).filter(d => !isMonthKey(d) && !have.has(d)).sort();
+    if (!missing.length) { if (manual && el) el.innerHTML = '<span class="pill pill-ok">✓ 빠진 날짜 없음</span>'; return; }
+    const failed = []; let n = 0;
+    for (const date of missing) {
+      if (el) el.innerHTML = `<span class="pill pill-neutral">판매 소진 원장 채우는 중 ${++n}/${missing.length}</span><span>${date}</span>`;
+      try { await saveConsumptionLedger(date, await consumptionFromStoredExport(date)); }
+      catch (e) { console.error('sold backfill failed', date, e); failed.push(date); }
+    }
+    if (el) el.innerHTML = `<span class="pill ${failed.length ? 'pill-warn' : 'pill-ok'}">${failed.length ? '⚠ 일부 완료' : '✓ 자동 채움 완료'}</span><span>${missing.length - failed.length}개 날짜를 원장에 채웠습니다.${failed.length ? ` 실패 ${failed.length}건(${failed.slice(0, 5).join(', ')}${failed.length > 5 ? ' 외' : ''}) — 합본 파일이 저장되지 않은 날짜입니다.` : ''}</span>`;
+    if (document.getElementById('stockStoreSelect')?.value) renderStockTable();
+  } finally {
+    soldBackfillRunning = false; soldBackfillDone = true;
   }
 }
 
@@ -4633,7 +4707,7 @@ Object.assign(window, {
   manualAddCode, toggleDay, toggleAddForm, addAnomalyToMaster, updateMasterName,
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
-  deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, checkSoldDetail, renderRecommendation, downloadRecommendation,
+  deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, checkSoldDetail, backfillSoldLedger, renderRecommendation, downloadRecommendation,
   addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
