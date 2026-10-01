@@ -206,6 +206,7 @@
     <button class="tab-btn" data-tab="history">③ 이력</button>
     <button class="tab-btn" data-tab="orders">④ 발주/재고</button>
     <button class="tab-btn" data-tab="extract">⑤ 데이터 추출</button>
+    <button class="tab-btn" data-tab="promo">⑥ 프로모션</button>
   </div>
 
   <!-- ===================== TAB 1: 기준코드 관리 ===================== -->
@@ -461,6 +462,34 @@
       <div id="extractStatus" style="margin-top:8px;"></div>
     </div>
   </section>
+
+  <!-- ===================== TAB 6: 프로모션 ===================== -->
+  <section class="panel" id="panel-promo">
+    <div class="card">
+      <h2>프로모션·이벤트 캘린더</h2>
+      <div class="card-sub">배달앱 프로모션과 공휴일·명절을 등록하면 ① 과거 기간의 판매 효과(상승률)를 측정하고 ② 권장 발주 회차에 진행 중인 행사를 표시합니다. POS에 채널 구분이 없으므로 효과는 "행사 기간 매장 전체 계육 판매 증가율"로 측정됩니다.</div>
+      <div class="toolbar" style="gap:8px; flex-wrap:wrap;">
+        <button class="btn btn-primary btn-sm" onclick="openPromoForm()">+ 프로모션/이벤트 등록</button>
+        <button class="btn btn-ghost btn-sm" onclick="togglePromoPaste()">엑셀 붙여넣기 일괄 등록</button>
+        <button class="btn btn-ghost btn-sm" onclick="downloadPromos()">엑셀 다운로드</button>
+      </div>
+      <div id="promoPasteBox" style="display:none; margin-top:10px;">
+        <div class="note">엑셀에서 아래 순서의 열을 복사해 붙여넣으세요(쿠폰 1개 = 1행, 같은 프로모션명·기간이면 한 프로모션으로 묶임, 첫 행 헤더는 있어도 됨):<br>
+        <code>구분(프로모션/공휴일) | 프로모션명 | 채널 | 시작일 | 종료일 | 주문유형 | 대상 | 최소주문금액 | 할인구분 | 총할인 | 본사 | 가맹점 | 채널부담 | 형태 | 적용요일/날짜 | 일배포량·시간 | 예상증가율(%) | 비고</code></div>
+        <textarea id="promoPasteText" style="width:100%; height:140px; font-family:monospace; font-size:12px;" placeholder="프로모션	26.10 쿠팡이츠 데일리딜	쿠팡이츠	2026-09-28	2026-10-11	배달	전체	18400	Mass	3000	1495	1495	10	스토어부착	매일		"></textarea>
+        <button class="btn btn-primary btn-sm" onclick="importPromoPaste()">가져오기</button> <span id="promoPasteStatus"></span>
+      </div>
+      <div id="promoFormWrap"></div>
+    </div>
+    <div class="card">
+      <h2>등록된 프로모션·이벤트</h2>
+      <div class="toolbar" style="gap:8px;"><select id="promoYear" class="search-input" style="flex:none;" onchange="renderPromoList()"></select></div>
+      <div id="promoTimeline" style="margin:10px 0;"></div>
+      <div id="promoList"><div class="empty">불러오는 중...</div></div>
+      <div id="promoEffectWrap"></div>
+    </div>
+  </section>
+
 
   <div class="footer-note">POS 엑셀 합치기 툴의 결과 파일과 함께 사용하도록 설계되었습니다.</div>
 </div>
@@ -4534,6 +4563,215 @@ async function handleSnapshotFile(file) {
 function fmtTime(iso) { try { const d = new Date(iso); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; } catch (e) { return iso; } }
 
 // ==========================================================================
+// ⑥ 프로모션·이벤트 — 저장: meta/promotions(조각 저장) = [promo...]
+// promo = { id, type:'promo'|'holiday', name, channel, start, end, orderType, target, minOrder,
+//           expectedLift(%), note, coupons:[{kind,total,hq,store,channelShare,form,days,daily}], measured }
+// ==========================================================================
+let promos = [];
+const PROMO_CHANNELS = ['쿠팡이츠', '배달의민족', '요기요', '땡겨요', '자사앱', '전체'];
+const PROMO_COLORS = { 쿠팡이츠: '#2563eb', 배달의민족: '#0d9488', 요기요: '#dc2626', 땡겨요: '#ea580c', 자사앱: '#7c3aed', 전체: '#475569', 공휴일: '#a16207' };
+async function loadPromos() {
+  try { const raw = await storageGetLarge('promotions'); promos = raw ? JSON.parse(raw) : []; } catch (e) { promos = []; }
+  renderPromoList();
+}
+async function savePromos() {
+  // 다른 팀원이 그 사이 고쳤을 수 있으니 최신본을 읽어 id 기준으로 합친 뒤 저장
+  return storageSetLarge('promotions', JSON.stringify(promos));
+}
+function normDateInput(v) {
+  const t = String(v ?? '').trim(); if (!t) return '';
+  if (v instanceof Date) return formatDate(v);
+  const m = t.match(/(\d{4})\D?(\d{1,2})\D?(\d{1,2})/);
+  return m ? `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}` : t;
+}
+// 쿠폰 적용일 판정: '매일'/빈칸 = 기간 전체, '화,토' = 요일, '9/29,10/3' 또는 '2026-09-29' = 특정일
+function couponActiveOn(c, d, p) {
+  if (d < p.start || d > p.end) return false;
+  const t = String(c.days || '').trim();
+  if (!t || t === '매일' || t.includes('월~일')) return true;
+  const dates = [...t.matchAll(/(?:(\d{4})[-.\/])?(\d{1,2})[-.\/](\d{1,2})/g)].map(m => `${m[1] || p.start.slice(0, 4)}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`);
+  if (dates.length) return dates.includes(d);
+  return [...t].some(ch => DOW_KO.indexOf(ch) === dowOf(d));
+}
+function promosOn(d) { return promos.filter(p => d >= p.start && d <= p.end); }
+function promoSummary(p) {
+  if (p.type === 'holiday') return '공휴일·명절';
+  return (p.coupons || []).map(c => `${c.kind || '쿠폰'} ${fmtNum(c.total)}원${c.days && c.days !== '매일' ? `(${c.days})` : ''}`).join(' · ');
+}
+
+function openPromoForm(id) {
+  const p = promos.find(x => x.id === id) || { type: 'promo', channel: '쿠팡이츠', orderType: '배달', target: '전체', minOrder: 18400, coupons: [{ kind: 'Mass', form: '스토어 부착', days: '매일' }] };
+  const ci = (c, k, w = 80, ph = '') => `<input class="search-input pc-${k}" style="width:${w}px; flex:none;" value="${esc(c[k] ?? '')}" placeholder="${ph}">`;
+  const couponRow = c => `<tr>${['kind', 'total', 'hq', 'store', 'channelShare', 'form', 'days', 'daily'].map(k => `<td>${ci(c, k, { kind: 110, form: 100, days: 130, daily: 120 }[k] || 75, { days: '매일 / 화,토 / 9/29,10/3', daily: '2.5만장 17시' }[k] || '')}</td>`).join('')}<td><button class="btn btn-ghost btn-sm" onclick="this.closest('tr').remove()">✕</button></td></tr>`;
+  window._promoCouponRow = couponRow;
+  document.getElementById('promoFormWrap').innerHTML = `<div class="card" style="margin-top:12px; border:1px solid #bfdbfe; background:#f8fbff;">
+    <input type="hidden" id="pfId" value="${esc(p.id || '')}">
+    <div class="toolbar" style="gap:8px; flex-wrap:wrap;">
+      <select id="pfType" class="search-input" style="flex:none;"><option value="promo"${p.type === 'promo' ? ' selected' : ''}>프로모션</option><option value="holiday"${p.type === 'holiday' ? ' selected' : ''}>공휴일·명절</option></select>
+      <input id="pfName" class="search-input" style="flex:1; min-width:220px;" placeholder="이름 (예: 26.10 쿠팡이츠 데일리딜)" value="${esc(p.name || '')}">
+      <select id="pfChannel" class="search-input" style="flex:none;">${PROMO_CHANNELS.map(c => `<option${p.channel === c ? ' selected' : ''}>${c}</option>`).join('')}</select>
+      <input id="pfStart" type="date" class="search-input" style="flex:none;" value="${esc(p.start || '')}"> ~
+      <input id="pfEnd" type="date" class="search-input" style="flex:none;" value="${esc(p.end || '')}">
+    </div>
+    <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:6px;">
+      <select id="pfOrderType" class="search-input" style="flex:none;">${['배달', '포장', '배달·포장'].map(c => `<option${p.orderType === c ? ' selected' : ''}>${c}</option>`).join('')}</select>
+      <input id="pfTarget" class="search-input" style="flex:none; width:200px;" placeholder="대상(전체 / 팀명 / 매장코드,…)" value="${esc(p.target || '전체')}">
+      <input id="pfMinOrder" class="search-input" style="flex:none; width:120px;" placeholder="최소주문금액" value="${esc(p.minOrder ?? '')}">
+      <input id="pfLift" class="search-input" style="flex:none; width:140px;" placeholder="예상 증가율(%) 선택" value="${esc(p.expectedLift ?? '')}">
+      <input id="pfNote" class="search-input" style="flex:1; min-width:200px;" placeholder="비고" value="${esc(p.note || '')}">
+    </div>
+    <div class="table-wrap" style="margin-top:8px;"><table id="pfCoupons"><thead><tr><th>할인구분</th><th>총할인</th><th>본사</th><th>가맹점</th><th>채널부담</th><th>형태</th><th>적용요일/날짜</th><th>일배포량·시간</th><th></th></tr></thead>
+      <tbody>${(p.coupons || []).map(couponRow).join('')}</tbody></table></div>
+    <div class="toolbar" style="gap:8px; margin-top:6px;">
+      <button class="btn btn-ghost btn-sm" onclick="document.querySelector('#pfCoupons tbody').insertAdjacentHTML('beforeend', window._promoCouponRow({days:'매일'}))">+ 쿠폰 줄</button>
+      <span style="flex:1"></span>
+      <button class="btn btn-primary btn-sm" onclick="submitPromoForm()">저장</button>
+      <button class="btn btn-ghost btn-sm" onclick="document.getElementById('promoFormWrap').innerHTML=''">닫기</button>
+    </div></div>`;
+}
+async function submitPromoForm() {
+  const g = id => document.getElementById(id).value.trim();
+  const num = v => { const n = Number(String(v).replace(/[^0-9.\-]/g, '')); return String(v).trim() === '' || !isFinite(n) ? null : n; };
+  const p = {
+    id: g('pfId') || ('p' + Date.now()), type: g('pfType'), name: g('pfName'), channel: g('pfType') === 'holiday' ? '공휴일' : g('pfChannel'),
+    start: g('pfStart'), end: g('pfEnd'), orderType: g('pfOrderType'), target: g('pfTarget') || '전체',
+    minOrder: num(g('pfMinOrder')), expectedLift: num(g('pfLift')), note: g('pfNote'),
+    coupons: [...document.querySelectorAll('#pfCoupons tbody tr')].map(tr => {
+      const v = k => tr.querySelector('.pc-' + k).value.trim();
+      return { kind: v('kind'), total: num(v('total')), hq: num(v('hq')), store: num(v('store')), channelShare: num(v('channelShare')), form: v('form'), days: v('days') || '매일', daily: v('daily') };
+    }).filter(c => c.kind || c.total),
+  };
+  if (!p.name || !p.start || !p.end || p.end < p.start) { alert('이름과 기간(시작 ≤ 종료)을 입력해주세요.'); return; }
+  const old = promos.find(x => x.id === p.id); if (old && old.measured) p.measured = old.measured;
+  promos = promos.filter(x => x.id !== p.id).concat(p);
+  if (!(await savePromos())) { alert('저장 실패'); return; }
+  document.getElementById('promoFormWrap').innerHTML = '';
+  renderPromoList();
+}
+async function deletePromo(id) {
+  const p = promos.find(x => x.id === id);
+  if (!p || !confirm(`"${p.name}"을(를) 삭제할까요?`)) return;
+  promos = promos.filter(x => x.id !== id); await savePromos(); renderPromoList();
+}
+function togglePromoPaste() { const b = document.getElementById('promoPasteBox'); b.style.display = b.style.display === 'none' ? 'block' : 'none'; }
+async function importPromoPaste() {
+  const st = document.getElementById('promoPasteStatus');
+  const lines = document.getElementById('promoPasteText').value.split(/\r?\n/).map(l => l.split('\t')).filter(r => r.some(c => c.trim()));
+  const num = v => { const n = Number(String(v ?? '').replace(/[^0-9.\-]/g, '')); return String(v ?? '').trim() === '' || !isFinite(n) ? null : n; };
+  const groups = {}; let n = 0;
+  lines.forEach(r => {
+    const c = r.map(x => (x ?? '').trim());
+    if (c[1] === '프로모션명' || c[0] === '구분') return;
+    const type = /공휴|명절|휴일/.test(c[0]) ? 'holiday' : 'promo';
+    const start = normDateInput(c[3]), end = normDateInput(c[4]) || start;
+    if (!c[1] || !/^\d{4}-\d{2}-\d{2}$/.test(start)) return;
+    const key = [c[1], start, end].join('|');
+    const g = groups[key] = groups[key] || { id: 'p' + Date.now() + '_' + (n++), type, name: c[1], channel: type === 'holiday' ? '공휴일' : (c[2] || '전체'), start, end, orderType: c[5] || '배달', target: c[6] || '전체', minOrder: num(c[7]), expectedLift: num(c[16]), note: c[17] || '', coupons: [] };
+    if (type === 'promo' && (c[8] || c[9])) g.coupons.push({ kind: c[8], total: num(c[9]), hq: num(c[10]), store: num(c[11]), channelShare: num(c[12]), form: c[13], days: c[14] || '매일', daily: c[15] });
+  });
+  const add = Object.values(groups);
+  if (!add.length) { st.innerHTML = '<span class="pill pill-warn">가져올 행이 없습니다.</span>'; return; }
+  // 같은 이름·기간이 이미 있으면 교체
+  const keyOf = p => [p.name, p.start, p.end].join('|');
+  const addKeys = new Set(add.map(keyOf));
+  promos = promos.filter(p => !addKeys.has(keyOf(p))).concat(add);
+  if (!(await savePromos())) { st.innerHTML = '<span class="pill pill-bad">저장 실패</span>'; return; }
+  st.innerHTML = `<span class="pill pill-ok">✓ ${add.length}건 등록</span>`;
+  renderPromoList();
+}
+
+function renderPromoList() {
+  const ysel = document.getElementById('promoYear'); if (!ysel) return;
+  const years = [...new Set(promos.map(p => p.start.slice(0, 4)))].sort().reverse();
+  const cur = ysel.value || years[0] || String(new Date().getFullYear());
+  ysel.innerHTML = (years.length ? years : [cur]).map(y => `<option${y === cur ? ' selected' : ''}>${y}</option>`).join('');
+  const list = promos.filter(p => p.start.slice(0, 4) === cur || p.end.slice(0, 4) === cur).sort((a, b) => a.start.localeCompare(b.start));
+  // 타임라인(연간)
+  const y0 = `${cur}-01-01`, days = (new Date(`${+cur + 1}-01-01T00:00:00Z`) - new Date(y0 + 'T00:00:00Z')) / 864e5;
+  const pos = d => Math.max(0, Math.min(100, (new Date(d + 'T00:00:00Z') - new Date(y0 + 'T00:00:00Z')) / 864e5 / days * 100));
+  let tl = '<div style="position:relative; height:18px; font-size:10px; color:#9ca3af;">' + Array.from({ length: 12 }, (_, i) => `<span style="position:absolute; left:${i / 12 * 100}%;">${i + 1}월</span>`).join('') + '</div>';
+  tl += list.map(p => `<div style="position:relative; height:20px; margin:2px 0; background:#f9fafb; border-radius:4px;"><div title="${esc(p.name)} ${p.start}~${p.end}" style="position:absolute; left:${pos(p.start)}%; width:${Math.max(0.6, pos(addDaysStr(p.end, 1)) - pos(p.start))}%; top:2px; bottom:2px; background:${PROMO_COLORS[p.channel] || '#64748b'}; border-radius:3px;"></div><span style="position:absolute; left:${Math.min(80, pos(addDaysStr(p.end, 1)))}%; padding-left:6px; font-size:11px; line-height:20px; white-space:nowrap;">${esc(p.name)}</span></div>`).join('');
+  document.getElementById('promoTimeline').innerHTML = list.length ? tl : '';
+  const lift = p => p.measured ? Object.entries(p.measured.items || {}).map(([it, v]) => `${esc(it)} <strong style="color:${v.lift >= 0 ? '#b91c1c' : '#2563eb'}">${v.lift >= 0 ? '+' : ''}${Math.round(v.lift * 100)}%</strong>`).join(', ') : '-';
+  let html = '<div class="table-wrap"><table><thead><tr><th>구분·채널</th><th>이름</th><th>기간</th><th>내용</th><th class="num">예상 증가율</th><th>측정 효과</th><th></th></tr></thead><tbody>';
+  list.forEach(p => {
+    const nd = (new Date(p.end + 'T00:00:00Z') - new Date(p.start + 'T00:00:00Z')) / 864e5 + 1;
+    html += `<tr><td><span class="pill" style="background:${PROMO_COLORS[p.channel] || '#64748b'}; color:#fff;">${esc(p.channel)}</span></td><td><strong>${esc(p.name)}</strong>${p.note ? `<div class="note">${esc(p.note)}</div>` : ''}</td>
+      <td>${p.start.slice(5)}(${DOW_KO[dowOf(p.start)]}) ~ ${p.end.slice(5)}(${DOW_KO[dowOf(p.end)]}) · ${nd}일</td><td style="font-size:12px;">${esc(promoSummary(p))}${p.orderType ? ` · ${esc(p.orderType)}` : ''}${p.target && p.target !== '전체' ? ` · 대상 ${esc(p.target)}` : ''}</td>
+      <td class="num">${p.expectedLift != null ? p.expectedLift + '%' : '-'}</td><td style="font-size:12px;">${lift(p)}</td>
+      <td style="white-space:nowrap;"><button class="btn btn-ghost btn-sm" onclick="measurePromo('${p.id}')">효과 측정</button> <button class="btn btn-ghost btn-sm" onclick="openPromoForm('${p.id}')">수정</button> <button class="btn btn-danger btn-sm" onclick="deletePromo('${p.id}')">삭제</button></td></tr>`;
+  });
+  document.getElementById('promoList').innerHTML = list.length ? html + '</tbody></table></div>' : '<div class="empty">등록된 프로모션이 없습니다.</div>';
+}
+
+// 효과 측정: 전체 매장 합계 기준. 기준선 = 행사 시작 전 5주 안의 같은 요일 중
+// 어떤 행사·공휴일도 없던 날의 평균. 상승률 = 행사일 실제 합 ÷ 기준선 합 − 1.
+async function measurePromo(id) {
+  const p = promos.find(x => x.id === id); if (!p) return;
+  const wrap = document.getElementById('promoEffectWrap');
+  wrap.innerHTML = '<div class="empty">판매 원장 불러오는 중... (전체 매장)</div>';
+  try {
+    const from = addDaysStr(p.start, -35);
+    const months = []; for (let m = from.slice(0, 7); m <= p.end.slice(0, 7); m = addDaysStr(m + '-28', 5).slice(0, 7)) months.push(m);
+    const S = await ledgerLoadMonthsCached(LEDGER_SOLD, months);
+    const reg = registeredOrderItems(); const salesDays = salesDaySetNow();
+    const tot = {}; // item -> date -> 합
+    const storeTot = {}; // item -> store -> date -> q
+    Object.entries(S).forEach(([code, o]) => Object.entries(o.byItem).forEach(([item, days]) => {
+      if (!reg.has(item)) return;
+      Object.entries(days).forEach(([d, q]) => {
+        (tot[item] = tot[item] || {})[d] = (tot[item][d] || 0) + q;
+        ((storeTot[item] = storeTot[item] || {})[code] = storeTot[item][code] || {})[d] = q;
+      });
+    }));
+    const isEventDay = d => promos.some(x => d >= x.start && d <= x.end);
+    const baseOf = (series, d) => {
+      const v = [];
+      for (let w = 1; w <= 5; w++) { const x = addDaysStr(d, -7 * w); if (x < p.start && salesDays.has(x) && !isEventDay(x)) v.push(series[x] || 0); }
+      return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+    };
+    const pdays = []; for (let d = p.start; d <= p.end; d = addDaysStr(d, 1)) if (salesDays.has(d)) pdays.push(d);
+    if (!pdays.length) { wrap.innerHTML = `<div class="note">"${esc(p.name)}" 기간의 판매 데이터가 사이트에 없습니다. 그 기간 일별 대조를 저장하면 측정할 수 있습니다.</div>`; return; }
+    const measured = { at: nowISO(), days: pdays.length, items: {} };
+    let html = `<h3 style="margin:14px 0 6px; font-size:15px;">효과 측정 — ${esc(p.name)} (판매 데이터 ${pdays.length}일 / 행사 ${(new Date(p.end) - new Date(p.start)) / 864e5 + 1}일)</h3>`;
+    Object.keys(tot).sort().forEach(item => {
+      let act = 0, base = 0; const rows = [];
+      pdays.forEach(d => { const b = baseOf(tot[item], d); if (b == null) return; act += tot[item][d] || 0; base += b; rows.push({ d, a: tot[item][d] || 0, b, cs: (p.coupons || []).filter(c => c.days && c.days !== '매일' && couponActiveOn(c, d, p)) }); });
+      if (!base) return;
+      const lift = act / base - 1;
+      const sp = {}; (p.coupons || []).filter(c => c.days && c.days !== '매일').forEach(c => {
+        const r = rows.filter(x => x.cs.includes(c)); const a = r.reduce((s, x) => s + x.a, 0), b = r.reduce((s, x) => s + x.b, 0);
+        if (b) sp[`${c.kind} ${c.total}원 적용일`] = a / b - 1;
+      });
+      // 매장별 상승률(물량 있는 매장만) 상·하위
+      const st = Object.entries(storeTot[item] || {}).map(([code, ser]) => {
+        let a = 0, b = 0; rows.forEach(x => { const bb = baseOf(ser, x.d); if (bb == null) return; a += ser[x.d] || 0; b += bb; });
+        return { code, a, b, lift: b ? a / b - 1 : null };
+      }).filter(x => x.lift != null && x.b >= rows.length * 5).sort((a, b) => b.lift - a.lift);
+      measured.items[item] = { lift, special: sp, actual: act, baseline: base, storeCount: st.length };
+      html += `<div class="status-line" style="flex-wrap:wrap;"><span class="pill pill-neutral">${esc(item)}</span><span>행사일 판매 ${fmtNum(Math.round(act))} vs 평소 ${fmtNum(Math.round(base))} → <strong>${lift >= 0 ? '+' : ''}${Math.round(lift * 100)}%</strong>${Object.entries(sp).map(([k, v]) => ` · ${esc(k)} ${v >= 0 ? '+' : ''}${Math.round(v * 100)}%`).join('')}</span></div>`;
+      html += '<div class="table-wrap"><table><thead><tr><th>날짜</th><th class="num">실제</th><th class="num">평소(기준선)</th><th class="num">상승률</th><th>특별 쿠폰</th></tr></thead><tbody>' + rows.map(x => `<tr><td>${x.d.slice(5)}(${DOW_KO[dowOf(x.d)]})</td><td class="num">${fmtNum(Math.round(x.a))}</td><td class="num">${fmtNum(Math.round(x.b))}</td><td class="num">${Math.round((x.a / x.b - 1) * 100)}%</td><td>${esc(x.cs.map(c => c.kind + ' ' + c.total).join(', '))}</td></tr>`).join('') + '</tbody></table></div>';
+      if (st.length) html += `<div class="note">매장별(평소 하루 5개 이상 매장 ${st.length}곳) 상승률 상위: ${st.slice(0, 5).map(x => `${x.code} ${storeInfoMap[x.code]?.name || ''} ${Math.round(x.lift * 100)}%`).join(', ')} / 하위: ${st.slice(-3).map(x => `${x.code} ${storeInfoMap[x.code]?.name || ''} ${Math.round(x.lift * 100)}%`).join(', ')}</div>`;
+    });
+    if (!Object.keys(measured.items).length) { wrap.innerHTML = html + '<div class="note">기준선(행사 전 5주 안 행사 없는 같은 요일)을 만들 판매 데이터가 부족합니다. 행사 시작 전 몇 주치 일별 데이터를 저장하면 측정됩니다.</div>'; return; }
+    html += '<div class="note">※ 기준선에 추세 변화·날씨·신메뉴 등이 섞일 수 있습니다. 행사 기간 중 판매 데이터가 다 쌓인 뒤 다시 측정하면 값이 갱신됩니다.</div>';
+    p.measured = measured; await savePromos();
+    wrap.innerHTML = html; renderPromoList();
+  } catch (err) { wrap.innerHTML = `<div class="note" style="color:#b91c1c;">측정 실패: ${esc(err.message)}</div>`; }
+}
+
+function downloadPromos() {
+  const aoa = [['구분', '프로모션명', '채널', '시작일', '종료일', '주문유형', '대상', '최소주문금액', '할인구분', '총할인', '본사', '가맹점', '채널부담', '형태', '적용요일/날짜', '일배포량·시간', '예상증가율(%)', '비고', '측정 효과']];
+  promos.slice().sort((a, b) => a.start.localeCompare(b.start)).forEach(p => {
+    const eff = p.measured ? Object.entries(p.measured.items).map(([k, v]) => `${k} ${Math.round(v.lift * 100)}%`).join(', ') : '';
+    const cs = p.coupons && p.coupons.length ? p.coupons : [{}];
+    cs.forEach(c => aoa.push([p.type === 'holiday' ? '공휴일' : '프로모션', p.name, p.channel, p.start, p.end, p.orderType, p.target, p.minOrder, c.kind, c.total, c.hq, c.store, c.channelShare, c.form, c.days, c.daily, p.expectedLift, p.note, eff]));
+  });
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '프로모션');
+  XLSX.writeFile(wb, '프로모션_이벤트_목록.xlsx');
+}
+
+// ==========================================================================
 // 권장 발주량 예측
 // ==========================================================================
 // 발주일 O(월·수·금) → 입고 T = O+1(화·목·토), 회차 사용일 = cycleDays(T).
@@ -4690,6 +4928,11 @@ async function renderRecommendation() {
     const future = rows.every(x => !x.hasActual);
     st.innerHTML = `<span class="pill pill-ok">✓ ${orderDate.slice(5)}(${DOW_KO[dowOf(orderDate)]}) 발주 → ${T.slice(5)}(${DOW_KO[dowOf(T)]}) 입고</span><span>${rows.length}건 · 판매 반영 ${cutoff}까지`
       + (future ? ' · 아직 실제 발주 데이터가 없어 권장량만 표시' : ` · 미발주 ${cnt['미발주']||0} · 과소 ${cnt['과소발주']||0} · 과다 ${cnt['과다발주']||0} · 적정 ${cnt['적정']||0}`) + '</span>'
+      + (() => {
+        const act = []; cd.forEach(d => promosOn(d).forEach(p => { if (!act.includes(p)) act.push(p); }));
+        if (!act.length) return '';
+        return `<div class="note" style="margin-top:4px; color:#1d4ed8;">📣 이 회차(${cd[0].slice(5)}~${cd[cd.length - 1].slice(5)}) 진행 행사: ${act.map(p => `<strong>${esc(p.name)}</strong>(${esc(p.channel)}${p.measured ? ', 과거 측정 ' + Object.entries(p.measured.items).map(([k, v]) => `${esc(k)} ${v.lift >= 0 ? '+' : ''}${Math.round(v.lift * 100)}%`).join('/') : ''}${p.expectedLift != null ? ', 예상 +' + p.expectedLift + '%' : ''}; ${cd.filter(d => (p.coupons || []).some(c => c.days && c.days !== '매일' && couponActiveOn(c, d, p))).map(d => d.slice(5) + ' 특별쿠폰').join(', ')})`).join(' · ')} — 아직 권장량에 자동 반영되지 않으니, 행사 효과를 감안해 판단해주세요.</div>`;
+      })()
       + (cutoff !== addDaysStr(orderDate, -1) ? `<div class="note" style="color:#b91c1c; margin-top:4px;">⚠ 발주 전날(${addDaysStr(orderDate, -1)}) 판매가 아직 저장되지 않아 ${cutoff}까지만 반영했습니다. 그 사이 판매는 예측값으로 채웠습니다.</div>` : '');
     const pill = f => ({ 미발주: 'pill-bad', 과소발주: 'pill-bad', 과다발주: 'pill-warn', 적정: 'pill-ok' }[f] || 'pill-neutral');
     // ── 품목별 전체 합계(업체 사전 준비량)
@@ -4815,6 +5058,7 @@ if (!isConfigured) {
       await loadOrderCodeMap();
       await loadOrdersIndex();
       await loadStoreInfoMap();
+      loadPromos();
     } else {
       showScreen('login');
     }
@@ -4826,7 +5070,8 @@ Object.assign(window, {
   manualAddCode, toggleDay, toggleAddForm, addAnomalyToMaster, updateMasterName,
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
-  deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, checkSoldDetail, backfillSoldLedger, renderRecommendation, downloadRecommendation,
+  deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, checkSoldDetail, backfillSoldLedger,
+  openPromoForm, submitPromoForm, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
   addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
