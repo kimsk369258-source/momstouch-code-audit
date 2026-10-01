@@ -3770,7 +3770,7 @@ async function handleOrderDataFile(file) {
         if (!byDate[dk][key]) byDate[dk][key] = { storeCode, storeName: String(r[1] ?? '').trim(), orderItem: codeName, qty: 0 };
         byDate[dk][key].qty += toNum(r[15]);
       }
-      if (Object.keys(byDate).length === 0) throw new Error('배송일자가 있는 행을 찾지 못했습니다.');
+      if (Object.keys(byDate).length === 0) throw new Error('배송일자(N열)가 모두 비어 있습니다. 아직 배송 전인 마감 전(9:30 등) 원장이라면, 아래 "권장 발주량" 카드의 "⏱ 발주 현황" 칸에 올려주세요. 입고 원장에는 배송이 끝난 뒤의 원장을 올려야 합니다.');
       addPendingOrders(file, byDate, unmatched);
       return;
     }
@@ -4483,26 +4483,38 @@ async function handleSnapshotFile(file) {
     if (looksLikeCumulativeOrderFormat(json)) {
       hdr = json[1] || []; start = 2; sc = 0; nc = 1; cc = 6;
       qc = snapColIndex(hdr, ['주문량', '주문수량']); if (qc < 0) qc = 15;
-      dc = findDateColInCumulativeFormat(json);
+      dc = snapColIndex(hdr, ['배송일자', '배송일']);
+      var oc = snapColIndex(hdr, ['주문일자']);
     } else {
       hdr = json[0] || []; start = 1;
       sc = snapColIndex(hdr, ['거래처코드', '매장코드', '코드']); nc = snapColIndex(hdr, ['거래처명', '주문거래처', '매장명']);
       cc = snapColIndex(hdr, ['품목코드', '발주코드']); qc = snapColIndex(hdr, ['주문량', '주문수량', '배송량', '수량']);
       dc = snapColIndex(hdr, ['배송일자', '배송일']);
+      var oc = snapColIndex(hdr, ['주문일자']);
       if (sc < 0 || cc < 0 || qc < 0) throw new Error('거래처코드·품목코드·주문량 컬럼을 찾지 못했습니다.');
     }
-    const data = {}, names = {}, unmatched = new Set(); let used = 0, skippedOtherDate = 0;
+    const data = {}, names = {}, unmatched = new Set(); let used = 0, skippedOtherDate = 0, pendingRows = 0;
+    // 마감 전 원장은 배송일자(N)가 비어 있다(공백 한 칸 포함) — 아직 배송 전인 주문이므로
+    // 이번 회차(선택한 발주일 다음 날 입고)분으로 본다. 주문일자가 직전 발주일보다 이른
+    // 오래된 미배송 주문은 따로 세어 알려준다(예약 주문·누락 주문일 수 있음).
+    const prevOrderDay = (() => { let d = addDaysStr(orderDate, -1); while (![1, 3, 5].includes(dowOf(d))) d = addDaysStr(d, -1); return d; })();
+    const oldOrders = []; // {code, name, orderDay, q}
     for (let i = start; i < json.length; i++) {
       const r = json[i]; const code = String(r[sc] ?? '').trim();
       if (!code || code.startsWith('<')) continue;
-      if (dc >= 0 && r[dc] !== '' && r[dc] != null) {
-        const dk = orderDeliveryDateKey(r[dc]);
-        // 이번 회차(정상 = 입고일, 추가 = 회차 안의 다음 날 전산)만
+      const dRaw = dc >= 0 ? String(r[dc] ?? '').trim() : '';
+      if (dRaw) {
+        const dk = orderDeliveryDateKey(dRaw);
+        // 배송일자가 찍힌 행은 이번 회차(정상 = 입고일, 추가 = 회차 안의 다음 날 전산)만
         if (/^\d{4}-\d{2}-\d{2}$/.test(dk) && !cd.includes(dk)) { skippedOtherDate++; continue; }
-      }
+      } else pendingRows++;
       const item = orderCodeMap[normCode(r[cc])];
       if (!item) { const oc = normCode(r[cc]); if (oc) unmatched.add(oc); continue; }
       const q = toNum(r[qc]); if (!q) continue;
+      if (!dRaw && oc >= 0) {
+        const od = orderDeliveryDateKey(r[oc]);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(od) && od < prevOrderDay) oldOrders.push({ code, name: nc >= 0 ? String(r[nc] ?? '').trim() : '', od, q });
+      }
       (data[item] = data[item] || {})[code] = (data[item][code] || 0) + q;
       if (nc >= 0) names[code] = String(r[nc] ?? '').trim();
       used++;
@@ -4512,7 +4524,8 @@ async function handleSnapshotFile(file) {
     const ok = await storageSetLarge('snap_' + T, JSON.stringify(snap));
     if (!ok) throw new Error('저장 실패');
     snapCache[T] = snap;
-    st.innerHTML = `<span class="pill pill-ok">✓ 발주 현황 반영</span><span>${esc(file.name)} · ${fmtTime(snap.uploadedAt)} 기준 · ${T.slice(5)}(${DOW_KO[dowOf(T)]}) 입고분 ${used}행${skippedOtherDate ? ` · 다른 회차 ${skippedOtherDate}행 제외` : ''}${unmatched.size ? ` · 매핑 없는 품목코드 ${unmatched.size}개 제외` : ''}</span>`;
+    st.innerHTML = `<span class="pill pill-ok">✓ 발주 현황 반영</span><span>${esc(file.name)} · ${fmtTime(snap.uploadedAt)} 기준 · ${T.slice(5)}(${DOW_KO[dowOf(T)]}) 입고분 ${used}행${pendingRows ? `(배송일자 없는 미배송 주문 ${pendingRows}행 포함)` : ''}${skippedOtherDate ? ` · 다른 회차 ${skippedOtherDate}행 제외` : ''}${unmatched.size ? ` · 매핑 없는 품목코드 ${unmatched.size}개 제외` : ''}</span>`
+      + (oldOrders.length ? `<div class="note" style="margin-top:4px;">⚠ 주문일자가 직전 발주일(${prevOrderDay.slice(5)})보다 이른 미배송 주문 ${oldOrders.length}건(${fmtNum(oldOrders.reduce((a, o) => a + o.q, 0))}포장)도 이번 회차에 포함했습니다 — 예약 주문이거나 처리 누락일 수 있으니 확인해주세요: ${esc(oldOrders.slice(0, 6).map(o => `${o.code} ${o.name}(${o.od.slice(5)}, ${fmtNum(o.q)})`).join(', '))}${oldOrders.length > 6 ? ' 외' : ''}</div>` : '');
     await renderRecommendation();
   } catch (err) {
     st.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`;
