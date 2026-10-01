@@ -408,6 +408,13 @@
         <button class="btn btn-primary btn-sm" onclick="renderRecommendation()">계산</button>
         <button class="btn btn-ghost btn-sm" onclick="downloadRecommendation()">엑셀 다운로드</button>
       </div>
+      <div class="drop-zone" id="snapDropZone" style="margin-top:10px; padding:14px;">
+        <div class="dz-text">⏱ 발주 현황(9:30 등 마감 전 시점) 파일을 여기로 — 위에서 고른 발주일의 입고분 주문량으로 바로 반영</div>
+        <div class="dz-hint">거래처별거래원장(주문량 M열 / 배송일자 N열) 그대로 · 다시 올리면 최신 시점으로 교체 · 입고 원장에는 저장되지 않음(팀원과는 공유됨)</div>
+      </div>
+      <input type="file" id="snapFileInput" accept=".xlsx,.xls,.csv" style="display:none;">
+      <div class="status-line" id="snapStatus" style="margin:6px 0;"></div>
+      <div id="recSummary"></div>
       <div class="status-line" id="recStatus" style="margin:8px 0;"></div>
       <div id="recWrap"><div class="empty">발주일을 고르고 계산을 누르세요.</div></div>
       <div class="note">※ 권장(개) = 회차 예상 사용 + 안전재고 − (전날 마감 추정재고 − 발주일~입고 전날 예상 판매). 일별 예상 = 최근 4주 같은 요일 가중평균(4:3:2:1) × 추세계수(최근 2주 ÷ 직전 4주, 0.8~1.25 제한). 안전재고 = 계수 × 일별 편차(σ) × √회차일수. 추정재고는 최근 8주 입고·판매를 날짜순으로 따라가며 0 아래로는 내려가지 않게 계산합니다.</div>
@@ -3804,6 +3811,7 @@ async function handleOrderDataFile(file) {
     statusEl.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`;
   }
 }
+setupDropZone('snapDropZone', 'snapFileInput', handleSnapshotFile);
 setupMultiDropZone('orderDataDropZone', 'orderDataFileInput', async files => {
   const list = [...files]; // 입력칸 초기화 전에 목록을 복사
   for (const f of list) await handleOrderDataFile(f);
@@ -4446,6 +4454,73 @@ async function backfillSoldLedger(manual) {
 }
 
 // ==========================================================================
+// 발주 현황 스냅샷 — 정상발주 마감(10시) 전에 그 시점까지 들어온 주문량을 올려
+// 권장 대비 부족을 미리 집계한다(업체 사전 준비 요청용). 입고 원장과는 따로 저장.
+// 저장: meta/snap_{입고일}(조각 저장) = { T, uploadedAt, fileName, data: { 품목: { 매장코드: 포장수 } } }
+// ==========================================================================
+let snapCache = {};
+async function loadSnapshot(T) {
+  if (T in snapCache) return snapCache[T];
+  const raw = await storageGetLarge('snap_' + T);
+  snapCache[T] = raw ? JSON.parse(raw) : null;
+  return snapCache[T];
+}
+function snapColIndex(hdr, names) {
+  const h = hdr.map(v => String(v ?? '').replace(/\s/g, ''));
+  for (const n of names) { const i = h.indexOf(n); if (i >= 0) return i; }
+  return -1;
+}
+async function handleSnapshotFile(file) {
+  const st = document.getElementById('snapStatus');
+  const orderDate = document.getElementById('recOrderDate').value;
+  if (!orderDate) { st.innerHTML = '<span class="pill pill-warn">먼저 발주일을 선택하세요.</span>'; return; }
+  if (!orderCodeEntries.length) { st.innerHTML = '<span class="pill pill-warn">발주코드 매핑표를 먼저 등록하세요.</span>'; return; }
+  const T = addDaysStr(orderDate, 1), cd = cycleDays(T);
+  st.innerHTML = '<span class="pill pill-neutral">읽는 중...</span>';
+  try {
+    const json = await readWorkbook(file);
+    let hdr, start, sc, nc, cc, qc, dc;
+    if (looksLikeCumulativeOrderFormat(json)) {
+      hdr = json[1] || []; start = 2; sc = 0; nc = 1; cc = 6;
+      qc = snapColIndex(hdr, ['주문량', '주문수량']); if (qc < 0) qc = 15;
+      dc = findDateColInCumulativeFormat(json);
+    } else {
+      hdr = json[0] || []; start = 1;
+      sc = snapColIndex(hdr, ['거래처코드', '매장코드', '코드']); nc = snapColIndex(hdr, ['거래처명', '주문거래처', '매장명']);
+      cc = snapColIndex(hdr, ['품목코드', '발주코드']); qc = snapColIndex(hdr, ['주문량', '주문수량', '배송량', '수량']);
+      dc = snapColIndex(hdr, ['배송일자', '배송일']);
+      if (sc < 0 || cc < 0 || qc < 0) throw new Error('거래처코드·품목코드·주문량 컬럼을 찾지 못했습니다.');
+    }
+    const data = {}, names = {}, unmatched = new Set(); let used = 0, skippedOtherDate = 0;
+    for (let i = start; i < json.length; i++) {
+      const r = json[i]; const code = String(r[sc] ?? '').trim();
+      if (!code || code.startsWith('<')) continue;
+      if (dc >= 0 && r[dc] !== '' && r[dc] != null) {
+        const dk = orderDeliveryDateKey(r[dc]);
+        // 이번 회차(정상 = 입고일, 추가 = 회차 안의 다음 날 전산)만
+        if (/^\d{4}-\d{2}-\d{2}$/.test(dk) && !cd.includes(dk)) { skippedOtherDate++; continue; }
+      }
+      const item = orderCodeMap[normCode(r[cc])];
+      if (!item) { const oc = normCode(r[cc]); if (oc) unmatched.add(oc); continue; }
+      const q = toNum(r[qc]); if (!q) continue;
+      (data[item] = data[item] || {})[code] = (data[item][code] || 0) + q;
+      if (nc >= 0) names[code] = String(r[nc] ?? '').trim();
+      used++;
+    }
+    if (!used) throw new Error(`${T} 입고분 주문을 찾지 못했습니다. 발주일 선택과 파일의 배송일자를 확인해주세요.`);
+    const snap = { T, uploadedAt: nowISO(), fileName: file.name, data, names };
+    const ok = await storageSetLarge('snap_' + T, JSON.stringify(snap));
+    if (!ok) throw new Error('저장 실패');
+    snapCache[T] = snap;
+    st.innerHTML = `<span class="pill pill-ok">✓ 발주 현황 반영</span><span>${esc(file.name)} · ${fmtTime(snap.uploadedAt)} 기준 · ${T.slice(5)}(${DOW_KO[dowOf(T)]}) 입고분 ${used}행${skippedOtherDate ? ` · 다른 회차 ${skippedOtherDate}행 제외` : ''}${unmatched.size ? ` · 매핑 없는 품목코드 ${unmatched.size}개 제외` : ''}</span>`;
+    await renderRecommendation();
+  } catch (err) {
+    st.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`;
+  }
+}
+function fmtTime(iso) { try { const d = new Date(iso); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; } catch (e) { return iso; } }
+
+// ==========================================================================
 // 권장 발주량 예측
 // ==========================================================================
 // 발주일 O(월·수·금) → 입고 T = O+1(화·목·토), 회차 사용일 = cycleDays(T).
@@ -4548,6 +4623,7 @@ async function ledgerLoadMonthsCached(coll, months) {
 
 let recRows = [], recMeta = null;
 async function renderRecommendation() {
+  snapCache = {}; // 다른 팀원이 올린 최신 발주 현황을 반영하기 위해 매번 다시 읽는다
   const orderDate = document.getElementById('recOrderDate').value;
   const itemFilter = document.getElementById('recItemSelect').value;
   const k = Number(document.getElementById('recSafety').value) || 0;
@@ -4560,8 +4636,11 @@ async function renderRecommendation() {
   st.innerHTML = `<span class="pill pill-neutral">불러오는 중... (${months.join(', ')} 전체 매장)</span>`;
   try {
     const [R, S] = await Promise.all([ledgerLoadMonthsCached(LEDGER_RECV, months), ledgerLoadMonthsCached(LEDGER_SOLD, months)]);
+    const snap = await loadSnapshot(T);
     const pack = packInfoMap(); const salesDays = salesDaySetNow();
     const rows = [];
+    // 스냅샷에만 있는 매장(입고·판매 원장에 아직 없는 매장)도 포함
+    if (snap) Object.values(snap.data).forEach(m => Object.keys(m).forEach(c => { if (!R[c] && !S[c]) R[c] = { storeName: snap.names?.[c] || '', byItem: {} }; }));
     new Set([...Object.keys(R), ...Object.keys(S)]).forEach(code => {
       const r = R[code] || { byItem: {} }, sv = S[code] || { byItem: {} };
       const info = storeInfoMap[code] || {};
@@ -4573,25 +4652,50 @@ async function renderRecommendation() {
         if (itemFilter && item !== itemFilter) return;
         const upp = pack[item]?.unitsPerPack || 1;
         const x = computeRec({ recvRaw: r.byItem[item], sold: sv.byItem[item], orderDate, salesDays, unitsPerPack: upp, k });
+        // 입고 원장에 이번 회차 실적이 아직 없으면, 발주 현황 스냅샷의 주문량을 "실제 정상발주"로 쓴다.
+        x.source = x.hasActual ? '입고' : '';
+        if (!x.hasActual && snap) {
+          const q = (snap.data[item] || {})[code] || 0;
+          x.actNormal = q; x.actAdd = 0; x.actTotal = q; x.hasActual = true; x.source = '발주현황';
+        }
         if (!x.cycleUse && !x.actTotal && !x.recPacks) return;
         const diff = x.actTotal - x.recPacks;
+        x.shortPacks = Math.max(0, x.recPacks - x.actTotal);
+        x.overPacks = Math.max(0, x.actTotal - x.recPacks);
         const flag = !x.hasActual ? '예정'
+          : x.source === '발주현황' && x.actTotal === 0 ? '미발주'
           : x.actTotal < x.recPacks * 0.8 && diff <= -1 ? '과소발주'
           : x.actTotal > x.recPacks * 1.3 && diff >= 2 ? '과다발주' : '적정';
         rows.push({ code, name, team: info.team || '', item, packUnit: pack[item]?.packUnit || '', upp, ...x, diff, flag });
       });
     });
-    const ord = { 과소발주: 0, 과다발주: 1, 예정: 2, 적정: 3 };
+    const ord = { 미발주: 0, 과소발주: 1, 과다발주: 2, 예정: 3, 적정: 4 };
     rows.sort((a, b) => ord[a.flag] - ord[b.flag] || (a.flag === '과다발주' ? b.diff - a.diff : a.diff - b.diff) || a.code.localeCompare(b.code));
     recRows = rows; recMeta = { orderDate, T, itemFilter, k };
     const cutoff = rows[0]?.cutoff || addDaysStr(orderDate, -1);
     const cnt = {}; rows.forEach(x => { cnt[x.flag] = (cnt[x.flag] || 0) + 1; });
     const future = rows.every(x => !x.hasActual);
     st.innerHTML = `<span class="pill pill-ok">✓ ${orderDate.slice(5)}(${DOW_KO[dowOf(orderDate)]}) 발주 → ${T.slice(5)}(${DOW_KO[dowOf(T)]}) 입고</span><span>${rows.length}건 · 판매 반영 ${cutoff}까지`
-      + (future ? ' · 아직 실제 발주 데이터가 없어 권장량만 표시' : ` · 과소 ${cnt['과소발주']||0} · 과다 ${cnt['과다발주']||0} · 적정 ${cnt['적정']||0}`) + '</span>'
+      + (future ? ' · 아직 실제 발주 데이터가 없어 권장량만 표시' : ` · 미발주 ${cnt['미발주']||0} · 과소 ${cnt['과소발주']||0} · 과다 ${cnt['과다발주']||0} · 적정 ${cnt['적정']||0}`) + '</span>'
       + (cutoff !== addDaysStr(orderDate, -1) ? `<div class="note" style="color:#b91c1c; margin-top:4px;">⚠ 발주 전날(${addDaysStr(orderDate, -1)}) 판매가 아직 저장되지 않아 ${cutoff}까지만 반영했습니다. 그 사이 판매는 예측값으로 채웠습니다.</div>` : '');
-    const pill = f => ({ 과소발주: 'pill-bad', 과다발주: 'pill-warn', 적정: 'pill-ok' }[f] || 'pill-neutral');
-    let html = '<div class="table-wrap"><table><thead><tr><th>매장코드</th><th>매장명</th><th>팀</th><th>품목</th><th class="num">추정재고<br>(전날 마감)</th><th class="num">입고 전<br>예상판매</th><th class="num">회차<br>예상사용</th><th class="num">추세</th><th class="num">안전재고</th><th class="num">권장<br>(포장)</th><th class="num">실제 발주<br>(정상+추가)</th><th class="num">차이</th><th>판정</th></tr></thead><tbody>';
+    const pill = f => ({ 미발주: 'pill-bad', 과소발주: 'pill-bad', 과다발주: 'pill-warn', 적정: 'pill-ok' }[f] || 'pill-neutral');
+    // ── 품목별 전체 합계(업체 사전 준비량)
+    const sumBy = {};
+    rows.forEach(x => {
+      const t = sumBy[x.item] = sumBy[x.item] || { unit: x.packUnit, rec: 0, normal: 0, add: 0, total: 0, short: 0, over: 0, shortStores: 0 };
+      t.rec += x.recPacks; t.normal += x.actNormal || 0; t.add += x.actAdd || 0; t.total += x.actTotal || 0;
+      if (x.hasActual) { t.short += x.shortPacks; t.over += x.overPacks; if (x.shortPacks > 0) t.shortStores++; }
+    });
+    const srcLabel = snap && rows.some(x => x.source === '발주현황') ? `발주 현황 ${fmtTime(snap.uploadedAt)} 기준(${esc(snap.fileName)})` : rows.some(x => x.source === '입고') ? '입고 원장(확정) 기준' : '실제 발주 데이터 없음';
+    let sh = `<div class="table-wrap" style="margin:8px 0;"><table><thead><tr><th>품목 (${srcLabel})</th><th class="num">권장 합계</th><th class="num">실제 정상발주</th><th class="num">실제 추가발주</th><th class="num">실제 합계</th><th class="num">부족 합계<br><span style="font-weight:400;">(권장−실제, 매장별 합)</span></th><th class="num">부족 매장</th><th class="num">과다 합계</th><th class="num">순차이<br><span style="font-weight:400;">(실제−권장)</span></th></tr></thead><tbody>`;
+    Object.keys(sumBy).sort().forEach(it => {
+      const t = sumBy[it], u = esc(t.unit || '');
+      sh += `<tr><td><strong>${esc(it)}</strong></td><td class="num">${fmtNum(t.rec)} ${u}</td><td class="num">${fmtNum(t.normal)}</td><td class="num">${fmtNum(t.add)}</td><td class="num">${fmtNum(t.total)}</td>
+        <td class="num"><span class="pill pill-bad" style="font-size:14px;">${fmtNum(t.short)} ${u}</span></td><td class="num">${fmtNum(t.shortStores)}</td><td class="num">${fmtNum(t.over)} ${u}</td><td class="num">${t.total - t.rec > 0 ? '+' : ''}${fmtNum(t.total - t.rec)}</td></tr>`;
+    });
+    sh += '</tbody></table></div><div class="note">부족 합계 = 권장보다 적게 주문한 매장들의 부족분 합(추가발주로 들어올 수 있는 최대 물량 → 업체 사전 준비 기준). 순차이 = 전체 주문 − 전체 권장(과다 매장과 상계한 값).</div>';
+    document.getElementById('recSummary').innerHTML = rows.length ? sh : '';
+    let html = '<div class="table-wrap"><table><thead><tr><th>매장코드</th><th>매장명</th><th>팀</th><th>품목</th><th class="num">추정재고<br>(전날 마감)</th><th class="num">입고 전<br>예상판매</th><th class="num">회차<br>예상사용</th><th class="num">추세</th><th class="num">안전재고</th><th class="num">권장<br>(포장)</th><th class="num">실제<br>정상발주</th><th class="num">실제<br>추가발주</th><th class="num">실제<br>합계</th><th class="num">부족<br>(포장)</th><th>판정</th></tr></thead><tbody>';
     rows.slice(0, 500).forEach(x => {
       html += `<tr><td>${esc(x.code)}</td><td>${esc(x.name)}</td><td>${esc(x.team)}</td><td>${esc(x.item)}${x.thin ? ' <span class="pill pill-neutral" title="같은 요일 판매 이력이 2주 미만이라 예측이 불안정합니다">이력부족</span>' : ''}</td>
         <td class="num">${fmtNum(Math.round(x.bal))}</td><td class="num">${fmtNum(Math.round(x.preSales))}</td>
@@ -4599,8 +4703,10 @@ async function renderRecommendation() {
         <td class="num">${x.trend === 1 ? '-' : (x.trend > 1 ? '▲' : '▼') + Math.round(Math.abs(x.trend - 1) * 100) + '%'}</td>
         <td class="num">${fmtNum(Math.round(x.safety))}</td>
         <td class="num"><strong>${fmtNum(x.recPacks)}</strong> ${esc(x.packUnit)}</td>
-        <td class="num">${x.hasActual ? `${fmtNum(x.actTotal)}${x.actAdd ? ` <span style="color:#b45309;">(추가 ${fmtNum(x.actAdd)})</span>` : ''}` : '-'}</td>
-        <td class="num">${x.hasActual ? (x.diff > 0 ? '+' : '') + fmtNum(x.diff) : '-'}</td>
+        <td class="num">${x.hasActual ? fmtNum(x.actNormal) : '-'}</td>
+        <td class="num">${x.hasActual ? (x.actAdd ? `<span style="color:#b45309;">${fmtNum(x.actAdd)}</span>` : '0') : '-'}</td>
+        <td class="num">${x.hasActual ? fmtNum(x.actTotal) : '-'}</td>
+        <td class="num">${x.hasActual && x.shortPacks ? `<strong style="color:#b91c1c;">${fmtNum(x.shortPacks)}</strong>` : '-'}</td>
         <td><span class="pill ${pill(x.flag)}">${x.flag}</span></td></tr>`;
     });
     wrap.innerHTML = html + '</tbody></table></div>' + (rows.length > 500 ? '<div class="note">화면에는 500건까지만 표시합니다. 전체는 엑셀로 받아주세요.</div>' : '');
@@ -4612,8 +4718,8 @@ async function renderRecommendation() {
 
 function downloadRecommendation() {
   if (!recRows.length) { alert('먼저 계산해주세요.'); return; }
-  const aoa = [['발주일', '입고일', '매장코드', '매장명', '팀', '품목', '추정재고(전날마감,개)', '입고전 예상판매(개)', '회차 예상사용(개)', '추세계수', '안전재고(개)', '필요량(개)', '권장발주(포장)', '포장단위', '포장당 개수', '실제 정상발주(포장)', '실제 추가발주(포장)', '실제 합계(포장)', '차이(포장)', '판정', '이력부족']];
-  recRows.forEach(x => aoa.push([recMeta.orderDate, recMeta.T, x.code, x.name, x.team, x.item, Math.round(x.bal), Math.round(x.preSales), Math.round(x.cycleUse), Math.round(x.trend * 100) / 100, Math.round(x.safety), Math.round(x.needUnits), x.recPacks, x.packUnit, x.upp, x.hasActual ? x.actNormal : '', x.hasActual ? x.actAdd : '', x.hasActual ? x.actTotal : '', x.hasActual ? x.diff : '', x.flag, x.thin ? 'Y' : '']));
+  const aoa = [['발주일', '입고일', '매장코드', '매장명', '팀', '품목', '추정재고(전날마감,개)', '입고전 예상판매(개)', '회차 예상사용(개)', '추세계수', '안전재고(개)', '필요량(개)', '권장발주(포장)', '포장단위', '포장당 개수', '실제 정상발주(포장)', '실제 추가발주(포장)', '실제 합계(포장)', '차이(포장)', '부족(포장)', '과다(포장)', '실제 기준', '판정', '이력부족']];
+  recRows.forEach(x => aoa.push([recMeta.orderDate, recMeta.T, x.code, x.name, x.team, x.item, Math.round(x.bal), Math.round(x.preSales), Math.round(x.cycleUse), Math.round(x.trend * 100) / 100, Math.round(x.safety), Math.round(x.needUnits), x.recPacks, x.packUnit, x.upp, x.hasActual ? x.actNormal : '', x.hasActual ? x.actAdd : '', x.hasActual ? x.actTotal : '', x.hasActual ? x.diff : '', x.hasActual ? x.shortPacks : '', x.hasActual ? x.overPacks : '', x.source || '', x.flag, x.thin ? 'Y' : '']));
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '권장발주');
   XLSX.writeFile(wb, `권장발주_${recMeta.orderDate}발주_${recMeta.T}입고${recMeta.itemFilter ? '_' + recMeta.itemFilter : ''}.xlsx`);
