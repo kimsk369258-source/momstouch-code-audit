@@ -406,6 +406,7 @@
           <option value="1.65">안전재고 높음(1.65σ)</option>
         </select>
         <input id="recStoreFilter" class="search-input" style="flex:none; width:160px;" placeholder="매장코드/매장명 (선택)">
+        <label style="font-size:12px; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="recOnlyActive" checked> 가맹점현황 매장만</label>
         <button class="btn btn-primary btn-sm" onclick="renderRecommendation()">계산</button>
         <button class="btn btn-ghost btn-sm" onclick="downloadRecommendation()">엑셀 다운로드</button>
       </div>
@@ -2474,6 +2475,29 @@ function anomalyTypeLabel(t) {
   return { new_code:'미등록 코드', name_mismatch:'상품명 변경', category_mismatch:'분류 불일치', unclassified:'미분류', bucket_unclassified:'버킷코드 내 미분류 상품', sales_cat_missing:'매출분류 누락' }[t] || t;
 }
 
+// 왜 분류가 안 붙었는지 기준표 조회 경로를 하나씩 확인해 사람이 읽을 수 있게 설명한다.
+// (이상 목록의 "상품코드" 열은 대표 상품코드이고, "미등록 코드"는 소분류코드 기준이라
+//  같은 숫자가 기준표에 상품코드로 있어도 소분류코드로는 없을 수 있다.)
+function diagnoseClassification(a) {
+  const out = [];
+  if (a.code) {
+    const m = masterMap[a.code];
+    out.push(!m ? `소분류코드 ${a.code}: 기준표에 없음` : !m.cat ? `소분류코드 ${a.code}: 기준표에 있으나 분류가 빈칸(미등록으로 취급)` : `소분류코드 ${a.code}: 기준표 분류 ${m.cat}`);
+  }
+  if (a.productCode) {
+    const keys = Object.keys(masterProductCodeOverrides).filter(k => k.startsWith(a.productCode + '|'));
+    const rowKey = a.productCode + '|' + (a.sideProductCode ? a.sideProductCode : (a.gubun ? '@' + a.gubun : ''));
+    if (!keys.length) out.push(`상품코드 ${a.productCode}: 기준표에 상품코드 단위 등록 없음`);
+    else {
+      const label = k => { const sfx = k.split('|')[1]; return sfx === '' ? '구분 무관' : sfx.startsWith('@') ? `구분=${sfx.slice(1)}` : `사이드상품코드=${sfx}`; };
+      const hit = keys.includes(rowKey) || (!a.sideProductCode && keys.includes(a.productCode + '|'));
+      out.push(`상품코드 ${a.productCode}: 기준표 등록 [${keys.map(k => `${label(k)} → ${masterProductCodeOverrides[k].cat || '분류 빈칸'}`).join(', ')}] / 이 거래는 ${a.sideProductCode ? `사이드상품코드=${a.sideProductCode}` : `구분=${a.gubun || '(없음)'}`}${hit ? ' → 일치' : ' → <strong>불일치(그래서 적용 안 됨)</strong>'}`);
+    }
+  }
+  if (a.sideProductCode && masterProductCodeOverrides['*|' + a.sideProductCode]) out.push(`사이드상품코드 ${a.sideProductCode}: 와일드카드 등록 있음`);
+  return out;
+}
+
 function anomalyRowHTML(a, date, idx) {
   const badge = `<span class="badge-type t-${a.type}">${anomalyTypeLabel(a.type)}</span>`;
   let masterCol = '-', currentCol = esc(a.assignedCat || '-');
@@ -2546,6 +2570,11 @@ function anomalyRowHTML(a, date, idx) {
       </div>`;
   }
 
+  if (a.type === 'new_code' || a.type === 'bucket_unclassified') {
+    const diag = diagnoseClassification(a);
+    minorNameCell += `<span class="note" style="display:block;">소분류코드 <strong>${esc(a.code || '(없음)')}</strong> · ${esc(a.majorName || '')} > ${esc(a.midName || '')}${a.gubun ? ` · 구분 ${esc(a.gubun)}` : ''}</span>`
+      + (diag.length ? `<details class="note"><summary style="cursor:pointer;">왜 분류가 안 됐나</summary>${diag.map(t => '· ' + t.replace(/<(?!\/?strong>)/g, '&lt;')).join('<br>')}</details>` : '');
+  }
   return `<tr>
     <td>${badge}</td>
     <td>${esc(a.productCode || '-')}</td>
@@ -3492,6 +3521,15 @@ async function downloadCategoryExtract() {
 // - merge 저장이라 같은 날짜를 다시 올리면 그 날짜 값만 덮어씀(읽기 없이 빠름)
 // - 재고 화면은 선택한 매장의 문서만 읽음(보통 1~3개)
 const LEDGER_RECV = 'recv_m', LEDGER_SOLD = 'sold_m';
+// 가맹점현황(⑤ 탭에서 등록)에 있는 매장만 운영 매장으로 본다 — 폐점((폐)…), 교육장·마케팅
+// 전용 매장, 내부 직영 계정 등은 판매·입고 원장에 남아 있어도 권장발주·회차 현황에서 뺀다.
+// 가맹점현황이 아직 등록되지 않았으면(빈 목록) 거르지 않는다.
+function isActiveStore(code) { return !Object.keys(storeInfoMap).length || !!storeInfoMap[code]; }
+function excludedStoreNote(list, unit) {
+  if (!list.length) return '';
+  const packs = list.reduce((a, x) => a + (x.packs || 0), 0);
+  return `<details class="note" style="margin-top:4px;"><summary style="cursor:pointer;">가맹점현황에 없는 매장 ${list.length}곳 제외${packs ? ` (제외된 권장량 ${fmtNum(packs)}${unit ? ' ' + esc(unit) : ''})` : ''} — 펼쳐서 보기</summary>${list.map(x => `${esc(x.code)} ${esc(x.name || '')}${x.packs ? ` (${fmtNum(x.packs)})` : ''}`).join(', ')}</details>`;
+}
 // ④ 탭(재고·회차·권장발주)은 발주코드 매핑표에 등록된 발주품목만 보여준다.
 function registeredOrderItems() { return new Set(orderCodeEntries.map(e => e.codeName)); }
 // 판매 소진이 원장(sold_m)에 실제로 기록된 날짜. 일별 대조 이력이 있어도 이 기능 이전에
@@ -4068,7 +4106,7 @@ async function loadStockData() {
       if (idxRaw) (JSON.parse(idxRaw).storeCodes || []).forEach(c => { if (!(c in stockStores)) stockStores[c] = ''; });
     } catch (e) { /* 무시 */ }
     Object.keys(stockStores).forEach(c => { if (!stockStores[c] && storeInfoMap[c]) stockStores[c] = storeInfoMap[c].name || ''; });
-    const codes = Object.keys(stockStores).sort();
+    const codes = Object.keys(stockStores).filter(isActiveStore).sort();
     const prevSelected = sel.value;
     sel.innerHTML = '<option value="">매장을 선택하세요</option>' +
       codes.map(c => `<option value="${esc(c)}">${esc(c)} ${esc(stockStores[c]||'')}</option>`).join('');
@@ -4326,8 +4364,10 @@ async function renderCycleOverview() {
     const salesDaySet = salesDaySetNow();
     const missing = days.filter(d => !salesDaySet.has(d));
     const rows = [];
+    const cycleExcluded = [];
     new Set([...Object.keys(R), ...Object.keys(S)]).forEach(code => {
       const r = R[code] || { byItem: {} }, sv = S[code] || { byItem: {} };
+      if (!isActiveStore(code)) { cycleExcluded.push({ code, name: r.storeName || sv.storeName || '' }); return; }
       const items = new Set([...Object.keys(r.byItem), ...Object.keys(sv.byItem)]);
       const reg = registeredOrderItems();
       items.forEach(item => {
@@ -4352,6 +4392,7 @@ async function renderCycleOverview() {
     const cnt = {}; rows.forEach(x => { cnt[x.flag] = (cnt[x.flag] || 0) + 1; });
     const addStores = new Set(rows.filter(x => x.rpAdd > 0).map(x => x.code)).size;
     st.innerHTML = `<span class="pill pill-ok">✓ ${esc(cycleLabel(start))}</span><span>${rows.length}건 · 미발주 ${cnt['미발주']||0} · 부족 ${cnt['부족']||0} · 과다 ${cnt['과다']||0} · 적정 ${cnt['적정']||0} · 추가발주 매장 ${addStores}</span>`
+      + excludedStoreNote(cycleExcluded)
       + (missing.length ? `<div class="note" style="margin-top:4px; color:#b91c1c;">⚠ 이 회차 사용기간 중 판매 데이터가 없는 날: ${missing.join(', ')} — 사용량이 적게 잡혀 부족이 덜 보이거나 과다로 보일 수 있습니다(회차가 끝나고 판매를 올린 뒤 다시 조회하세요).</div>` : '');
     const pill = f => ({ 미발주: 'pill-bad', 부족: 'pill-bad', 과다: 'pill-warn', 적정: 'pill-ok' }[f] || 'pill-neutral');
     let html = '<div class="table-wrap"><table><thead><tr><th>매장코드</th><th>매장명</th><th>팀</th><th>품목</th><th class="num">정상발주(포장)</th><th class="num">추가발주(포장)</th><th class="num">입고 합계(포장)</th><th class="num">배송(개)</th><th class="num">사용(개)</th><th class="num">차이</th><th class="num">충족률</th><th>판정</th></tr></thead><tbody>';
@@ -4892,11 +4933,14 @@ async function renderRecommendation() {
     const rows = [];
     // 스냅샷에만 있는 매장(입고·판매 원장에 아직 없는 매장)도 포함
     if (snap) Object.values(snap.data).forEach(m => Object.keys(m).forEach(c => { if (!R[c] && !S[c]) R[c] = { storeName: snap.names?.[c] || '', byItem: {} }; }));
+    const onlyActive = document.getElementById('recOnlyActive')?.checked !== false;
+    const excluded = {};
     new Set([...Object.keys(R), ...Object.keys(S)]).forEach(code => {
       const r = R[code] || { byItem: {} }, sv = S[code] || { byItem: {} };
       const info = storeInfoMap[code] || {};
       const name = r.storeName || sv.storeName || info.name || '';
       if (storeQ && !code.includes(storeQ) && !name.includes(storeQ)) return;
+      if (onlyActive && !isActiveStore(code)) { excluded[code] = { code, name, packs: 0, store: { r, sv } }; return; }
       const reg = registeredOrderItems();
       new Set([...Object.keys(r.byItem), ...Object.keys(sv.byItem)]).forEach(item => {
         if (!reg.has(item)) return;
@@ -4920,6 +4964,15 @@ async function renderRecommendation() {
         rows.push({ code, name, team: info.team || '', item, packUnit: pack[item]?.packUnit || '', upp, ...x, diff, flag });
       });
     });
+    const reg2 = registeredOrderItems();
+    Object.values(excluded).forEach(ex => {
+      new Set([...Object.keys(ex.store.r.byItem), ...Object.keys(ex.store.sv.byItem)]).forEach(item => {
+        if (!reg2.has(item) || (itemFilter && item !== itemFilter)) return;
+        const x = computeRec({ recvRaw: ex.store.r.byItem[item], sold: ex.store.sv.byItem[item], orderDate, salesDays, unitsPerPack: pack[item]?.unitsPerPack || 1, k });
+        ex.packs += x.recPacks;
+      });
+    });
+    const excludedList = Object.values(excluded).filter(x => x.packs > 0 || (snap && Object.values(snap.data).some(m => m[x.code]))).sort((a, b) => b.packs - a.packs);
     const ord = { 미발주: 0, 과소발주: 1, 과다발주: 2, 예정: 3, 적정: 4 };
     rows.sort((a, b) => ord[a.flag] - ord[b.flag] || (a.flag === '과다발주' ? b.diff - a.diff : a.diff - b.diff) || a.code.localeCompare(b.code));
     recRows = rows; recMeta = { orderDate, T, itemFilter, k };
@@ -4950,7 +5003,7 @@ async function renderRecommendation() {
         <td class="num"><span class="pill pill-bad" style="font-size:14px;">${fmtNum(t.short)} ${u}</span></td><td class="num">${fmtNum(t.shortStores)}</td><td class="num">${fmtNum(t.over)} ${u}</td><td class="num">${t.total - t.rec > 0 ? '+' : ''}${fmtNum(t.total - t.rec)}</td></tr>`;
     });
     sh += '</tbody></table></div><div class="note">부족 합계 = 권장보다 적게 주문한 매장들의 부족분 합(추가발주로 들어올 수 있는 최대 물량 → 업체 사전 준비 기준). 순차이 = 전체 주문 − 전체 권장(과다 매장과 상계한 값).</div>';
-    document.getElementById('recSummary').innerHTML = rows.length ? sh : '';
+    document.getElementById('recSummary').innerHTML = rows.length ? sh + excludedStoreNote(excludedList, itemFilter ? (pack[itemFilter]?.packUnit || '') : '포장') : '';
     let html = '<div class="table-wrap"><table><thead><tr><th>매장코드</th><th>매장명</th><th>팀</th><th>품목</th><th class="num">추정재고<br>(전날 마감)</th><th class="num">입고 전<br>예상판매</th><th class="num">회차<br>예상사용</th><th class="num">추세</th><th class="num">안전재고</th><th class="num">권장<br>(포장)</th><th class="num">실제<br>정상발주</th><th class="num">실제<br>추가발주</th><th class="num">실제<br>합계</th><th class="num">부족<br>(포장)</th><th>판정</th></tr></thead><tbody>';
     rows.slice(0, 500).forEach(x => {
       html += `<tr><td>${esc(x.code)}</td><td>${esc(x.name)}</td><td>${esc(x.team)}</td><td>${esc(x.item)}${x.thin ? ' <span class="pill pill-neutral" title="같은 요일 판매 이력이 2주 미만이라 예측이 불안정합니다">이력부족</span>' : ''}</td>
