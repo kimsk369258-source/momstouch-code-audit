@@ -361,6 +361,7 @@
       <h2>재고 현황</h2>
       <div class="card-sub">배송일자별 입고와 일별 판매(판매수량×보정값)를 날짜순으로 따라가며 재고를 추정합니다. 배송받은 날부터 판매 가능하다고 보고, 재고가 0 아래로 내려가는 순간은 "입고로 설명 안 되는 판매"로 따로 쌓은 뒤 0부터 다시 셉니다 — 기초재고를 몰라도 시간이 지나면 추정 재고가 실제에 수렴합니다.</div>
       <div class="toolbar">
+        <input id="stockStoreSearch" class="search-input" style="flex:none; width:200px;" placeholder="🔍 매장코드·매장명 검색" oninput="filterStockStores()" onkeydown="if(event.key==='Enter'){event.preventDefault(); pickFirstStockStore();}">
         <select id="stockStoreSelect" class="search-input" style="flex:none; min-width:220px;" onchange="renderStockTable()">
           <option value="">매장을 선택하세요</option>
         </select>
@@ -4091,6 +4092,30 @@ function populateStockStoreSelect() {
   // 직접 조회해야 정확한 매장 목록을 얻을 수 있기 때문).
 }
 
+// 매장 검색 — 코드·매장명·팀 일부만 입력해도 목록을 좁히고, 한 곳만 남으면 바로 선택한다.
+let stockStoreCodes = [];
+function stockStoreLabel(c) { const t = storeInfoMap[c]?.team; return `${c} ${stockStores[c] || storeInfoMap[c]?.name || ''}${t ? ' · ' + t : ''}`; }
+function fillStockStoreOptions(keepValue) {
+  const sel = document.getElementById('stockStoreSelect');
+  const q = (document.getElementById('stockStoreSearch')?.value || '').trim().toLowerCase().replace(/\s/g, '');
+  const list = q ? stockStoreCodes.filter(c => stockStoreLabel(c).toLowerCase().replace(/\s/g, '').includes(q)) : stockStoreCodes;
+  sel.innerHTML = `<option value="">${q ? `검색 결과 ${list.length}곳 — 선택하세요` : '매장을 선택하세요'}</option>` + list.map(c => `<option value="${esc(c)}">${esc(stockStoreLabel(c))}</option>`).join('');
+  if (keepValue && list.includes(keepValue)) sel.value = keepValue;
+  return list;
+}
+function filterStockStores() {
+  const sel = document.getElementById('stockStoreSelect');
+  const prev = sel.value;
+  const list = fillStockStoreOptions(prev);
+  if (list.length === 1 && sel.value !== list[0]) { sel.value = list[0]; renderStockTable(); }
+  else if (prev && sel.value !== prev) renderStockTable(); // 선택돼 있던 매장이 검색 결과에서 빠짐
+}
+function pickFirstStockStore() {
+  const sel = document.getElementById('stockStoreSelect');
+  const first = [...sel.options].find(o => o.value);
+  if (first) { sel.value = first.value; renderStockTable(); }
+}
+
 // 매장 목록: 원장 매장 목록(meta/ledger_stores) + 예전 누적 입고 매장.
 let stockStores = {};
 async function loadStockData() {
@@ -4108,9 +4133,8 @@ async function loadStockData() {
     Object.keys(stockStores).forEach(c => { if (!stockStores[c] && storeInfoMap[c]) stockStores[c] = storeInfoMap[c].name || ''; });
     const codes = Object.keys(stockStores).filter(isActiveStore).sort();
     const prevSelected = sel.value;
-    sel.innerHTML = '<option value="">매장을 선택하세요</option>' +
-      codes.map(c => `<option value="${esc(c)}">${esc(c)} ${esc(stockStores[c]||'')}</option>`).join('');
-    if (codes.includes(prevSelected)) sel.value = prevSelected;
+    stockStoreCodes = codes;
+    fillStockStoreOptions(prevSelected);
     renderStockTable();
   } catch (err) {
     console.error('load stock data failed', err);
@@ -5124,7 +5148,7 @@ Object.assign(window, {
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
   deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, checkSoldDetail, backfillSoldLedger,
-  openPromoForm, submitPromoForm, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
+  filterStockStores, pickFirstStockStore, openPromoForm, submitPromoForm, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
   addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
