@@ -218,11 +218,16 @@
           <div class="card-sub">상품코드정리.xlsx (대분류/중분류/소분류코드 · 분류 · 세부구분1/2 · 보정값) 기준표</div>
         </div>
         <div style="display:flex; gap:6px;">
-          <button class="btn btn-ghost btn-sm" onclick="downloadMasterFile(this)">📥 기준표 다운로드</button>
+          <select id="masterYearSel" class="search-input" style="flex:none;"><option value="">전체 기준표</option></select>
+          <button class="btn btn-ghost btn-sm" onclick="downloadMasterByYear()">📥 기준표 다운로드</button>
+          <button class="btn btn-ghost btn-sm" onclick="rebuildUsageFromHistory()" title="이 기능 이전에 저장한 날짜의 합본에서 연도별 사용 이력을 만듭니다">🗓 사용 이력 만들기</button>
           <button class="btn btn-danger btn-sm" onclick="resetAllMaster()">🗑 기준표 전체 초기화</button>
         </div>
       </div>
       <div class="status-line" id="masterStatus">불러오는 중...</div>
+      <div class="note" id="masterYearInfo" style="margin-top:4px;"></div>
+      <div class="status-line" id="masterYearStatus" style="margin-top:4px;"></div>
+      <div class="note">※ 연도별 기준표 = 그 해 판매 데이터에 한 번이라도 나온 상품만(예: 25년에만 있고 26년에 안 팔린 상품은 26년 기준표에서 빠짐). 분류는 항상 전체 기준표로 하므로 작년 상품이 다시 팔려도 정상 분류되고, 그날부터 그 해 기준표에 들어갑니다. "기준표+이상항목 통합" 파일은 그 날짜의 연도 기준표로 만들어집니다.</div>
     </div>
 
     <div class="card">
@@ -942,6 +947,9 @@ function buildMasterMapFromRows(json) {
       productOverrides[code + '|' + rowEntry.productName] = {
         cat: rowEntry.cat, detail1: rowEntry.detail1, detail2: rowEntry.detail2,
         factor: rowEntry.factor, orderItem: rowEntry.orderItem, salesCat: rowEntry.salesCat,
+        // 이 "소분류|상품명" 값이 어느 상품코드 행에서 왔는지 — 다른 상품코드 거래가 이름이
+        // 같다는 이유로 이 값을 빌려 쓰면 "간접 분류"로 드러내기 위해 기록한다.
+        srcPc: productCode || '',
       };
     }
   }
@@ -1218,6 +1226,126 @@ function buildMasterRows() {
   return rows;
 }
 
+
+// ==========================================================================
+// 연도별 기준표 — 판매 데이터에 "그 해 한 번이라도 나온" 상품만 그 해 기준표로 본다.
+// 저장: meta/usage_{연도}(조각 저장) = { pc:[...], pa:[...], mc:[...], sc:[...], nm:[...], dates:[...] }
+//   pc = "상품코드|사이드상품코드|구분(사이드 없을 때만)", pa = "상품코드|사이드상품코드"(구분 무관),
+//   mc = 소분류코드, sc = 사이드상품코드, nm = 상품명(소분류코드 없는 거래용)
+// 분류 자체는 항상 전체 기준표로 한다(작년 상품이 다시 팔려도 분류는 정상). 연도별 기준표는
+// 다운로드·통합 파일의 용량을 줄이기 위한 "보기/내려받기" 범위다.
+// ==========================================================================
+const usageCache = {}; // year -> {pc:Set, pa:Set, mc:Set, sc:Set, nm:Set, dates:Set}
+let currentUsageByDate = {}; // 방금 처리한 파일의 날짜별 사용 키
+function emptyUsage() { return { pc: new Set(), pa: new Set(), mc: new Set(), sc: new Set(), nm: new Set(), dates: new Set() }; }
+function addUsageKey(u, minorCode, productCode, side, gubun, name) {
+  if (productCode) { u.pc.add(`${productCode}|${side || ''}|${side ? '' : (gubun || '')}`); u.pa.add(`${productCode}|${side || ''}`); }
+  if (side) u.sc.add(side);
+  if (minorCode) u.mc.add(minorCode);
+  else if (name) u.nm.add(String(name).trim());
+}
+async function loadUsage(year) {
+  if (usageCache[year]) return usageCache[year];
+  const u = emptyUsage();
+  try {
+    const raw = await storageGetLarge('usage_' + year);
+    if (raw) { const o = JSON.parse(raw); Object.keys(u).forEach(k => (o[k] || []).forEach(v => u[k].add(v))); }
+  } catch (e) { console.error('load usage failed', year, e); }
+  usageCache[year] = u;
+  return u;
+}
+async function mergeUsage(year, add, date) {
+  const u = await loadUsage(year);
+  Object.keys(add).forEach(k => add[k].forEach(v => u[k].add(v)));
+  if (date) u.dates.add(date);
+  const o = {}; Object.keys(u).forEach(k => { o[k] = [...u[k]]; });
+  return storageSetLarge('usage_' + year, JSON.stringify(o));
+}
+// 기준표 한 줄(COMBINED_HEADER 순서)이 그 해에 쓰였는지
+function masterRowUsedIn(row, u) {
+  const mc = normCode(row[4]), pc = normCode(row[6]), side = normCode(row[7]), gubun = String(row[8] || '').trim(), name = String(row[9] || '').trim();
+  if (pc) return side ? u.pa.has(`${pc}|${side}`) : (gubun ? u.pc.has(`${pc}||${gubun}`) : u.pa.has(`${pc}|`));
+  if (side) return u.sc.has(side);
+  if (mc) return u.mc.has(mc);
+  return name ? u.nm.has(name) : false;
+}
+function masterRowsForExport() {
+  const headerMatches = masterRawSnapshot && masterRawSnapshot.header &&
+    masterRawSnapshot.header.length === COMBINED_HEADER.length &&
+    masterRawSnapshot.header.every((h, i) => h === COMBINED_HEADER[i]);
+  return headerMatches ? masterRawSnapshot.rows.map(r => r.slice()) : buildMasterRows();
+}
+// 연도 기준표 행: 사용 이력이 하나도 없으면(아직 그 해 데이터를 안 올림) 전체를 돌려주고 표시한다.
+// 여러 날짜(같은/다른 연도)용: 그 날짜들 연도의 사용 이력 + 방금 처리한(저장 전) 날짜의 사용 키
+async function masterRowsForDates(dates) {
+  const all = masterRowsForExport();
+  const years = [...new Set(dates.map(d => String(d).slice(0, 4)))];
+  const us = []; for (const y of years) us.push(await loadUsage(y));
+  if (us.some(u => !u.dates.size)) return all; // 사용 이력이 없는 연도가 있으면 안전하게 전체
+  const cur = dates.map(d => currentUsageByDate[d]).filter(Boolean);
+  return all.filter(r => us.some(u => masterRowUsedIn(r, u)) || cur.some(u => masterRowUsedIn(r, u)));
+}
+async function masterRowsForYear(year) {
+  const all = masterRowsForExport();
+  const u = await loadUsage(year);
+  if (!u.dates.size) return { rows: all, filtered: false, total: all.length };
+  return { rows: all.filter(r => masterRowUsedIn(r, u)), filtered: true, total: all.length };
+}
+async function downloadMasterByYear() {
+  const year = document.getElementById('masterYearSel').value;
+  if (!year) { downloadMasterFile(); return; }
+  const { rows, filtered, total } = await masterRowsForYear(year);
+  if (!filtered) { alert(`${year}년 판매 사용 이력이 아직 없습니다. 그 해 일별/월별 파일을 대조·저장하거나 "사용 이력 만들기"를 먼저 실행해주세요.`); return; }
+  const r = dedupeExactRows(rows); sortByProductCode(r);
+  triggerDownload(buildExportBlob(COMBINED_HEADER, r), `상품코드정리_${year}년_${nowISO().slice(0, 10)}.csv`);
+  document.getElementById('masterYearStatus').innerHTML = `<span class="pill pill-ok">✓ ${year}년 기준표</span><span>${fmtNum(r.length)}행 / 전체 ${fmtNum(total)}행</span>`;
+}
+// 저장된 합본 파일에서 사용 이력을 만든다(이 기능 이전에 저장한 날짜용, 날짜마다 합본을 내려받으므로 시간이 걸림).
+async function rebuildUsageFromHistory() {
+  const st = document.getElementById('masterYearStatus');
+  const dates = dailyIndex.map(d => d.date).sort();
+  const years = [...new Set(dates.map(d => d.slice(0, 4)))];
+  for (const y of years) await loadUsage(y);
+  const todo = dates.filter(d => !usageCache[d.slice(0, 4)].dates.has(d));
+  if (!todo.length) { st.innerHTML = '<span class="pill pill-ok">✓ 모든 저장 날짜의 사용 이력이 있습니다.</span>'; await renderMasterYearInfo(); return; }
+  if (!confirm(`사용 이력이 없는 ${todo.length}개 날짜의 합본 파일을 읽어 연도별 사용 이력을 만듭니다. 날짜 수에 따라 몇 분 걸릴 수 있습니다. 진행할까요?`)) return;
+  let n = 0; const failed = [];
+  for (const date of todo) {
+    st.innerHTML = `<span class="pill pill-neutral">사용 이력 만드는 중 ${++n}/${todo.length}</span><span>${date}</span>`;
+    try {
+      const url = await getDownloadURL(exportStorageRef(date));
+      let text = await (await fetch(url)).text();
+      if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+      const wb = XLSX.read(text, { type: 'string', raw: true });
+      const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: true });
+      const cols = resolveRawCols(json[0].map(String));
+      const u = emptyUsage();
+      json.slice(1).forEach(r => {
+        const g = k => cols[k] >= 0 ? r[cols[k]] : '';
+        addUsageKey(u, normCode(g('minorCode')), normCode(g('productCode')), normCode(g('sideProductCode')), String(g('gubun') || '').trim(), String(g('productName') || '').trim());
+      });
+      await mergeUsage(date.slice(0, 4), u, date);
+    } catch (e) { console.error('usage rebuild failed', date, e); failed.push(date); }
+  }
+  st.innerHTML = `<span class="pill ${failed.length ? 'pill-warn' : 'pill-ok'}">${failed.length ? '⚠ 일부 완료' : '✓ 완료'}</span><span>${todo.length - failed.length}개 날짜 반영${failed.length ? ` · 실패 ${failed.length}건(합본 파일 없음): ${failed.slice(0, 5).join(', ')}` : ''}</span>`;
+  await renderMasterYearInfo();
+}
+async function renderMasterYearInfo() {
+  const sel = document.getElementById('masterYearSel'), info = document.getElementById('masterYearInfo');
+  if (!sel || !info) return;
+  const years = [...new Set([...dailyIndex.map(d => d.date.slice(0, 4)), '2025', String(new Date().getFullYear())])].sort().reverse();
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">전체 기준표</option>' + years.map(y => `<option value="${y}">${y}년 기준표</option>`).join('');
+  if (prev) sel.value = prev;
+  const all = masterRowsForExport();
+  const parts = [];
+  for (const y of years) {
+    const u = await loadUsage(y);
+    parts.push(u.dates.size ? `${y}년 ${fmtNum(all.filter(r => masterRowUsedIn(r, u)).length)}행(판매 ${u.dates.size}개 날짜/월 기준)` : `${y}년 사용 이력 없음`);
+  }
+  info.innerHTML = `전체 ${fmtNum(all.length)}행 · ${parts.join(' · ')}`;
+}
+
 function downloadMasterFile(btnEl) {
   // 업로드한 원본 파일을 기반으로 하되(masterRawSnapshot), 같은 상품코드의
   // 사이드모상품/사이드상품끼리는 항상 붙어서 나오도록 정렬은 적용한다("있는 그대로"
@@ -1414,7 +1542,11 @@ function classifyForRowInner(minorCode, majorName, midName, productName, minorNa
   const overrideKey = minorCode + '|' + (productName || '').trim();
   const override = masterProductOverrides[overrideKey];
   if (override && override.cat) {
-    return { cat: override.cat, detail1: override.detail1 || '', detail2: override.detail2 || '', factor: override.factor ?? null, salesCat: override.salesCat || '', src: 'name', srcLabel: `소분류 ${minorCode} + 상품명 등록` };
+    // 다른 상품코드 행에서 온 이름 일치(예: 4849 단품이 4850 행의 같은 상품명으로 분류)는 간접 분류로 표시
+    const borrowed = override.srcPc && productCode && override.srcPc !== productCode;
+    return { cat: override.cat, detail1: override.detail1 || '', detail2: override.detail2 || '', factor: override.factor ?? null, salesCat: override.salesCat || '',
+      src: borrowed ? 'name-borrowed' : 'name',
+      srcLabel: borrowed ? `상품코드 ${override.srcPc} 행과 소분류(${minorCode})·상품명이 같아 그 분류를 사용` : `소분류 ${minorCode} + 상품명 등록` };
   }
 
   // 1.5) 원본 데이터에 소분류코드 자체가 없는 거래(제휴/이벤트 메뉴 등) — 상품코드나
@@ -1685,6 +1817,12 @@ async function processRawDailyFiles(fileList) {
   currentMergedRowsByDate = rowsByDate;
   currentConsumptionByDate = consumptionByDate;
   currentCategoryQtyByDate = categoryQtyByDate;
+  currentUsageByDate = {};
+  Object.entries(byDate).forEach(([dk, items]) => {
+    const u = emptyUsage();
+    items.forEach(it => addUsageKey(u, it.minorCode, it.productCode, it.sideProductCode, it.gubun, it.productName));
+    currentUsageByDate[dk] = u;
+  });
 
   const totalRows = Object.values(byDate).reduce((s, arr) => s + arr.length, 0);
   return { reports, fileNames, totalRemovedSummary, totalRows };
@@ -1953,7 +2091,7 @@ function buildDateReport(date, itemsForDate, parentNameByCode, childrenByCode) {
   // 이상 건수(상태)에는 넣지 않는다 — "확인 권장" 목록.
   const indirectMap = {};
   itemsForDate.forEach(item => {
-    if (!item.cat || (item.src !== 'code' && item.src !== 'keyword')) return;
+    if (!item.cat || !['code', 'keyword', 'name-borrowed'].includes(item.src)) return;
     const key = (item.productCode || 'NM:' + (item.productName || '')) + '|' + (item.sideProductCode || '') + '|' + (item.gubun || '');
     const o = indirectMap[key] = indirectMap[key] || {
       majorCode: item.majorCode || '', majorName: item.majorName || '', midCode: item.midCode || '', midName: item.midName || '',
@@ -2040,14 +2178,11 @@ function renderDailyResults(reports) {
 // 여러 날짜를 한 번에 업로드/처리했을 때, 그 날짜들의 이상 항목을 전부 모아서 한
 // 파일로 내려받는다. 기준표(등록된 내용)는 한 번만 포함하고, 그 뒤에 각 날짜의
 // 이상 항목을 이어붙인다 — 날짜별로 따로 "통합 다운로드"를 누를 필요가 없게 하기 위함.
-function exportAllDatesCombinedFile() {
+async function exportAllDatesCombinedFile() {
   const dates = Object.keys(anomaliesCache).sort();
   if (dates.length === 0) { alert('처리된 날짜가 없습니다.'); return; }
 
-  const headerMatches = masterRawSnapshot && masterRawSnapshot.header &&
-    masterRawSnapshot.header.length === COMBINED_HEADER.length &&
-    masterRawSnapshot.header.every((h, i) => h === COMBINED_HEADER[i]);
-  const rows = headerMatches ? masterRawSnapshot.rows.map(r => r.slice()) : buildMasterRows();
+  const rows = await masterRowsForDates(dates); // 처리한 날짜들 연도의 기준표만
 
   const CH_NAME_IDX3 = COMBINED_HEADER.indexOf('상품명');
   const registeredKeys = new Set(rows.map(r => (r[6] || '') + '|' + (r[7] || '')));
@@ -2102,6 +2237,13 @@ function exportAllDatesCombinedFile() {
     });
   });
 
+  // 간접 분류 상품도 현재 분류가 채워진 상품코드 행으로 포함(단일 날짜 통합과 동일)
+  dates.forEach(date => (indirectCache[date] || []).forEach(x => {
+    if (!x.productCode || isAlreadyRegistered(x.productCode, x.sideProductCode, x.productName)) return;
+    const c = classifyForRow(x.code, x.majorName, x.midName, x.productName, x.minorName, x.productCode, x.sideProductCode, x.gubun);
+    rows.push([x.majorCode, x.majorName, x.midCode, x.midName, x.code, x.minorName, x.productCode, x.sideProductCode, x.gubun, x.productName,
+      c.salesCat || '', c.cat || '', c.detail1 || '', c.detail2 || '', c.factor ?? '', '']);
+  }));
   const dedupedRows = dedupeExactRows(rows);
   sortByProductCode(dedupedRows);
   const blob = buildExportBlob(COMBINED_HEADER, dedupedRows);
@@ -2274,14 +2416,11 @@ function exportAnomaliesFile(date) {
 // 상품코드 기준으로 정렬해 내려받는다. 이미 정리된 내용과 새로 채워야 할 항목을
 // 한눈에 같이 보면서 작업할 수 있도록 하기 위함. 이 파일을 편집해서 그대로
 // "기준코드에 저장"으로 다시 올려도 된다(이미 등록된 값은 덮어써도 그대로 유지됨).
-function exportCombinedFile(date) {
-  // 업로드해둔 원본 그대로(masterRawSnapshot)를 기본으로 쓴다 — 컬럼 구성이
-  // COMBINED_HEADER와 같을 때만 이렇게 하고, 다르면 기존 방식(현재 등록 내용 조합)으로
-  // 안전하게 대체한다.
-  const headerMatches = masterRawSnapshot && masterRawSnapshot.header &&
-    masterRawSnapshot.header.length === COMBINED_HEADER.length &&
-    masterRawSnapshot.header.every((h, i) => h === COMBINED_HEADER[i]);
-  const rows = headerMatches ? masterRawSnapshot.rows.map(r => r.slice()) : buildMasterRows();
+async function exportCombinedFile(date) {
+  // 그 날짜 연도의 기준표(그 해 판매에 한 번이라도 나온 상품)만 넣는다 — 25·26년 상품이
+  // 겹쳐 파일이 커지는 걸 막기 위함. 그 해 사용 이력이 아직 없으면 전체 기준표를 쓴다.
+  // 단, 이 날짜 자체에 나온 상품은 저장 전이라도 포함한다.
+  const rows = await masterRowsForDates([date]);
 
   // 이미 기준표에 등록되어 있는(=위 rows에 이미 나온) 상품코드+사이드상품코드 조합은
   // 오늘 처리 중 이상으로도 잡혀서 아래에서 또 들어오면 똑같은 내용이 두 번 나오게
@@ -2500,7 +2639,7 @@ function dayCardHTML(report, showSaveBtn) {
       </div>
       ${anomalyToolBtns ? `<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:6px;">${anomalyToolBtns}</div><div id="kwStatus-${id}" style="margin-bottom:12px;"></div>` : ''}
       ${indirect.length ? `<details class="note" style="margin:0 0 10px; padding:8px 10px; border:1px solid #fde68a; background:#fffbeb; border-radius:8px;">
-        <summary style="cursor:pointer;"><strong>⚠ 간접 분류 ${indirect.length}건</strong> — 상품코드로 등록되지 않았는데 소분류코드 전체 등록·키워드 규칙으로 분류된 상품(확인 권장, 이상 건수에는 미포함). "기준표+이상항목 통합 다운로드"에 현재 분류가 채워진 행으로 포함되니, 확인 후 "기준코드에 저장"으로 올리면 상품코드 단위로 고정됩니다.</summary>
+        <summary style="cursor:pointer;"><strong>⚠ 간접 분류 ${indirect.length}건</strong> — 상품코드로 등록되지 않았는데 소분류코드 전체 등록·키워드 규칙·다른 상품코드 행의 같은 상품명으로 분류된 상품(확인 권장, 이상 건수에는 미포함). "기준표+이상항목 통합 다운로드"에 현재 분류가 채워진 행으로 포함되니, 확인 후 "기준코드에 저장"으로 올리면 상품코드 단위로 고정됩니다.</summary>
         <div class="table-wrap" style="margin-top:6px;"><table><thead><tr><th>상품코드</th><th>구분</th><th>상품명</th><th>소분류</th><th>현재 분류</th><th>분류 근거</th><th class="num">매출</th><th class="num">건수</th></tr></thead><tbody>
         ${indirect.map(x => `<tr><td>${esc(x.productCode || '-')}${x.sideProductCode ? ' / ' + esc(x.sideProductCode) : ''}</td><td>${esc(x.gubun)}</td><td>${esc(x.productName)}</td><td>${esc(x.code)} ${esc(x.minorName)}</td><td>${esc(x.cat)}${x.detail1 ? ' · ' + esc(x.detail1) : ''}</td><td><span class="pill ${x.src === 'keyword' ? 'pill-warn' : 'pill-neutral'}">${esc(x.srcLabel)}</span></td><td class="num">${fmtNum(x.revenue)}</td><td class="num">${fmtNum(x.rowCount)}</td></tr>`).join('')}
         </tbody></table></div></details>` : ''}
@@ -2766,6 +2905,9 @@ async function saveDayReport(date, btnEl) {
       alert(`${date} 대조 결과 저장에 실패했습니다. 브라우저 개발자 도구(F12) 콘솔에서 에러 메시지를 확인하고, 로그인이 유지되어 있는지 확인해주세요.`);
       return;
     }
+
+    // 연도별 기준표용 사용 이력(이 날짜/월에 나온 상품) 누적
+    if (currentUsageByDate[date]) { try { await mergeUsage(date.slice(0, 4), currentUsageByDate[date], date); } catch (e) { console.error('usage save failed', e); } }
 
     // 합본(분류 포함 전체 행) 파일도 Storage에 올려서, 다른 세션에서도 다운로드/재분류할 수 있게 한다.
     // 행 수가 많으면(10만행 이상) 파일 생성 + 업로드에 수십 초 이상 걸릴 수 있다.
@@ -5249,6 +5391,7 @@ if (!isConfigured) {
       await loadOrdersIndex();
       await loadStoreInfoMap();
       loadPromos();
+      renderMasterYearInfo();
     } else {
       showScreen('login');
     }
@@ -5261,7 +5404,7 @@ Object.assign(window, {
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
   deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, checkSoldDetail, backfillSoldLedger,
-  filterStockStores, pickFirstStockStore, openPromoForm, submitPromoForm, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
+  filterStockStores, pickFirstStockStore, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
   addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
