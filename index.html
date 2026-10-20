@@ -1271,28 +1271,41 @@ function buildMasterRows() {
 // ==========================================================================
 const usageCache = {}; // year -> {pc:Set, pa:Set, mc:Set, sc:Set, nm:Set, dates:Set}
 let currentUsageByDate = {}; // 방금 처리한 파일의 날짜별 사용 키
-function emptyUsage() { return { pc: new Set(), pa: new Set(), mc: new Set(), sc: new Set(), nm: new Set(), dates: new Set() }; }
-function addUsageKey(u, minorCode, productCode, side, gubun, name) {
+// 사용 이력 v2: 키뿐 아니라 그 상품의 대·중·소분류/상품명도 저장해서(items), 기준표에 아직 없는
+// 상품도 "연도별 누적 기준표" 행으로 만들 수 있게 한다.
+const USAGE_VER = 2;
+function emptyUsage() { return { pc: new Set(), pa: new Set(), mc: new Set(), sc: new Set(), nm: new Set(), dates: new Set(), items: {}, legacy: false }; }
+function addUsageKey(u, minorCode, productCode, side, gubun, name, info) {
   if (productCode) { u.pc.add(`${productCode}|${side || ''}|${side ? '' : (gubun || '')}`); u.pa.add(`${productCode}|${side || ''}`); }
   if (side) u.sc.add(side);
   if (minorCode) u.mc.add(minorCode);
   else if (name) u.nm.add(String(name).trim());
+  if (productCode && info) {
+    u.items[`${productCode}|${side || ''}|${side ? '' : (gubun || '')}`] = [info.majorCode || '', info.majorName || '', info.midCode || '', info.midName || '', minorCode || '', info.minorName || '', productCode, side || '', gubun || '', String(name || '').trim()];
+  }
 }
 async function loadUsage(year) {
   if (usageCache[year]) return usageCache[year];
   const u = emptyUsage();
   try {
     const raw = await storageGetLarge('usage_' + year);
-    if (raw) { const o = JSON.parse(raw); Object.keys(u).forEach(k => (o[k] || []).forEach(v => u[k].add(v))); }
+    if (raw) {
+      const o = JSON.parse(raw);
+      ['pc', 'pa', 'mc', 'sc', 'nm', 'dates'].forEach(k => (o[k] || []).forEach(v => u[k].add(v)));
+      u.items = o.items || {};
+      u.legacy = o.ver !== USAGE_VER; // 상품 정보가 없는 예전 형식 → "사용 이력 만들기"로 다시 만들어야 함
+    }
   } catch (e) { console.error('load usage failed', year, e); }
   usageCache[year] = u;
   return u;
 }
 async function mergeUsage(year, add, date) {
   const u = await loadUsage(year);
-  Object.keys(add).forEach(k => add[k].forEach(v => u[k].add(v)));
+  ['pc', 'pa', 'mc', 'sc', 'nm'].forEach(k => add[k].forEach(v => u[k].add(v)));
+  Object.assign(u.items, add.items || {});
   if (date) u.dates.add(date);
-  const o = {}; Object.keys(u).forEach(k => { o[k] = [...u[k]]; });
+  const o = { ver: u.legacy ? 1 : USAGE_VER }; ['pc', 'pa', 'mc', 'sc', 'nm', 'dates'].forEach(k => { o[k] = [...u[k]]; });
+  o.items = u.items;
   return storageSetLarge('usage_' + year, JSON.stringify(o));
 }
 // 기준표 한 줄(COMBINED_HEADER 순서)이 그 해에 쓰였는지
@@ -1313,7 +1326,22 @@ function masterRowsForExport() {
 // 여러 날짜(같은/다른 연도)용: 그 날짜들 연도의 사용 이력 + 방금 처리한(저장 전) 날짜의 사용 키
 // 그 해 저장된 대조 날짜가 사용 이력에 다 들어 있는지(빠진 날짜 수)
 function usageMissingDates(year, u) {
-  return dailyIndex.map(d => d.date).filter(d => d.slice(0, 4) === year && !u.dates.has(d));
+  return dailyIndex.map(d => d.date).filter(d => d.slice(0, 4) === year && (u.legacy || !u.dates.has(d)));
+}
+// 연도별 누적 기준표 = ① 그 해에 쓰인 기준표 행 + ② 그 해에 팔렸지만 기준표에 상품코드로 없는 상품
+// (현재 기준표로 분류해서 채움, 못 하면 빈칸). 그 해 날짜를 저장할수록 행이 늘어나기만 한다.
+function cumulativeYearRows(all, usages) {
+  const rows = all.filter(r => usages.some(u => masterRowUsedIn(r, u)));
+  const reg = new Set(all.map(r => normCode(r[6]) + '|' + normCode(r[7])));
+  const seen = new Set();
+  usages.forEach(u => Object.entries(u.items || {}).forEach(([k, rec]) => {
+    const pk = rec[6] + '|' + rec[7];
+    if (reg.has(pk) || seen.has(k)) return;
+    seen.add(k);
+    const c = classifyForRow(rec[4], rec[1], rec[3], rec[9], rec[5], rec[6], rec[7], rec[8]);
+    rows.push([...rec, c.salesCat || '', c.cat || '', c.detail1 || '', c.detail2 || '', c.cat === '제외' ? '' : (c.factor ?? ''), '']);
+  }));
+  return rows;
 }
 let lastExportUsageNote = '';
 async function masterRowsForDates(dates) {
@@ -1328,19 +1356,19 @@ async function masterRowsForDates(dates) {
   const miss = years.flatMap((y, i) => usageMissingDates(y, us[i]));
   if (miss.length) { lastExportUsageNote = `사용 이력에 없는 날짜 ${miss.length}일(${miss.slice(0, 4).join(', ')}${miss.length > 4 ? ' 외' : ''}) — 연도별 거르기 없이 전체 기준표로 내보냈습니다. ① 탭 "사용 이력 만들기"를 실행하면 그 해 기준표로 줄어듭니다.`; return all; }
   const cur = dates.map(d => currentUsageByDate[d]).filter(Boolean);
-  return all.filter(r => us.some(u => masterRowUsedIn(r, u)) || cur.some(u => masterRowUsedIn(r, u)));
+  return cumulativeYearRows(all, [...us, ...cur]);
 }
 async function masterRowsForYear(year) {
   const all = masterRowsForExport();
   const u = await loadUsage(year);
-  if (!u.dates.size) return { rows: all, filtered: false, total: all.length };
-  return { rows: all.filter(r => masterRowUsedIn(r, u)), filtered: true, total: all.length };
+  if (!u.dates.size || u.legacy) return { rows: all, filtered: false, total: all.length };
+  return { rows: cumulativeYearRows(all, [u]), filtered: true, total: all.length };
 }
 async function downloadMasterByYear() {
   const year = document.getElementById('masterYearSel').value;
   if (!year) { downloadMasterFile(); return; }
   const { rows, filtered, total } = await masterRowsForYear(year);
-  if (!filtered) { alert(`${year}년 판매 사용 이력이 아직 없습니다. 그 해 일별/월별 파일을 대조·저장하거나 "사용 이력 만들기"를 먼저 실행해주세요.`); return; }
+  if (!filtered) { alert(`${year}년 사용 이력이 없거나 예전 형식입니다. ① 탭 "사용 이력 만들기"를 먼저 실행해주세요(연도별 누적 기준표에 필요).`); return; }
   const r = dedupeExactRows(rows); sortByProductCode(r);
   triggerDownload(buildExportBlob(COMBINED_HEADER, r), `상품코드정리_${year}년_${nowISO().slice(0, 10)}.csv`);
   document.getElementById('masterYearStatus').innerHTML = `<span class="pill pill-ok">✓ ${year}년 기준표</span><span>${fmtNum(r.length)}행 / 전체 ${fmtNum(total)}행</span>`;
@@ -1351,6 +1379,8 @@ async function rebuildUsageFromHistory() {
   const dates = dailyIndex.map(d => d.date).sort();
   const years = [...new Set(dates.map(d => d.slice(0, 4)))];
   for (const y of years) await loadUsage(y);
+  // 예전 형식(상품 정보 없음) 연도는 모든 날짜를 다시 읽어 v2로 새로 만든다
+  for (const y of years) if (usageCache[y].legacy) { const n = emptyUsage(); usageCache[y] = n; }
   const todo = dates.filter(d => !usageCache[d.slice(0, 4)].dates.has(d));
   if (!todo.length) { st.innerHTML = '<span class="pill pill-ok">✓ 모든 저장 날짜의 사용 이력이 있습니다.</span>'; await renderMasterYearInfo(); return; }
   if (!confirm(`사용 이력이 없는 ${todo.length}개 날짜의 합본 파일을 읽어 연도별 사용 이력을 만듭니다. 날짜 수에 따라 몇 분 걸릴 수 있습니다. 진행할까요?`)) return;
@@ -1367,7 +1397,8 @@ async function rebuildUsageFromHistory() {
       const u = emptyUsage();
       json.slice(1).forEach(r => {
         const g = k => cols[k] >= 0 ? r[cols[k]] : '';
-        addUsageKey(u, normCode(g('minorCode')), normCode(g('productCode')), normCode(g('sideProductCode')), String(g('gubun') || '').trim(), String(g('productName') || '').trim());
+        addUsageKey(u, normCode(g('minorCode')), normCode(g('productCode')), normCode(g('sideProductCode')), String(g('gubun') || '').trim(), String(g('productName') || '').trim(),
+          { majorCode: g('majorCode'), majorName: g('majorName'), midCode: g('midCode'), midName: g('midName'), minorName: g('minorName') });
       });
       await mergeUsage(date.slice(0, 4), u, date);
     } catch (e) { console.error('usage rebuild failed', date, e); failed.push(date); }
@@ -1386,7 +1417,7 @@ async function renderMasterYearInfo() {
   const parts = [];
   for (const y of years) {
     const u = await loadUsage(y);
-    parts.push(u.dates.size ? `${y}년 ${fmtNum(all.filter(r => masterRowUsedIn(r, u)).length)}행(판매 ${u.dates.size}개 날짜/월 기준)` : `${y}년 사용 이력 없음`);
+    parts.push(!u.dates.size ? `${y}년 사용 이력 없음` : u.legacy ? `${y}년 사용 이력 예전 형식("사용 이력 만들기" 필요)` : `${y}년 누적 ${fmtNum(cumulativeYearRows(all, [u]).length)}행(판매 ${u.dates.size}개 날짜/월 기준, 미등록 상품 포함)`);
   }
   info.innerHTML = `전체 ${fmtNum(all.length)}행 · ${parts.join(' · ')}`;
 }
@@ -1911,7 +1942,7 @@ async function processRawDailyFiles(fileList) {
   currentUsageByDate = {};
   Object.entries(byDate).forEach(([dk, items]) => {
     const u = emptyUsage();
-    items.forEach(it => addUsageKey(u, it.minorCode, it.productCode, it.sideProductCode, it.gubun, it.productName));
+    items.forEach(it => addUsageKey(u, it.minorCode, it.productCode, it.sideProductCode, it.gubun, it.productName, it));
     currentUsageByDate[dk] = u;
   });
 
