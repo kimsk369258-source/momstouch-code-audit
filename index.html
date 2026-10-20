@@ -4992,13 +4992,22 @@ async function measurePromo(id) {
     const reg = registeredOrderItems(); const salesDays = salesDaySetNow();
     const tot = {}; // item -> date -> 합
     const storeTot = {}; // item -> store -> date -> q
-    Object.entries(S).forEach(([code, o]) => Object.entries(o.byItem).forEach(([item, days]) => {
-      if (!reg.has(item)) return;
-      Object.entries(days).forEach(([d, q]) => {
-        (tot[item] = tot[item] || {})[d] = (tot[item][d] || 0) + q;
-        ((storeTot[item] = storeTot[item] || {})[code] = storeTot[item][code] || {})[d] = q;
+    const opStores = {}; // date -> 그날 판매 기록이 있는(=영업한) 매장 수
+    Object.entries(S).forEach(([code, o]) => {
+      const opDays = new Set();
+      Object.entries(o.byItem).forEach(([item, days]) => {
+        Object.keys(days).forEach(d => opDays.add(d));
+        if (!reg.has(item)) return;
+        Object.entries(days).forEach(([d, q]) => {
+          (tot[item] = tot[item] || {})[d] = (tot[item][d] || 0) + q;
+          ((storeTot[item] = storeTot[item] || {})[code] = storeTot[item][code] || {})[d] = q;
+        });
       });
-    }));
+      opDays.forEach(d => { opStores[d] = (opStores[d] || 0) + 1; });
+    });
+    // 전국 합계 대신 "영업 매장당 판매"로 비교 — 월요일 격주·매주 휴무점처럼 날마다 영업 매장 수가
+    // 달라 생기는 차이를 행사 효과로 오해하지 않게 한다.
+    Object.keys(tot).forEach(item => { const per = {}; Object.entries(tot[item]).forEach(([d, q]) => { if (opStores[d]) per[d] = q / opStores[d]; }); tot[item] = per; });
     const isEventDay = d => promos.some(x => d >= x.start && d <= x.end);
     const baseN = [];
     const baseOf = (series, d, track) => {
@@ -5030,8 +5039,8 @@ async function measurePromo(id) {
       measured.items[item] = { lift, special: sp, actual: act, baseline: base, storeCount: st.length, baseN: Math.round(avgN * 10) / 10 };
       const warnLow = avgN < 2 || lift < 0;
       html += (warnLow ? `<div class="note" style="color:#b91c1c;">⚠ ${esc(item)}: 기준선이 행사일당 평균 ${Math.round(avgN * 10) / 10}일분${lift < 0 ? ', 할인 행사인데 마이너스' : ''} — 신뢰도가 낮습니다. 행사 시작 전 4~5주 일별 판매를 저장한 뒤 다시 측정하세요(생산·발주 예측에는 마이너스 값을 0%로 씁니다).</div>` : '')
-        + `<div class="status-line" style="flex-wrap:wrap;"><span class="pill pill-neutral">${esc(item)}</span><span>행사일 판매 ${fmtNum(Math.round(act))} vs 평소 ${fmtNum(Math.round(base))} → <strong>${lift >= 0 ? '+' : ''}${Math.round(lift * 100)}%</strong>${Object.entries(sp).map(([k, v]) => ` · ${esc(k)} ${v >= 0 ? '+' : ''}${Math.round(v * 100)}%`).join('')}</span></div>`;
-      html += '<div class="table-wrap"><table><thead><tr><th>날짜</th><th class="num">실제</th><th class="num">평소(기준선)</th><th class="num">상승률</th><th>특별 쿠폰</th></tr></thead><tbody>' + rows.map(x => `<tr><td>${x.d.slice(5)}(${DOW_KO[dowOf(x.d)]})</td><td class="num">${fmtNum(Math.round(x.a))}</td><td class="num">${fmtNum(Math.round(x.b))}</td><td class="num">${Math.round((x.a / x.b - 1) * 100)}%</td><td>${esc(x.cs.map(c => c.kind + ' ' + c.total).join(', '))}</td></tr>`).join('') + '</tbody></table></div>';
+        + `<div class="status-line" style="flex-wrap:wrap;"><span class="pill pill-neutral">${esc(item)}</span><span>행사일 영업 매장당 판매 합 ${(Math.round(act * 10) / 10).toLocaleString()} vs 평소 ${(Math.round(base * 10) / 10).toLocaleString()} → <strong>${lift >= 0 ? '+' : ''}${Math.round(lift * 100)}%</strong>${Object.entries(sp).map(([k, v]) => ` · ${esc(k)} ${v >= 0 ? '+' : ''}${Math.round(v * 100)}%`).join('')}</span></div>`;
+      html += '<div class="table-wrap"><table><thead><tr><th>날짜</th><th class="num">영업 매장</th><th class="num">매장당 실제</th><th class="num">매장당 평소(기준선)</th><th class="num">상승률</th><th>특별 쿠폰</th></tr></thead><tbody>' + rows.map(x => `<tr><td>${x.d.slice(5)}(${DOW_KO[dowOf(x.d)]})</td><td class="num">${fmtNum(opStores[x.d] || 0)}</td><td class="num">${(Math.round(x.a * 10) / 10).toLocaleString()}</td><td class="num">${(Math.round(x.b * 10) / 10).toLocaleString()}</td><td class="num">${Math.round((x.a / x.b - 1) * 100)}%</td><td>${esc(x.cs.map(c => c.kind + ' ' + c.total).join(', '))}</td></tr>`).join('') + '</tbody></table></div>';
       if (st.length) html += `<div class="note">매장별(평소 하루 5개 이상 매장 ${st.length}곳) 상승률 상위: ${st.slice(0, 5).map(x => `${x.code} ${storeInfoMap[x.code]?.name || ''} ${Math.round(x.lift * 100)}%`).join(', ')} / 하위: ${st.slice(-3).map(x => `${x.code} ${storeInfoMap[x.code]?.name || ''} ${Math.round(x.lift * 100)}%`).join(', ')}</div>`;
     });
     if (!Object.keys(measured.items).length) { wrap.innerHTML = html + '<div class="note">기준선(행사 전 5주 안 행사 없는 같은 요일)을 만들 판매 데이터가 부족합니다. 행사 시작 전 몇 주치 일별 데이터를 저장하면 측정됩니다.</div>'; return; }
@@ -5084,18 +5093,30 @@ function computeRec({ recvRaw, sold, orderDate, salesDays, unitsPerPack, k, capD
     if (bal > cap) { if (d >= recentFrom) lostOut += bal - cap; bal = cap; }
   }
   // ② 일별 예측: 같은 요일 최근 4회 가중평균 × 추세
-  const avgRange = (from, to) => { let sum = 0, n = 0; for (let d = from; d <= to; d = addDaysStr(d, 1)) if (salesDays.has(d)) { sum += S[d] || 0; n++; } return n ? { avg: sum / n, n } : null; };
+  // 영업일 판정: 그날 판매 업로드가 있고(salesDays) 이 매장 기록이 있으면 영업(판매 0이어도 기록은 남음),
+  // 기록이 아예 없으면 휴무로 본다. 월요일 격주·매주 휴무점이 평균을 깎지 않게 하기 위함.
+  const isOpen = d => salesDays.has(d) && S[d] !== undefined;
+  const avgRange = (from, to) => { let sum = 0, n = 0; for (let d = from; d <= to; d = addDaysStr(d, 1)) if (isOpen(d)) { sum += S[d] || 0; n++; } return n ? { avg: sum / n, n } : null; };
   const recent = avgRange(addDaysStr(cutoff, -13), cutoff), prior = avgRange(addDaysStr(cutoff, -41), addDaysStr(cutoff, -14));
   let trend = 1;
   if (recent && prior && recent.n >= 7 && prior.n >= 14 && prior.avg > 0) trend = Math.min(1.25, Math.max(0.8, recent.avg / prior.avg));
   let thin = false;
+  const closedPred = [];
   const dayFcst = d => {
-    const vals = [];
-    for (let w = 1; vals.length < 4 && w <= 8; w++) { const x = addDaysStr(d, -7 * w); if (x <= cutoff && salesDays.has(x)) vals.push(S[x] || 0); }
-    if (vals.length < 2) thin = true;
-    if (!vals.length) return 0;
-    const wts = [4, 3, 2, 1].slice(0, vals.length);
-    return vals.reduce((a, v, i) => a + v * wts[i], 0) / wts.reduce((a, b) => a + b, 0) * trend;
+    // 같은 요일 최근 4회(업로드 있는 날)의 영업 여부와 판매
+    const obs = [];
+    for (let w = 1; obs.length < 4 && w <= 8; w++) { const x = addDaysStr(d, -7 * w); if (x <= cutoff && salesDays.has(x)) obs.push({ x, open: S[x] !== undefined, v: S[x] || 0 }); }
+    if (obs.length < 2) thin = true;
+    if (!obs.length) return 0;
+    const open = obs.filter(o => o.open);
+    if (!open.length) { closedPred.push(d); return 0; }
+    // 휴무 패턴: 번갈아(격주) → 지난주 열었으면 이번엔 휴무 / 최근 2주 연속 휴무 → 매주 휴무 / 그 외 → 영업 비율만큼
+    const st = obs.map(o => o.open);
+    const alternating = st.length >= 3 && st.every((v, i) => i === 0 || v !== st[i - 1]);
+    const openExp = alternating ? (st[0] ? 0 : 1) : (!st[0] && st[1] === false) ? 0 : (st.filter(Boolean).length >= st.length - 1 ? 1 : open.length / obs.length);
+    if (openExp === 0) { closedPred.push(d); return 0; }
+    const wts = [4, 3, 2, 1].slice(0, open.length);
+    return open.reduce((a, o, i) => a + o.v * wts[i], 0) / wts.reduce((a, b) => a + b, 0) * trend * openExp;
   };
   // ③ 입고 전 판매(마감 다음날 ~ 입고 전날) + 그 사이 입고
   let preSales = 0, preRecv = 0;
@@ -5105,7 +5126,7 @@ function computeRec({ recvRaw, sold, orderDate, salesDays, unitsPerPack, k, capD
   const cycleUse = cycleF.reduce((a, b) => a + b, 0);
   // ④ 안전재고: 최근 4주 같은 요일 평균 대비 편차의 표준편차
   const byDow = {}; const win = [];
-  for (let d = addDaysStr(cutoff, -27); d <= cutoff; d = addDaysStr(d, 1)) if (salesDays.has(d)) { win.push(d); (byDow[dowOf(d)] = byDow[dowOf(d)] || []).push(S[d] || 0); }
+  for (let d = addDaysStr(cutoff, -27); d <= cutoff; d = addDaysStr(d, 1)) if (isOpen(d)) { win.push(d); (byDow[dowOf(d)] = byDow[dowOf(d)] || []).push(S[d] || 0); }
   const dowMean = {}; Object.entries(byDow).forEach(([w, a]) => { dowMean[w] = a.reduce((x, y) => x + y, 0) / a.length; });
   const resid = win.map(d => (S[d] || 0) - dowMean[dowOf(d)]);
   const sigma = resid.length > 1 ? Math.sqrt(resid.reduce((a, r) => a + r * r, 0) / (resid.length - 1)) : 0;
@@ -5116,7 +5137,7 @@ function computeRec({ recvRaw, sold, orderDate, salesDays, unitsPerPack, k, capD
   const R = recvRaw || {};
   const actNormal = R[T] || 0, actAdd = cdays.slice(1).reduce((a, d) => a + (R[d] || 0), 0);
   const hasActual = Object.keys(R).some(d => d >= T && d <= cdays[cdays.length - 1]);
-  return { T, cdays, cutoff, bal, borrowedIn, lostOut, capUnits: isFinite(cap) ? cap : null, preSales, preRecv, projected, cycleF, cycleUse, trend, sigma, safety, needUnits, recPacks, actNormal, actAdd, actTotal: actNormal + actAdd, hasActual, thin };
+  return { T, cdays, cutoff, closedPred, bal, borrowedIn, lostOut, capUnits: isFinite(cap) ? cap : null, preSales, preRecv, projected, cycleF, cycleUse, trend, sigma, safety, needUnits, recPacks, actNormal, actAdd, actTotal: actNormal + actAdd, hasActual, thin };
 }
 
 
@@ -5203,7 +5224,7 @@ function usableLift(p, v) {
 }
 // 회차 t(입고일)의 행사 계수 — 측정값(검증 후) → 예상 증가율 → 0(미측정 표시)
 function promoFactor(t, item) {
-  const days = cycleDays(t); let f = 1; const notes = []; let unmeasured = false;
+  const days = cycleDays(t); let f = 1; const notes = []; let unmeasured = false, unreliable = false;
   promos.forEach(p => {
     const inDays = days.filter(d => d >= p.start && d <= p.end);
     if (!inDays.length) return;
@@ -5211,6 +5232,7 @@ function promoFactor(t, item) {
     const mu = m ? usableLift(p, m.lift) : null;
     const lift = m ? mu.v : (p.expectedLift != null ? p.expectedLift / 100 : null);
     if (lift == null && p.type !== 'holiday') unmeasured = true;
+    if (lift == null || (mu && mu.note)) unreliable = true; // 효과를 모르거나 측정값을 못 믿는 행사·명절
     let add = 0;
     inDays.forEach(d => {
       let l = lift;
@@ -5220,22 +5242,28 @@ function promoFactor(t, item) {
     f += add;
     notes.push(`${p.name}${lift == null ? '(효과 미측정·0% 적용)' : ` ${lift >= 0 ? '+' : ''}${Math.round(lift * 100)}%`}${mu && mu.note ? `[${mu.note}]` : ''} ${inDays.length}/${days.length}일`);
   });
-  return { f: Math.max(0.5, f), notes, unmeasured };
+  return { f: Math.max(0.5, f), notes, unmeasured, unreliable };
 }
 
 // 한 품목·한 회차 T의 타깃 예측. rv = { 실제입고일: 포장 수 }(전국 합). 확정일 전 데이터만 쓴다.
 function forecastProd(item, T, rv) {
   const cd0 = confirmDateOf(T);
-  const used = [];
-  for (let w = 1; w <= 8 && used.length < 4; w++) { const t = addDaysStr(T, -7 * w); if (rv[t] > 0 && cycleDays(t).every(d => d < cd0)) used.push(t); }
-  if (!used.length) return null;
+  // 기준선 후보: 확정일 전에 끝난 같은 요일 회차. 효과를 모르거나 못 믿는 행사·명절이 걸친 회차는
+  // 나눠서 보정하지 않고 빼는 게 안전하다 — 깨끗한 회차가 2개 이상이면 그것만 쓴다.
+  const cand = [];
+  for (let w = 1; w <= 8; w++) { const t = addDaysStr(T, -7 * w); if (rv[t] > 0 && cycleDays(t).every(d => d < cd0)) cand.push(t); }
+  if (!cand.length) return null;
+  const clean = cand.filter(t => !promoFactor(t, item).unreliable);
+  const cleanBase = clean.length >= 2;
+  const used = (cleanBase ? clean : cand).slice(0, 4);
+  const excluded = cleanBase ? cand.filter(t => !clean.includes(t) && t >= used[used.length - 1]) : [];
   const wts = [4, 3, 2, 1].slice(0, used.length);
   const hist = used.map(t => ({ t, actual: rv[t], pf: promoFactor(t, item) }));
   const defl = hist.map(x => x.actual / x.pf.f);
   const base = defl.reduce((a, v, i) => a + v * wts[i], 0) / wts.reduce((a, b) => a + b, 0);
   const done = [];
   for (let c = addDaysStr(cd0, -1), k = 0; done.length < 2 && k < 21; c = addDaysStr(c, -1), k++) {
-    if (![2, 4, 6].includes(dowOf(c)) || !(rv[c] > 0) || cycleDays(c).some(d => d >= cd0)) continue;
+    if (![2, 4, 6].includes(dowOf(c)) || !(rv[c] > 0) || cycleDays(c).some(d => d >= cd0) || promoFactor(c, item).unreliable) continue;
     const hh = []; for (let w = 1; w <= 8 && hh.length < 4; w++) { const t = addDaysStr(c, -7 * w); if (rv[t] > 0) hh.push(t); }
     if (!hh.length) continue;
     const ww = [4, 3, 2, 1].slice(0, hh.length);
@@ -5244,7 +5272,7 @@ function forecastProd(item, T, rv) {
   }
   const mom = done.length ? Math.min(1.1, Math.max(0.9, done.reduce((a, x) => a + x.ratio, 0) / done.length)) : 1;
   const tf = promoFactor(T, item);
-  return { cd0, hist, defl, base, mom, momCycles: done, tf, target: base * mom * tf.f };
+  return { cd0, hist, defl, base, mom, momCycles: done, tf, target: base * mom * tf.f, cleanBase, excluded, mixed: !cleanBase && cand.some(t => promoFactor(t, item).unreliable) };
 }
 
 // 범위: 품목별 고정 갭(수량) — 최소 = 타깃 − 갭/2, 최대 = 타깃 + 갭/2.
@@ -5307,7 +5335,7 @@ async function renderProduction() {
     ok.forEach(r => {
       const f = r.fc;
       html += `<tr><td><strong>${esc(r.item)}</strong></td>
-        <td style="font-size:12px;">${f.hist.map(x => `${x.t.slice(5)} ${fmtNum(x.actual)}${x.pf.f !== 1 ? `<span style="color:#b45309;" title="${esc(x.pf.notes.join(' / '))}">(÷${x.pf.f.toFixed(2)})</span>` : ''}`).join(' · ')}</td>
+        <td style="font-size:12px;">${f.hist.map(x => `${x.t.slice(5)} ${fmtNum(x.actual)}${x.pf.f !== 1 ? `<span style="color:#b45309;" title="${esc(x.pf.notes.join(' / '))}">(÷${x.pf.f.toFixed(2)})</span>` : ''}`).join(' · ')}${f.excluded.length ? `<div class="note">행사·명절 회차 제외: ${f.excluded.map(t => t.slice(5)).join(', ')}</div>` : ''}${f.mixed ? '<div class="note" style="color:#b45309;">⚠ 행사 없는 회차가 2개 미만이라 행사 회차 포함 기준선</div>' : ''}</td>
         <td class="num">${fmtNum(Math.round(f.base))}</td>
         <td class="num" title="${esc(f.momCycles.map(x => `${x.c.slice(5)}(${DOW_KO[dowOf(x.c)]}) 회차 기준선 대비 ${Math.round((x.ratio - 1) * 100)}%`).join(' / ') || '확정일 전 끝난 최근 회차 없음')}">${f.mom === 1 ? '-' : (f.mom > 1 ? '▲' : '▼') + Math.round(Math.abs(f.mom - 1) * 100) + '%'}</td>
         <td style="font-size:12px;">${f.tf.notes.length ? esc(f.tf.notes.join(' / ')) : '-'}</td>
@@ -5535,7 +5563,7 @@ async function renderRecommendation() {
       const dash = v => v == null ? '-' : fmtNum(Math.round(v));
       html += `<tr><td>${esc(x.code)}</td><td>${esc(x.name)}</td><td>${esc(x.team)}</td><td>${x.pos ? '<span class="pill pill-neutral">자체POS</span>' : 'POS'}</td><td>${esc(x.item)}${x.thin ? ' <span class="pill pill-neutral" title="예측에 쓸 같은 요일 이력이 2회 미만이라 불안정합니다">이력부족</span>' : ''}</td>
         <td class="num" title="${x.pos ? '' : `최근 4주: 입고로 설명 안 되는 판매(빌려옴·사입 추정) ${Math.round(x.borrowedIn || 0)}개 / 장부에서 빠진 물량(빌려줌·폐기 추정) ${Math.round(x.lostOut || 0)}개${x.capUnits ? ` / 재고 상한 ${Math.round(x.capUnits)}개` : ''}`}">${dash(x.bal)}${!x.pos && x.lostOut > 0 ? ' <span style="color:#b45309;" title="상한 초과분을 잘라냄">✂</span>' : ''}${!x.pos && x.borrowedIn > 0 ? ' <span style="color:#b91c1c;" title="입고보다 판매가 많았던 적 있음">↙</span>' : ''}</td><td class="num">${dash(x.preSales)}</td>
-        <td class="num" title="${x.pos ? `최근 같은 요일 회차 ${x.histN}회 입고 평균` : x.cdays.map((d, i) => d.slice(5) + ' ' + Math.round(x.cycleF[i])).join(' / ')}">${x.pos ? '<span class="note">입고평균</span>' : fmtNum(Math.round(x.cycleUse))}</td>
+        <td class="num" title="${x.pos ? `최근 같은 요일 회차 ${x.histN}회 입고 평균` : x.cdays.map((d, i) => d.slice(5) + ' ' + Math.round(x.cycleF[i])).join(' / ') + (x.closedPred?.length ? ` · 휴무 예상: ${x.closedPred.map(d => d.slice(5) + '(' + DOW_KO[dowOf(d)] + ')').join(', ')}` : '')}">${x.pos ? '<span class="note">입고평균</span>' : fmtNum(Math.round(x.cycleUse))}${!x.pos && x.closedPred?.length ? ' <span class="pill pill-neutral" style="font-size:10px;">휴무 ' + x.closedPred.map(d => DOW_KO[dowOf(d)]).join('') + '</span>' : ''}</td>
         <td class="num">${x.pos || x.trend === 1 ? '-' : (x.trend > 1 ? '▲' : '▼') + Math.round(Math.abs(x.trend - 1) * 100) + '%'}</td>
         <td class="num">${dash(x.safety)}</td>
         <td class="num"><strong>${fmtNum(x.recPacks)}</strong> ${esc(x.packUnit)}</td>
