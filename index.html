@@ -493,7 +493,23 @@
       <div class="note">※ 이 기능을 새로 추가하기 전에 저장된 날짜는 매장×분류별 판매건수가 따로 저장되어 있지 않아 추출에 포함되지 않습니다. "③ 이력" 탭의 "🔄 전체 재분류"를 한 번 실행하면 과거 날짜도 포함됩니다.</div>
       <div id="extractStatus" style="margin-top:8px;"></div>
     </div>
-  </section>
+      <div class="card">
+      <h2>일자별 가맹점 실제 판매(소진) 추출 — 발주품목 기준</h2>
+      <div class="card-sub">판매 소진 원장에서 매장 × 날짜별 발주품목 판매량을 뽑습니다(판매수량 × 보정값, 뼈치킨은 한마리·반반 2봉 / 반마리·기타 1봉 규칙). 품목마다 시트 1장(행 = 매장, 열 = 날짜) + 전국 일자별 합계 시트가 만들어집니다. 휴무(그날 판매 기록 없음)는 빈칸, 영업했지만 판매 0이면 0으로 구분합니다.</div>
+      <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:10px;">
+        <input type="date" id="soldExStart" class="search-input" style="flex:none;" value="2026-09-01"> ~
+        <input type="date" id="soldExEnd" class="search-input" style="flex:none;" value="2026-10-19">
+        <select id="soldExUnit" class="search-input" style="flex:none;">
+          <option value="pack">포장(bag/box) 단위</option>
+          <option value="unit">낱개(개·조각) 단위</option>
+        </select>
+        <label style="font-size:12px; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="soldExActive" checked> 가맹점현황 매장만</label>
+      </div>
+      <div class="toolbar" style="gap:10px; flex-wrap:wrap; margin-top:6px;" id="soldExItems"></div>
+      <button class="btn btn-primary btn-sm" style="margin-top:8px;" onclick="downloadDailySold()">📥 일자별 판매 추출</button>
+      <div class="status-line" id="soldExStatus" style="margin-top:8px;"></div>
+    </div>
+</section>
 
   <!-- ===================== TAB 6: 프로모션 ===================== -->
   <section class="panel" id="panel-promo">
@@ -4255,6 +4271,7 @@ async function loadOrdersIndex() {
   populateRecOrderDates();
   await loadProdLimits(); // 확정 요일 설정을 먼저 읽어야 회차 목록의 확정일이 맞다
   populateProdCycles();
+  renderSoldExItems();
   populateStockStoreSelect();
 }
 
@@ -5098,6 +5115,67 @@ function downloadPromos() {
 }
 
 // ==========================================================================
+// 일자별 가맹점 실제 판매(소진) 추출
+// ==========================================================================
+const SOLD_EX_DEFAULT_ITEMS = ['싸이패티', '빅싸이순살', '빅싸이순살맥스', '가슴살패티', '와우순살', '와우순살맥스', '뼈치킨'];
+function renderSoldExItems() {
+  const el = document.getElementById('soldExItems'); if (!el) return;
+  const names = [...new Set([...SOLD_EX_DEFAULT_ITEMS, ...registeredOrderItems()])];
+  el.innerHTML = '품목: ' + names.map(n => `<label style="font-size:13px;"><input type="checkbox" class="soldExItem" value="${esc(n)}"${SOLD_EX_DEFAULT_ITEMS.includes(n) ? ' checked' : ''}> ${esc(n)}</label>`).join(' ');
+}
+async function downloadDailySold() {
+  const st = document.getElementById('soldExStatus');
+  const start = document.getElementById('soldExStart').value, end = document.getElementById('soldExEnd').value;
+  const unit = document.getElementById('soldExUnit').value;
+  const onlyActive = document.getElementById('soldExActive').checked;
+  const items = [...document.querySelectorAll('.soldExItem:checked')].map(x => x.value);
+  if (!start || !end || end < start) { st.innerHTML = '<span class="pill pill-warn">기간을 확인해주세요.</span>'; return; }
+  if (!items.length) { st.innerHTML = '<span class="pill pill-warn">품목을 하나 이상 고르세요.</span>'; return; }
+  const months = []; for (let m = start.slice(0, 7); m <= end.slice(0, 7); m = addDaysStr(m + '-28', 5).slice(0, 7)) months.push(m);
+  st.innerHTML = `<span class="pill pill-neutral">판매 원장 불러오는 중... (${months.join(', ')})</span>`;
+  try {
+    if (!soldDates) await loadSoldDates();
+    const S = await ledgerLoadMonthsCached(LEDGER_SOLD, months);
+    const salesDays = salesDaySetNow();
+    const dates = []; for (let d = start; d <= end; d = addDaysStr(d, 1)) dates.push(d);
+    const missing = dates.filter(d => !salesDays.has(d));
+    const pack = packInfoMap();
+    const conv = item => unit === 'pack' ? (pack[item]?.unitsPerPack || 1) : 1;
+    const codes = Object.keys(S).filter(c => !onlyActive || isActiveStore(c)).sort();
+    const wb = XLSX.utils.book_new();
+    // 전국 일자별 합계 + 영업 매장 수
+    const opCount = {}, totals = {};
+    codes.forEach(c => {
+      const open = new Set(); Object.values(S[c].byItem).forEach(days => Object.keys(days).forEach(d => open.add(d)));
+      open.forEach(d => { opCount[d] = (opCount[d] || 0) + 1; });
+      items.forEach(it => Object.entries(S[c].byItem[it] || {}).forEach(([d, q]) => { (totals[it] = totals[it] || {})[d] = (totals[it][d] || 0) + q; }));
+    });
+    const sumAoa = [['날짜', '요일', '판매 데이터', '영업 매장 수', ...items.map(it => `${it}(${unit === 'pack' ? (pack[it]?.packUnit || '포장') : '개'})`)]];
+    dates.forEach(d => sumAoa.push([d, DOW_KO[dowOf(d)], salesDays.has(d) ? '있음' : '없음', salesDays.has(d) ? (opCount[d] || 0) : '', ...items.map(it => salesDays.has(d) ? Math.round(((totals[it] || {})[d] || 0) / conv(it) * 10) / 10 : '')]));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sumAoa), '전국 일자별 합계');
+    // 품목별 매장 × 날짜
+    items.forEach(it => {
+      const head = ['매장코드', '매장명', '팀', ...dates.map(d => `${d.slice(5)}(${DOW_KO[dowOf(d)]})${salesDays.has(d) ? '' : ' 데이터없음'}`), '기간 합계', '영업일수', '영업일 평균'];
+      const aoa = [head];
+      codes.forEach(c => {
+        const ser = S[c].byItem[it]; if (!ser) return;
+        const open = new Set(); Object.values(S[c].byItem).forEach(days => Object.keys(days).forEach(d => open.add(d)));
+        let sum = 0, n = 0;
+        const vals = dates.map(d => {
+          if (!salesDays.has(d) || !open.has(d)) return ''; // 데이터 없음·휴무
+          const v = Math.round(((ser[d] || 0) / conv(it)) * 10) / 10; sum += v; n++; return v;
+        });
+        if (!n) return;
+        aoa.push([c, S[c].storeName || storeInfoMap[c]?.name || '', storeInfoMap[c]?.team || '', ...vals, Math.round(sum * 10) / 10, n, Math.round(sum / n * 10) / 10]);
+      });
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), it.slice(0, 31));
+    });
+    XLSX.writeFile(wb, `일자별_판매소진_${start}_${end}_${unit === 'pack' ? '포장' : '낱개'}.xlsx`);
+    st.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${dates.length}일 · ${codes.length}개 매장 · ${items.length}개 품목${missing.length ? ` · <strong style="color:#b91c1c;">판매 데이터 없는 날 ${missing.length}일</strong>(${missing.slice(0, 6).map(d => d.slice(5)).join(', ')}${missing.length > 6 ? ' 외' : ''}) — 그 날짜 일별 파일을 대조·저장하면 채워집니다` : ''}</span>`;
+  } catch (err) { console.error(err); st.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`; }
+}
+
+// ==========================================================================
 // 권장 발주량 예측
 // ==========================================================================
 // 발주일 O(월·수·금) → 입고 T = O+1(화·목·토), 회차 사용일 = cycleDays(T).
@@ -5805,7 +5883,7 @@ Object.assign(window, {
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
   deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, checkSoldDetail, backfillSoldLedger,
-  filterStockStores, pickFirstStockStore, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
+  filterStockStores, pickFirstStockStore, downloadDailySold, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
   addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
