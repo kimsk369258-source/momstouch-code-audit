@@ -419,6 +419,10 @@
       <div class="toolbar" style="flex-wrap:wrap; gap:8px;">
         <select id="recOrderDate" class="search-input" style="flex:none; min-width:260px;"></select>
         <select id="recItemSelect" class="search-input" style="flex:none; min-width:150px;"></select>
+        <select id="recCalib" class="search-input" style="flex:none;" title="POS에 안 잡히는 사용(폐기·분류 누락·환산 차이)을 품목별 전국 입고/판매 비율로 보정">
+          <option value="auto" selected>실사용 보정 자동</option>
+          <option value="off">실사용 보정 없음</option>
+        </select>
         <select id="recCapDays" class="search-input" style="flex:none;" title="추정재고가 이 일수치 판매량을 넘으면 넘는 물량은 대여·폐기 등으로 빠진 것으로 봅니다">
           <option value="3">재고 상한 3일</option>
           <option value="4" selected>재고 상한 4일</option>
@@ -1629,13 +1633,45 @@ async function saveConsumptionLedger(date, map) {
   if (rows.length) await ledgerWriteRows(LEDGER_SOLD, rows);
 }
 
+// ── 발주품목별 소진 환산 규칙(보정값 대신 적용) ─────────────────────────────
+// 뼈치킨: 발주 규격이 "10pc/bag"(포장당 10조각)이라 판매 1건을 조각 수로 바꿔야 포장 환산이 맞다.
+//   상품명에 한마리 → 2봉, 반반 → 2봉, 반마리 → 1봉 / 상품코드 3209(뼈치킨) → 2봉 / 그 외 → 1봉
+//   소진량(조각) = 판매수량 × 봉 수 × 포장당 조각 수(규격에서 읽음, 기본 10)
+// 이 규칙은 재고·권장발주·생산 계산용 소진량에만 쓰고, 매장별 분류 수량 추출(엑셀 대조용 R×AC)은 그대로 둔다.
+const CONSUMPTION_RULES = {
+  뼈치킨: (productName, productCode) => {
+    const n = String(productName || '').replace(/\s/g, '');
+    if (n.includes('한마리')) return 2;
+    if (n.includes('반반')) return 2;
+    if (n.includes('반마리')) return 1;
+    if (normCode(productCode) === '3209') return 2;
+    return 1;
+  },
+};
+let _uppCache = { key: null, map: {} };
+function unitsPerPackOf(item) {
+  const key = orderCodeUpdatedAt || orderCodeEntries.length;
+  if (_uppCache.key !== key) { _uppCache = { key, map: {} }; orderCodeEntries.forEach(e => { if (e.unitsPerPack && !_uppCache.map[e.codeName]) _uppCache.map[e.codeName] = e.unitsPerPack; }); }
+  return _uppCache.map[item] || null;
+}
+// 발주품목 item의 판매 1건당 소진량(소진 단위 = 발주 규격의 낱개). 규칙이 없으면 보정값.
+function consumptionPerSale(item, factor, productName, productCode) {
+  const rule = CONSUMPTION_RULES[item];
+  if (rule) return rule(productName, productCode) * (unitsPerPackOf(item) || 10);
+  return qtyMultiplier(factor);
+}
+function consumptionRuleLabel(item, productName, productCode) {
+  const rule = CONSUMPTION_RULES[item]; if (!rule) return '';
+  return `${rule(productName, productCode)}봉 × ${unitsPerPackOf(item) || 10}pc`;
+}
+
 function orderItemsForRow(minorCode, majorName, midName, productName, minorName, productCode, sideProductCode, gubun) {
   // 엑셀 POS 매출보고와 같은 구조: 발주품목 = 세부구분1(Z열), 소진량 = 판매수량(R) × 보정값(AC).
   // 세부구분2(AA열)와 예전 "발주품목" 필드는 현재 쓰지 않으므로 소진 계산에 넣지 않는다
   // (기준표에 과거 값이 남아 있어도 엑셀과 수치가 어긋나지 않게).
   const { cat, detail1, factor } = classifyForRow(minorCode, majorName, midName, productName, minorName, productCode, sideProductCode, gubun);
   if (cat === '제외' || !detail1) return [];
-  return [{ name: detail1, qtyPerUnit: qtyMultiplier(factor) }];
+  return [{ name: detail1, qtyPerUnit: consumptionPerSale(detail1, factor, productName, productCode) }];
 }
 
 function legacyOrderItemForRow(minorCode, productName, productCode) {
@@ -4683,9 +4719,9 @@ async function checkSoldDetail() {
       const qty = cols.qty >= 0 ? toNum(r[cols.qty]) : 0;
       const ac = factorIdx >= 0 ? r[factorIdx] : '';
       ois.filter(oi => reg.has(oi.name)).forEach(oi => {
-        lines.push({ item: oi.name, name: g('productName'), gubun: g('gubun'), qty, ac, f: oi.qtyPerUnit, site: qty * oi.qtyPerUnit });
+        lines.push({ item: oi.name, name: g('productName'), pc: cols.productCode >= 0 ? r[cols.productCode] : '', gubun: g('gubun'), qty, ac, f: oi.qtyPerUnit, site: qty * oi.qtyPerUnit });
         siteSum[oi.name] = (siteSum[oi.name] || 0) + qty * oi.qtyPerUnit;
-        acSum[oi.name] = (acSum[oi.name] || 0) + qty * qtyMultiplier(ac);
+        acSum[oi.name] = (acSum[oi.name] || 0) + qty * oi.qtyPerUnit; // 규칙 품목(뼈치킨 등)은 규칙 환산, 그 외 R×AC
       });
     });
     const saved = (await ledgerLoadStore(LEDGER_SOLD, storeCode)).byItem;
@@ -4695,10 +4731,10 @@ async function checkSoldDetail() {
     Object.keys(siteSum).sort().forEach(it => {
       const sv = (saved[it] || {})[date];
       const ok = sv != null && Math.abs(sv - acSum[it]) < 1e-6;
-      html += `<span class="pill ${ok ? 'pill-ok' : 'pill-bad'}">${esc(it)}</span><span>합본 R×AC 합계 <strong>${fmtNum(acSum[it])}</strong> · 재고화면에 저장된 값 <strong>${sv == null ? '없음' : fmtNum(sv)}</strong>${ok ? ' ✓ 일치' : ' — 불일치: "③ 이력 → 전체 재분류"로 다시 계산하세요'}</span>`;
+      html += `<span class="pill ${ok ? 'pill-ok' : 'pill-bad'}">${esc(it)}</span><span>합본 기준 소진 합계 <strong>${fmtNum(acSum[it])}</strong> · 재고화면에 저장된 값 <strong>${sv == null ? '없음' : fmtNum(sv)}</strong>${ok ? ' ✓ 일치' : ' — 불일치: "③ 이력 → 전체 재분류"로 다시 계산하세요'}</span>`;
     });
-    html += '</div><div class="table-wrap"><table><thead><tr><th>발주품목</th><th>상품명</th><th>구분</th><th class="num">판매수량(R)</th><th class="num">보정값(AC)</th><th class="num">R×AC</th></tr></thead><tbody>';
-    lines.forEach(l => { html += `<tr><td>${esc(l.item)}</td><td>${esc(l.name)}</td><td>${esc(l.gubun)}</td><td class="num">${fmtNum(l.qty)}</td><td class="num">${esc(String(l.ac))}</td><td class="num">${fmtNum(l.qty * qtyMultiplier(l.ac))}</td></tr>`; });
+    html += '</div><div class="table-wrap"><table><thead><tr><th>발주품목</th><th>상품명</th><th>구분</th><th class="num">판매수량(R)</th><th class="num">보정값(AC) / 소진 규칙</th><th class="num">소진량</th></tr></thead><tbody>';
+    lines.forEach(l => { const rl = consumptionRuleLabel(l.item, l.name, l.pc); html += `<tr><td>${esc(l.item)}</td><td>${esc(l.name)}</td><td>${esc(l.gubun)}</td><td class="num">${fmtNum(l.qty)}</td><td class="num">${rl ? `<span title="보정값 대신 소진 규칙 적용">${esc(rl)}</span>` : esc(String(l.ac))}</td><td class="num">${fmtNum(l.site)}</td></tr>`; });
     wrap.innerHTML = html + '</tbody></table></div>';
   } catch (err) {
     wrap.innerHTML = `<div class="note" style="color:#b91c1c;">불러오기 실패: ${esc(err.message)} (그 날짜 합본 파일이 저장되어 있는지 확인해주세요)</div>`;
@@ -4731,7 +4767,7 @@ async function consumptionFromStoredExport(date) {
     if (!storeCode || !item || cat === '제외' || !qty) return;
     const key = storeCode + '|' + item;
     if (!map[key]) map[key] = { storeCode, storeName: cols.storeName >= 0 ? String(r[cols.storeName] ?? '').trim() : '', orderItem: item, qty: 0 };
-    map[key].qty += qty * qtyMultiplier(fIdx >= 0 ? r[fIdx] : '');
+    map[key].qty += qty * consumptionPerSale(item, fIdx >= 0 ? r[fIdx] : '', cols.productName >= 0 ? r[cols.productName] : '', cols.productCode >= 0 ? r[cols.productCode] : '');
   });
   return map;
 }
@@ -5330,6 +5366,9 @@ async function renderProduction() {
     const salesDaysCut = new Set([...salesDaysAll].filter(d => d < cd0T));
     const orderDay = addDaysStr(T, -1);
     const coach = {}; // item -> { short, stores, list:[...] , salesNeed }
+    const prodCalCut = (() => { let c = addDaysStr(cd0T, -1); for (let i = 0; i < 7 && !salesDaysCut.has(c); i++) c = addDaysStr(c, -1); return c; })();
+    const prodCalib = calcUsageCalib(R, S, pack, addDaysStr(prodCalCut, -27), prodCalCut, items,
+      code => !isActiveStore(code) || isSelfPosStore(R[code] || { byItem: {} }, S[code] || { byItem: {} }, orderDay));
     const cleanPast = item => { const out = []; for (let w = 1; w <= 8 && out.length < 4; w++) { const t = addDaysStr(T, -7 * w); if (cycleDays(t).every(d => d < cd0T) && !promoFactor(t, item).unreliable) out.push(t); } return out; };
     const itemSet = new Set(items);
     const pastCyclesBy = {}; items.forEach(it => { pastCyclesBy[it] = cleanPast(it); });
@@ -5340,7 +5379,7 @@ async function renderProduction() {
       Object.keys(sv.byItem).forEach(item => {
         if (!itemSet.has(item)) return;
         const upp = pack[item]?.unitsPerPack || 1;
-        const x = computeRec({ recvRaw: r.byItem[item], sold: sv.byItem[item], orderDate: orderDay, salesDays: salesDaysCut, unitsPerPack: upp, k: 0.5 });
+        const x = computeRec({ recvRaw: r.byItem[item], sold: scaleSeries(sv.byItem[item], prodCalib[item]?.k || 1), orderDate: orderDay, salesDays: salesDaysCut, unitsPerPack: upp, k: 0.5 });
         const raw = r.byItem[item] || {};
         const pc = pastCyclesBy[item];
         const vals = pc.map(t => cycleDays(t).reduce((a, d) => a + (raw[d] || 0), 0));
@@ -5361,6 +5400,7 @@ async function renderProduction() {
       r.coach = c;
       r.addSuggest = c.short;
       r.coachTarget = Math.round(r.target + c.short * coachRate);
+      r.calib = prodCalib[r.item];
     });
     prodRows = rows; prodMeta = { T, coachRate };
     const past = rows.some(r => !r.noData && r.actualT != null);
@@ -5371,7 +5411,7 @@ async function renderProduction() {
     html += `<tr><td>최소</td>${rows.map(r => `<td class="num">${r.noData || r.min == null ? '-' : fmtNum(r.min)}</td>`).join('')}</tr>`;
     html += `<tr><td><strong>타깃</strong></td>${rows.map((r, i) => `<td class="num">${r.noData ? '-' : `<input class="search-input prod-final" data-i="${i}" style="width:90px; text-align:right; font-weight:600;" value="${r.target}">`}</td>`).join('')}</tr>`;
     html += `<tr><td>최대</td>${rows.map(r => `<td class="num">${r.noData || r.max == null ? '-' : fmtNum(r.max)}</td>`).join('')}</tr>`;
-    html += `<tr style="background:#fef2f2;"><td>추가 발주 제안<br><span class="note">(판매 기준 부족분 합)</span></td>${rows.map(r => `<td class="num">${r.noData ? '-' : `<strong style="color:#b91c1c;">+${fmtNum(r.addSuggest)}</strong><div class="note">${fmtNum(r.coach.stores)}개 매장</div>`}</td>`).join('')}</tr>`;
+    html += `<tr style="background:#fef2f2;"><td>추가 발주 제안<br><span class="note">(판매 기준 부족분 합)</span></td>${rows.map(r => `<td class="num">${r.noData ? '-' : `<strong style="color:#b91c1c;">+${fmtNum(r.addSuggest)}</strong><div class="note">${fmtNum(r.coach.stores)}개 매장${r.calib?.raw != null ? ` · 보정 ×${r.calib.raw.toFixed(2)}` : ''}</div>`}</td>`).join('')}</tr>`;
     html += `<tr style="background:#eff6ff;"><td>제안 반영 타깃<br><span class="note">(타깃 + 제안 × ${Math.round(coachRate * 100)}%)</span></td>${rows.map(r => `<td class="num">${r.noData ? '-' : `<strong>${fmtNum(r.coachTarget)}</strong>`}</td>`).join('')}</tr>`;
     if (past) html += `<tr style="background:#f9fafb;"><td>실제 입고</td>${rows.map(r => `<td class="num">${r.noData || r.actualT == null ? '-' : `${fmtNum(r.actualT)} <span class="note">(${r.min == null ? '' : r.actualT < r.min || r.actualT > r.max ? '범위 밖, ' : '범위 안, '}타깃 대비 ${r.actualT - r.target > 0 ? '+' : ''}${fmtNum(r.actualT - r.target)})</span>`}</td>`).join('')}</tr>`;
     html += '</tbody></table></div>';
@@ -5488,6 +5528,33 @@ function selfPosRecPacks(recvRaw, T) {
   return vals.length ? { packs: Math.round(vals.reduce((a, b) => a + b, 0) / vals.length), n: vals.length } : { packs: 0, n: 0 };
 }
 
+// 실사용 보정계수: 최근 4주(마감 전) 품목별로 POS 매장들의 전국 입고(개) ÷ 판매(개, R×AC).
+// 1보다 크게 계속 나오면 POS에 안 잡히는 사용(폐기·직원식·분류 누락·보정값/포장 환산 차이)이
+// 있다는 뜻이라, 판매에 이 배수를 곱해 실제 소진에 맞춘다(1 미만이면 1, 최대 3배).
+// 3배 가까이 나오면 보정이 아니라 보정값·포장 환산 자체를 고쳐야 할 가능성이 크다.
+function calcUsageCalib(R, S, pack, from, to, items, skip) {
+  const out = {};
+  items.forEach(item => {
+    let ru = 0, sq = 0, n = 0;
+    Object.keys(S).forEach(code => {
+      if (skip && skip(code)) return;
+      const r = R[code]?.byItem[item], sv = S[code]?.byItem[item];
+      if (!sv) return;
+      let s1 = 0; Object.entries(sv).forEach(([d, q]) => { if (d >= from && d <= to) s1 += q; });
+      if (!s1) return;
+      let r1 = 0; Object.entries(r || {}).forEach(([d, q]) => { const a = actualRecvDate(d); if (a >= from && a <= to) r1 += q * (pack[item]?.unitsPerPack || 1); });
+      ru += r1; sq += s1; n++;
+    });
+    const raw = sq ? ru / sq : null;
+    out[item] = { raw, k: raw == null ? 1 : Math.min(3, Math.max(1, raw)), stores: n };
+  });
+  return out;
+}
+function scaleSeries(series, k) {
+  if (!series || k === 1) return series;
+  const o = {}; Object.entries(series).forEach(([d, q]) => { o[d] = q * k; }); return o;
+}
+
 let recRows = [], recMeta = null;
 async function renderRecommendation() {
   snapCache = {}; // 다른 팀원이 올린 최신 발주 현황을 반영하기 위해 매번 다시 읽는다
@@ -5510,6 +5577,10 @@ async function renderRecommendation() {
     // 스냅샷에만 있는 매장(입고·판매 원장에 아직 없는 매장)도 포함
     if (snap) Object.values(snap.data).forEach(m => Object.keys(m).forEach(c => { if (!R[c] && !S[c]) R[c] = { storeName: snap.names?.[c] || '', byItem: {} }; }));
     const onlyActive = document.getElementById('recOnlyActive')?.checked !== false;
+    const calibOn = (document.getElementById('recCalib')?.value || 'auto') === 'auto';
+    const calCut = (() => { let c = addDaysStr(orderDate, -1); for (let i = 0; i < 7 && !salesDays.has(c); i++) c = addDaysStr(c, -1); return c; })();
+    const calib = calcUsageCalib(R, S, pack, addDaysStr(calCut, -27), calCut, [...registeredOrderItems()],
+      code => !isActiveStore(code) || isSelfPosStore(R[code] || { byItem: {} }, S[code] || { byItem: {} }, orderDate));
     const excluded = {};
     new Set([...Object.keys(R), ...Object.keys(S)]).forEach(code => {
       const r = R[code] || { byItem: {} }, sv = S[code] || { byItem: {} };
@@ -5523,7 +5594,8 @@ async function renderRecommendation() {
         if (!reg.has(item)) return;
         if (itemFilter && item !== itemFilter) return;
         const upp = pack[item]?.unitsPerPack || 1;
-        const x = computeRec({ recvRaw: r.byItem[item], sold: sv.byItem[item], orderDate, salesDays, unitsPerPack: upp, k, capDays });
+        const kc = calibOn ? (calib[item]?.k || 1) : 1;
+        const x = computeRec({ recvRaw: r.byItem[item], sold: scaleSeries(sv.byItem[item], kc), orderDate, salesDays, unitsPerPack: upp, k, capDays });
         x.pos = selfPos ? '자체POS' : '';
         if (selfPos) {
           // 판매 기반 값은 의미가 없으므로 비우고, 최근 같은 요일 회차 입고 평균을 권장으로 쓴다.
@@ -5552,7 +5624,7 @@ async function renderRecommendation() {
     Object.values(excluded).forEach(ex => {
       new Set([...Object.keys(ex.store.r.byItem), ...Object.keys(ex.store.sv.byItem)]).forEach(item => {
         if (!reg2.has(item) || (itemFilter && item !== itemFilter)) return;
-        const x = computeRec({ recvRaw: ex.store.r.byItem[item], sold: ex.store.sv.byItem[item], orderDate, salesDays, unitsPerPack: pack[item]?.unitsPerPack || 1, k, capDays });
+        const x = computeRec({ recvRaw: ex.store.r.byItem[item], sold: scaleSeries(ex.store.sv.byItem[item], calibOn ? (calib[item]?.k || 1) : 1), orderDate, salesDays, unitsPerPack: pack[item]?.unitsPerPack || 1, k, capDays });
         ex.packs += x.recPacks;
       });
     });
@@ -5607,8 +5679,9 @@ async function renderRecommendation() {
         return `<div class="note" style="margin-top:4px; color:#7c2d12;">🔎 ${esc(it)} 진단(${from.slice(5)}~${cutoffD.slice(5)}, POS 매장): 입고 ${fmtNum(Math.round(o.ru))}개 vs 판매 ${fmtNum(Math.round(o.sq))}개 → 입고/판매 <strong>${o.sq ? Math.round(o.ru / o.sq * 100) : '-'}%</strong> (매장 중앙값 ${Math.round(med * 100)}%) · 전날 마감 추정재고 합계 ${fmtNum(Math.round(o.bal))}개 vs 이번 회차까지 예상 사용 ${fmtNum(Math.round(o.use))}개. 입고/판매가 100%를 크게 넘으면 판매가 덜 잡히고 있거나(기준표 세부구분1 누락·판매 데이터 빠진 날) 매장들이 재고를 쌓아두고 있다는 뜻이고, 그만큼 추정재고가 커져 권장량이 낮아집니다.</div>`;
       }).join('');
     })();
+    const calibNote = `<div class="note" style="margin-top:4px;">⚖ 실사용 보정계수(최근 4주 전국 입고÷판매, POS 매장)${calibOn ? ' — 판매에 곱해 계산함' : ' — 보정 끔(참고만)'}: ${Object.entries(calib).filter(([it]) => !itemFilter || it === itemFilter).map(([it, c]) => `${esc(it)} ${c.raw == null ? '-' : `<strong style="color:${c.raw >= 1.8 ? '#b91c1c' : c.raw >= 1.2 ? '#b45309' : '#047857'}">×${c.raw.toFixed(2)}</strong>`}`).join(' · ')}. ×1.8 이상은 판매가 실제 사용보다 크게 덜 잡힌다는 뜻이니 그 품목의 기준표 보정값(AC)·세부구분1 분류·발주코드 포장 환산을 먼저 점검하세요.</div>`;
     const selfPosNote = selfPosCount ? `<div class="note" style="margin-top:4px;">🏷 자체POS 매장 ${selfPosCount}곳 — 최근 8주 입고는 있는데 POS 판매 기록이 없는 특수점포(휴게소·사내식당·대학 등)입니다. 판매로 예측할 수 없어 권장 = 최근 같은 요일 회차 입고 평균으로 계산했고, 과소/과다 판정에서 빼고 "자체POS"로 표시합니다(합계표에는 포함).</div>` : '';
-    document.getElementById('recSummary').innerHTML = rows.length ? sh + diag + selfPosNote + excludedStoreNote(excludedList, itemFilter ? (pack[itemFilter]?.packUnit || '') : '포장') : '';
+    document.getElementById('recSummary').innerHTML = rows.length ? sh + calibNote + diag + selfPosNote + excludedStoreNote(excludedList, itemFilter ? (pack[itemFilter]?.packUnit || '') : '포장') : '';
     let html = '<div class="table-wrap"><table><thead><tr><th>매장코드</th><th>매장명</th><th>팀</th><th>POS</th><th>품목</th><th class="num">추정재고<br>(전날 마감)</th><th class="num">입고 전<br>예상판매</th><th class="num">회차<br>예상사용</th><th class="num">추세</th><th class="num">안전재고</th><th class="num">권장<br>(포장)</th><th class="num">실제<br>정상발주</th><th class="num">실제<br>추가발주</th><th class="num">실제<br>합계</th><th class="num">부족<br>(포장)</th><th>판정</th></tr></thead><tbody>';
     rows.slice(0, 500).forEach(x => {
       const dash = v => v == null ? '-' : fmtNum(Math.round(v));
