@@ -5166,6 +5166,7 @@ async function loadProdLimits() {
   if (!prodLimits.order || !prodLimits.order.length) prodLimits.order = PROD_DEFAULT_ITEMS.slice();
   if (!prodLimits.confirmDow) prodLimits.confirmDow = { ...PROD_CONFIRM_DEFAULT };
   if (!prodLimits.gaps) prodLimits.gaps = { ...PROD_DEFAULT_GAPS };
+  if (prodLimits.coachRate == null) prodLimits.coachRate = 0.5;
   return prodLimits;
 }
 async function toggleProdLimits() {
@@ -5178,6 +5179,7 @@ async function toggleProdLimits() {
     <div class="table-wrap" style="margin-top:8px;"><table id="plGapTable"><thead><tr><th>품목(열 순서 · 발주품목명과 같게)</th><th class="num">최소~최대 갭(수량)</th><th class="num">타깃 ±</th><th></th></tr></thead><tbody>
       ${L.order.map(n => `<tr><td><input class="search-input pl-name" style="width:160px;" value="${esc(n)}"></td><td><input class="search-input pl-gap" style="width:110px; text-align:right;" value="${L.gaps[n] ?? ''}" oninput="this.closest('tr').querySelector('.pl-half').textContent = this.value ? '±' + Math.round(Number(this.value) / 2).toLocaleString() : ''"></td><td class="num pl-half">${L.gaps[n] != null ? '±' + fmtNum(Math.round(L.gaps[n] / 2)) : ''}</td><td><button class="btn btn-ghost btn-sm" onclick="this.closest('tr').remove()">✕</button></td></tr>`).join('')}
     </tbody></table></div>
+    <div style="margin:8px 0;">코칭 반영률(추가 발주 제안 중 실제로 더 주문할 것으로 보는 비율): <input id="plCoach" class="search-input" style="width:70px; text-align:right;" value="${Math.round((L.coachRate ?? 0.5) * 100)}">%</div>
     <button class="btn btn-ghost btn-sm" onclick="document.querySelector('#plGapTable tbody').insertAdjacentHTML('beforeend', '<tr><td><input class=&quot;search-input pl-name&quot; style=&quot;width:160px;&quot;></td><td><input class=&quot;search-input pl-gap&quot; style=&quot;width:110px;&quot;></td><td class=&quot;num pl-half&quot;></td><td></td></tr>')">+ 품목</button>
     <button class="btn btn-primary btn-sm" style="margin-top:6px;" onclick="saveProdLimits()">저장</button>`;
 }
@@ -5190,7 +5192,8 @@ async function saveProdLimits() {
     const g = Number(String(tr.querySelector('.pl-gap').value).replace(/[^0-9.]/g, ''));
     if (g > 0) gaps[n] = g;
   });
-  prodLimits = { order, confirmDow, gaps };
+  const cr = Number(document.getElementById('plCoach')?.value);
+  prodLimits = { order, confirmDow, gaps, coachRate: isFinite(cr) ? Math.max(0, Math.min(100, cr)) / 100 : 0.5 };
   if (await storageSet('production_limits', JSON.stringify(prodLimits))) { document.getElementById('prodLimitsBox').style.display = 'none'; populateProdCycles(); renderProduction(); }
   else alert('저장 실패');
 }
@@ -5302,7 +5305,7 @@ async function renderProduction() {
   const months = []; for (let m = from.slice(0, 7); m <= cycleDays(T).slice(-1)[0].slice(0, 7); m = addDaysStr(m + '-28', 5).slice(0, 7)) months.push(m);
   st.innerHTML = `<span class="pill pill-neutral">불러오는 중... (${months.join(', ')} 전체 매장 입고)</span>`;
   try {
-    const R = await ledgerLoadMonthsCached(LEDGER_RECV, months);
+    const [R, S] = await Promise.all([ledgerLoadMonthsCached(LEDGER_RECV, months), ledgerLoadMonthsCached(LEDGER_SOLD, months)]);
     const pack = packInfoMap();
     const recvBy = {};
     Object.values(R).forEach(o => Object.entries(o.byItem).forEach(([it, days]) => Object.entries(days).forEach(([d, q]) => {
@@ -5319,7 +5322,47 @@ async function renderProduction() {
         min: rg.half != null ? Math.max(0, Math.round(target - rg.half)) : null,
         max: rg.half != null ? Math.round(target + rg.half) : null, actualT: rv[T] || null };
     });
-    prodRows = rows; prodMeta = { T };
+    // ── 판매 기준 추가 발주 제안: 매장별로 "판매 기반 필요량(권장 발주)"과 "평소 발주량(같은 요일
+    // 최근 4회차 입고 평균)"을 비교해, 평소대로 주문하면 모자랄 매장들의 부족분을 더한다.
+    // 확정일 전날까지의 판매만 쓰고(미래 데이터 차단), 가맹점현황 밖 매장·자체POS 매장은 뺀다.
+    const cd0T = confirmDateOf(T);
+    const salesDaysAll = salesDaySetNow();
+    const salesDaysCut = new Set([...salesDaysAll].filter(d => d < cd0T));
+    const orderDay = addDaysStr(T, -1);
+    const coach = {}; // item -> { short, stores, list:[...] , salesNeed }
+    const cleanPast = item => { const out = []; for (let w = 1; w <= 8 && out.length < 4; w++) { const t = addDaysStr(T, -7 * w); if (cycleDays(t).every(d => d < cd0T) && !promoFactor(t, item).unreliable) out.push(t); } return out; };
+    const itemSet = new Set(items);
+    const pastCyclesBy = {}; items.forEach(it => { pastCyclesBy[it] = cleanPast(it); });
+    Object.keys(S).forEach(code => {
+      if (!isActiveStore(code)) return;
+      const r = R[code] || { byItem: {} }, sv = S[code];
+      if (isSelfPosStore(r, sv, orderDay)) return;
+      Object.keys(sv.byItem).forEach(item => {
+        if (!itemSet.has(item)) return;
+        const upp = pack[item]?.unitsPerPack || 1;
+        const x = computeRec({ recvRaw: r.byItem[item], sold: sv.byItem[item], orderDate: orderDay, salesDays: salesDaysCut, unitsPerPack: upp, k: 0.5 });
+        const raw = r.byItem[item] || {};
+        const pc = pastCyclesBy[item];
+        const vals = pc.map(t => cycleDays(t).reduce((a, d) => a + (raw[d] || 0), 0));
+        const expOrder = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+        const c = coach[item] = coach[item] || { short: 0, stores: 0, salesNeed: 0, list: [] };
+        c.salesNeed += x.recPacks;
+        const sh = Math.round(x.recPacks - expOrder);
+        if (sh >= 1) {
+          c.short += sh; c.stores++;
+          c.list.push({ code, name: sv.storeName || storeInfoMap[code]?.name || '', team: storeInfoMap[code]?.team || '', item, need: x.recPacks, expOrder: Math.round(expOrder * 10) / 10, short: sh, bal: Math.round(x.bal), cycleUse: Math.round(x.cycleUse), closed: (x.closedPred || []).map(d => d.slice(5)).join(',') });
+        }
+      });
+    });
+    const coachRate = L.coachRate ?? 0.5;
+    rows.forEach(r => {
+      if (r.noData) return;
+      const c = coach[r.item] || { short: 0, stores: 0, salesNeed: 0, list: [] };
+      r.coach = c;
+      r.addSuggest = c.short;
+      r.coachTarget = Math.round(r.target + c.short * coachRate);
+    });
+    prodRows = rows; prodMeta = { T, coachRate };
     const past = rows.some(r => !r.noData && r.actualT != null);
     const cdT = confirmDateOf(T);
     st.innerHTML = `<span class="pill pill-ok">✓ ${T.slice(5)}(${DOW_KO[dowOf(T)]}) 입고 · ${esc(cycleKind(T))} 회차</span><span>사용일 ${cycleDays(T).map(d => d.slice(5)).join(', ')} · 생산 확정 ${cdT.slice(5)}(${DOW_KO[dowOf(cdT)]}) — 확정일 전날까지 끝난 회차 실적만 사용${past ? ' · 지난 회차라 실제 입고와 비교' : ''}</span>`;
@@ -5328,8 +5371,11 @@ async function renderProduction() {
     html += `<tr><td>최소</td>${rows.map(r => `<td class="num">${r.noData || r.min == null ? '-' : fmtNum(r.min)}</td>`).join('')}</tr>`;
     html += `<tr><td><strong>타깃</strong></td>${rows.map((r, i) => `<td class="num">${r.noData ? '-' : `<input class="search-input prod-final" data-i="${i}" style="width:90px; text-align:right; font-weight:600;" value="${r.target}">`}</td>`).join('')}</tr>`;
     html += `<tr><td>최대</td>${rows.map(r => `<td class="num">${r.noData || r.max == null ? '-' : fmtNum(r.max)}</td>`).join('')}</tr>`;
+    html += `<tr style="background:#fef2f2;"><td>추가 발주 제안<br><span class="note">(판매 기준 부족분 합)</span></td>${rows.map(r => `<td class="num">${r.noData ? '-' : `<strong style="color:#b91c1c;">+${fmtNum(r.addSuggest)}</strong><div class="note">${fmtNum(r.coach.stores)}개 매장</div>`}</td>`).join('')}</tr>`;
+    html += `<tr style="background:#eff6ff;"><td>제안 반영 타깃<br><span class="note">(타깃 + 제안 × ${Math.round(coachRate * 100)}%)</span></td>${rows.map(r => `<td class="num">${r.noData ? '-' : `<strong>${fmtNum(r.coachTarget)}</strong>`}</td>`).join('')}</tr>`;
     if (past) html += `<tr style="background:#f9fafb;"><td>실제 입고</td>${rows.map(r => `<td class="num">${r.noData || r.actualT == null ? '-' : `${fmtNum(r.actualT)} <span class="note">(${r.min == null ? '' : r.actualT < r.min || r.actualT > r.max ? '범위 밖, ' : '범위 안, '}타깃 대비 ${r.actualT - r.target > 0 ? '+' : ''}${fmtNum(r.actualT - r.target)})</span>`}</td>`).join('')}</tr>`;
     html += '</tbody></table></div>';
+    html += `<div class="note">추가 발주 제안 = 매장별 [판매 기반 필요량(권장 발주: 회차 예상 판매 + 안전재고 − 추정재고) − 평소 발주량(같은 요일 최근 회차 입고 평균)] 중 부족한 매장들의 합. 이 매장들에 발주 제안(코칭)을 하면 들어올 수 있는 추가 주문량이고, 그중 실제로 따라올 비율(코칭 반영률, 설정에서 변경)만큼을 "제안 반영 타깃"에 더했습니다. 매장 목록은 엑셀 "추가발주제안_매장별" 시트에 있습니다.</div>`;
     if (rows.some(r => r.noData)) html += `<div class="note">"-" 품목: 입고 실적이 없습니다 — 발주코드 매핑표에 그 품목의 발주코드를 등록하고 배송 원장을 다시 올리면 계산됩니다(${esc(rows.filter(r => r.noData).map(r => r.item).join(', '))}).</div>`;
     html += `<details style="margin-top:8px;" open><summary style="cursor:pointer; font-size:13px;">품목별 계산 근거</summary><div class="table-wrap"><table><thead><tr><th>품목</th><th>최근 같은 요일 회차 입고(포장)</th><th class="num">기준선<br>(행사 제외)</th><th class="num">최근 흐름</th><th>이번 회차 행사·공휴일</th><th class="num">행사 계수</th><th class="num">타깃</th><th class="num">갭(최소~최대)</th><th>과거 예측 오차 vs 갭</th></tr></thead><tbody>`;
     ok.forEach(r => {
@@ -5361,7 +5407,9 @@ function downloadProduction() {
     ['구 분', ...prodRows.map(r => r.item)],
     ['최소', ...v.map(x => x ? x.min : '')],
     ['타깃', ...v.map(x => x ? x.target : '')],
-    ['최대', ...v.map(x => x ? x.max : '')]];
+    ['최대', ...v.map(x => x ? x.max : '')],
+    ['추가 발주 제안(판매 기준)', ...prodRows.map(r => r.noData ? '' : r.addSuggest)],
+    [`제안 반영 타깃(반영률 ${Math.round((prodMeta.coachRate ?? 0.5) * 100)}%)`, ...prodRows.map((r, i) => r.noData ? '' : Math.round(v[i].target + r.addSuggest * (prodMeta.coachRate ?? 0.5)))]];
   const detail = [['품목', '단위', '최소', '타깃', '최대', '갭', '기준선(행사 제외)', '최근 흐름 계수', '행사 계수', '반영 행사·공휴일', '과거 예측 오차 vs 갭', '최근 같은 요일 회차 입고']];
   prodRows.forEach((r, i) => {
     if (r.noData) { detail.push([r.item, '', '', '', '', '', '', '', '', '', '입고 실적 없음(발주코드 매핑 필요)', '']); return; }
@@ -5371,6 +5419,9 @@ function downloadProduction() {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '생산수량');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(detail), '계산근거');
+  const sl = [['매장코드', '매장명', '팀', '품목', '판매 기반 필요(포장)', '평소 발주(같은 요일 평균)', '추가 발주 제안(포장)', '추정재고(개)', '회차 예상판매(개)', '휴무 예상']];
+  prodRows.forEach(r => { if (!r.noData) r.coach.list.slice().sort((a, b) => b.short - a.short).forEach(x => sl.push([x.code, x.name, x.team, x.item, x.need, x.expOrder, x.short, x.bal, x.cycleUse, x.closed])); });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sl), '추가발주제안_매장별');
   XLSX.writeFile(wb, `생산수량_${T}입고.xlsx`);
 }
 
