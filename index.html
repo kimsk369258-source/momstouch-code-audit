@@ -400,6 +400,20 @@
       <div class="note">※ 입고 합계 = 정상발주분 + 추가발주분(월 10~15시 추가 주문처럼 다음 날 전산에 잡혀도 같은 회차에 입고). 판정: 충족률(입고 ÷ 사용) 90% 미만 = 부족(과소발주·사입 의심), 130% 초과 = 과다, 배송 0인데 사용 있음 = 미발주. 회차 하나만 보면 전 회차 재고 이월 때문에 흔들리므로, 같은 매장이 여러 회차 연속으로 부족인지 함께 보세요.</div>
     </div>
     <div class="card">
+      <h2>회차별 생산 수량 예측 (업체 공유용)</h2>
+      <div class="card-sub">다음 입고 회차(화·목·토)의 전국 계육 생산 필요량을 발주 실적 기준으로 예측합니다. 최근 같은 요일 회차 4번의 입고 실적(정상+추가)을 가중평균하되, 그 회차들에 있었던 프로모션·공휴일 효과는 걷어내고(기준선), 다음 회차에 있는 프로모션·공휴일 효과를 다시 곱합니다. 최소/타깃/최대 생산 범위와 비교해 업체에 공유할 수량을 정합니다.</div>
+      <div class="toolbar" style="flex-wrap:wrap; gap:8px;">
+        <select id="prodCycle" class="search-input" style="flex:none; min-width:300px;"></select>
+        <button class="btn btn-primary btn-sm" onclick="renderProduction()">예측</button>
+        <button class="btn btn-ghost btn-sm" onclick="downloadProduction()">업체 공유용 엑셀</button>
+        <button class="btn btn-ghost btn-sm" onclick="toggleProdLimits()">생산 범위(최소/타깃/최대) 설정</button>
+      </div>
+      <div id="prodLimitsBox" style="display:none; margin-top:8px;"></div>
+      <div class="status-line" id="prodStatus" style="margin:8px 0;"></div>
+      <div id="prodWrap"><div class="empty">회차를 고르고 예측을 누르세요.</div></div>
+      <div class="note">※ 생산 확정일(기본: 화 입고 ← 전주 금, 목 입고 ← 월, 토 입고 ← 수 — "생산 범위 설정"에서 변경) 전날까지 끝난 회차 실적만 씁니다. 예측 = 기준선 × 최근 흐름 계수(확정일 전 최근 2회차가 각자 기준선 대비 높았는지·낮았는지, ±10% 제한) × 다음 회차 행사 계수.<br>※ 예측 = 기준선 × 다음 회차 행사 계수. 기준선 = 최근 같은 요일 회차 입고 ÷ 그 회차 행사 계수의 가중평균(4:3:2:1). 행사 계수 = 1 + Σ(행사 상승률 × 회차 사용일 중 행사일 비율). 상승률은 ⑥ 프로모션의 측정값 → 없으면 입력한 예상 증가율 → 없으면 0(표시됨). 판매 기반 참고치 = 직전 같은 요일 회차 판매량(개÷포장) × 행사 계수 보정 — 매장 재고 증감과 무관한 실수요 수준이라, 발주 기반과 차이가 크면 매장 재고가 쌓이거나 빠지는 중이라는 뜻입니다.</div>
+    </div>
+    <div class="card">
       <h2>권장 발주량 (가맹점 코칭용 예측)</h2>
       <div class="card-sub">발주일(월·수·금 10시 마감) 기준으로, 전날까지의 실제 판매·입고로 재고를 추정하고, 매장별 요일 패턴과 최근 추세로 다음 입고 회차 사용량을 예측해 권장 발주량(포장 단위)을 계산합니다. 지난 발주일을 고르면 그날 실제 발주와 비교해 과소/과다 발주 매장을 보여줍니다(그 발주일 전날까지의 데이터만 사용).</div>
       <div class="toolbar" style="flex-wrap:wrap; gap:8px;">
@@ -4203,6 +4217,8 @@ async function loadOrdersIndex() {
   populateCycleSelect();
   if (!soldDates) await loadSoldDates();
   populateRecOrderDates();
+  await loadProdLimits(); // 확정 요일 설정을 먼저 읽어야 회차 목록의 확정일이 맞다
+  populateProdCycles();
   populateStockStoreSelect();
 }
 
@@ -5097,6 +5113,194 @@ function computeRec({ recvRaw, sold, orderDate, salesDays, unitsPerPack, k, capD
   return { T, cdays, cutoff, bal, borrowedIn, lostOut, capUnits: isFinite(cap) ? cap : null, preSales, preRecv, projected, cycleF, cycleUse, trend, sigma, safety, needUnits, recPacks, actNormal, actAdd, actTotal: actNormal + actAdd, hasActual, thin };
 }
 
+
+// ==========================================================================
+// 회차별 생산 수량 예측 (업체 공유용)
+// 저장: meta/production_limits = { items: { 품목: {min, target, max} }, order: [...] }
+// ==========================================================================
+const PROD_DEFAULT_LIMITS = {
+  싸이패티: [29500, 34500, 39500], 빅싸이순살: [31053, 36185, 41316], 빅싸이순살맥스: [2469, 5556, 8642],
+  가슴살패티: [4000, 6500, 9000], 와우순살: [6000, 8500, 11000], 와우순살맥스: [800, 1300, 1800], 뼈치킨: [9000, 11500, 14000],
+};
+let prodLimits = null; // { items:{name:{min,target,max}}, order:[], confirmDow:{입고요일:확정요일} }
+// 생산 확정 요일(입고 요일 → 그 전 어느 요일에 업체와 확정하는지). 화 입고 = 전주 금 확정.
+const PROD_CONFIRM_DEFAULT = { 2: 5, 4: 1, 6: 3 }; // 화←금, 목←월, 토←수 (목·토는 확인 필요 시 설정에서 변경)
+function confirmDateOf(T) {
+  const want = (prodLimits?.confirmDow || PROD_CONFIRM_DEFAULT)[dowOf(T)] ?? 5;
+  let d = addDaysStr(T, -1); while (dowOf(d) !== Number(want)) d = addDaysStr(d, -1);
+  return d;
+}
+async function loadProdLimits() {
+  if (prodLimits) return prodLimits;
+  try { const raw = await storageGet('production_limits'); if (raw) prodLimits = JSON.parse(raw); } catch (e) {}
+  if (prodLimits && !prodLimits.confirmDow) prodLimits.confirmDow = { ...PROD_CONFIRM_DEFAULT };
+  if (!prodLimits) prodLimits = { confirmDow: { ...PROD_CONFIRM_DEFAULT }, order: Object.keys(PROD_DEFAULT_LIMITS), items: Object.fromEntries(Object.entries(PROD_DEFAULT_LIMITS).map(([k, v]) => [k, { min: v[0], target: v[1], max: v[2] }])) };
+  return prodLimits;
+}
+async function toggleProdLimits() {
+  const box = document.getElementById('prodLimitsBox');
+  if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+  const L = await loadProdLimits();
+  const names = [...new Set([...L.order, ...registeredOrderItems()])];
+  box.style.display = 'block';
+  box.innerHTML = `<div class="table-wrap"><table id="prodLimitTable"><thead><tr><th>품목(발주품목명과 같게)</th><th class="num">최소</th><th class="num">타깃</th><th class="num">최대</th><th></th></tr></thead><tbody>
+    ${names.map(n => { const v = L.items[n] || {}; return `<tr><td><input class="search-input pl-name" style="width:150px;" value="${esc(n)}"></td>${['min', 'target', 'max'].map(k => `<td><input class="search-input pl-${k}" style="width:100px; text-align:right;" value="${v[k] ?? ''}"></td>`).join('')}<td><button class="btn btn-ghost btn-sm" onclick="this.closest('tr').remove()">✕</button></td></tr>`; }).join('')}
+    </tbody></table></div>
+    <button class="btn btn-ghost btn-sm" onclick="document.querySelector('#prodLimitTable tbody').insertAdjacentHTML('beforeend','<tr><td><input class=&quot;search-input pl-name&quot; style=&quot;width:150px;&quot;></td><td><input class=&quot;search-input pl-min&quot; style=&quot;width:100px;&quot;></td><td><input class=&quot;search-input pl-target&quot; style=&quot;width:100px;&quot;></td><td><input class=&quot;search-input pl-max&quot; style=&quot;width:100px;&quot;></td><td></td></tr>')">+ 품목</button>
+    <div class="toolbar" style="gap:10px; margin:8px 0; flex-wrap:wrap;">생산 확정 요일:
+      ${[[2, '화 입고'], [4, '목 입고'], [6, '토 입고']].map(([w, l]) => `<label style="font-size:13px;">${l} ← <select class="search-input pl-conf" data-w="${w}" style="flex:none;">${[1, 2, 3, 4, 5, 6, 0].map(x => `<option value="${x}"${Number((L.confirmDow || PROD_CONFIRM_DEFAULT)[w]) === x ? ' selected' : ''}>${DOW_KO[x]}요일</option>`).join('')}</select> 확정</label>`).join('')}
+    </div>
+    <button class="btn btn-primary btn-sm" onclick="saveProdLimits()">저장</button>
+    <span class="note">단위는 회차당 포장(bag/box). 품목명은 발주코드 매핑표의 발주품목명과 같아야 실적이 연결됩니다.</span>`;
+}
+async function saveProdLimits() {
+  const num = v => { const n = Number(String(v).replace(/[^0-9.]/g, '')); return String(v).trim() === '' || !isFinite(n) ? null : n; };
+  const items = {}, order = [];
+  document.querySelectorAll('#prodLimitTable tbody tr').forEach(tr => {
+    const n = tr.querySelector('.pl-name').value.trim(); if (!n) return;
+    items[n] = { min: num(tr.querySelector('.pl-min').value), target: num(tr.querySelector('.pl-target').value), max: num(tr.querySelector('.pl-max').value) };
+    order.push(n);
+  });
+  const confirmDow = {}; document.querySelectorAll('.pl-conf').forEach(el => { confirmDow[el.dataset.w] = Number(el.value); });
+  prodLimits = { items, order, confirmDow };
+  if (await storageSet('production_limits', JSON.stringify(prodLimits))) { document.getElementById('prodLimitsBox').style.display = 'none'; renderProduction(); }
+  else alert('저장 실패');
+}
+
+function populateProdCycles() {
+  const sel = document.getElementById('prodCycle'); if (!sel) return;
+  const recvDates = [...new Set(ordersIndex.filter(o => o.ledger).map(o => actualRecvDate(o.date)))].sort();
+  const today = formatDate(new Date());
+  const opts = [];
+  // 다가오는 회차(오늘 이후 입고) 4개 + 지난 회차 6개(실적 비교용)
+  for (let d = addDaysStr(today, 1), n = 0; n < 4; d = addDaysStr(d, 1)) if ([2, 4, 6].includes(dowOf(d))) { opts.push({ d, future: true }); n++; }
+  recvDates.filter(d => d <= today).reverse().slice(0, 6).forEach(d => opts.push({ d, future: false }));
+  // 기본 선택: 확정일이 오늘이거나 아직 안 지난 가장 가까운 회차
+  const due = opts.filter(o => o.future && confirmDateOf(o.d) >= today).sort((a, b) => a.d.localeCompare(b.d))[0];
+  const prev = sel.value;
+  sel.innerHTML = opts.sort((a, b) => b.d.localeCompare(a.d)).map(o => {
+    const c = confirmDateOf(o.d);
+    const tag = !o.future ? ' (지난 회차 · 실적 비교)' : c === today ? ' ← 오늘 확정' : c > today ? ` ← ${c.slice(5)}(${DOW_KO[dowOf(c)]}) 확정 예정` : ' (확정일 지남)';
+    return `<option value="${o.d}">${o.d.slice(5)}(${DOW_KO[dowOf(o.d)]}) 입고 · ${esc(cycleKind(o.d))} · 확정 ${c.slice(5)}(${DOW_KO[dowOf(c)]})${tag}</option>`;
+  }).join('');
+  if (prev && opts.some(o => o.d === prev)) sel.value = prev; else if (due) sel.value = due.d;
+}
+
+// 회차 t(입고일)의 행사 계수와 설명 — item 기준 측정값 우선
+function promoFactor(t, item) {
+  const days = cycleDays(t); let f = 1; const notes = [];
+  promos.forEach(p => {
+    const inDays = days.filter(d => d >= p.start && d <= p.end);
+    if (!inDays.length) return;
+    const m = p.measured?.items?.[item];
+    let lift = m ? m.lift : (p.expectedLift != null ? p.expectedLift / 100 : null);
+    // 특별 쿠폰일 상승률(측정값)이 있으면 그날은 그 값을 쓴다
+    let add = 0;
+    inDays.forEach(d => {
+      let l = lift;
+      if (m && m.special) (p.coupons || []).forEach(c => { const key = `${c.kind} ${c.total}원 적용일`; if (m.special[key] != null && couponActiveOn(c, d, p)) l = m.special[key]; });
+      add += (l || 0) / days.length;
+    });
+    f += add;
+    notes.push(`${p.name}${lift == null ? '(효과 미측정·0% 적용)' : ` ${lift >= 0 ? '+' : ''}${Math.round(lift * 100)}%`} ${inDays.length}/${days.length}일`);
+  });
+  return { f: Math.max(0.3, f), notes };
+}
+
+let prodRows = [], prodMeta = null;
+async function renderProduction() {
+  const T = document.getElementById('prodCycle').value;
+  const st = document.getElementById('prodStatus'), wrap = document.getElementById('prodWrap');
+  if (!T) { st.innerHTML = '<span class="pill pill-warn">입고 데이터가 없습니다.</span>'; return; }
+  const L = await loadProdLimits();
+  const hist = []; for (let w = 1; w <= 6; w++) hist.push(addDaysStr(T, -7 * w));
+  const from = addDaysStr(T, -84); // 같은 요일 6회 + 최근 흐름 계수용 기준선까지
+  const months = []; for (let m = from.slice(0, 7); m <= cycleDays(T).slice(-1)[0].slice(0, 7); m = addDaysStr(m + '-28', 5).slice(0, 7)) months.push(m);
+  st.innerHTML = `<span class="pill pill-neutral">불러오는 중... (${months.join(', ')} 전체 매장 입고·판매)</span>`;
+  try {
+    const [R, S] = await Promise.all([ledgerLoadMonthsCached(LEDGER_RECV, months), ledgerLoadMonthsCached(LEDGER_SOLD, months)]);
+    const pack = packInfoMap();
+    // 전국 회차 합계: 품목 → 입고일(실제) → 포장 수 / 품목 → 날짜 → 판매(개)
+    const recvBy = {}, soldBy = {};
+    Object.values(R).forEach(o => Object.entries(o.byItem).forEach(([it, days]) => Object.entries(days).forEach(([d, q]) => {
+      const a = actualRecvDate(d); (recvBy[it] = recvBy[it] || {})[a] = (recvBy[it][a] || 0) + q;
+    })));
+    Object.values(S).forEach(o => Object.entries(o.byItem).forEach(([it, days]) => Object.entries(days).forEach(([d, q]) => {
+      (soldBy[it] = soldBy[it] || {})[d] = (soldBy[it][d] || 0) + q;
+    })));
+    const salesDays = salesDaySetNow();
+    const items = [...new Set([...L.order, ...registeredOrderItems()])];
+    const rows = items.map(item => {
+      const lim = L.items[item] || {};
+      const rv = recvBy[item] || {};
+      const cd0 = confirmDateOf(T);
+      const used = hist.filter(t => rv[t] > 0 && cycleDays(t).every(d => d < cd0)).slice(0, 4);
+      if (!used.length) return { item, lim, noData: true, unit: pack[item]?.packUnit || '' };
+      const wts = [4, 3, 2, 1].slice(0, used.length);
+      const deflated = used.map(t => ({ t, actual: rv[t], pf: promoFactor(t, item) }));
+      const base = deflated.reduce((a, x, i) => a + x.actual / x.pf.f * wts[i], 0) / wts.reduce((a, b) => a + b, 0);
+      const tf = promoFactor(T, item);
+      // 최근 흐름 계수: 확정일 전에 끝난(추가발주 전산일까지 지난) 최근 회차 2개가, 각자의
+      // 같은 요일 기준선 대비 얼마나 높거나 낮았는지(행사 효과 제외). 다른 요일 회차의 최신
+      // 흐름을 반영하기 위함. 0.9~1.1로 제한.
+      const confirmD = confirmDateOf(T);
+      const done = []; for (let c = addDaysStr(confirmD, -1); done.length < 2 && c > from; c = addDaysStr(c, -1)) {
+        if (![2, 4, 6].includes(dowOf(c)) || !(rv[c] > 0)) continue;
+        if (cycleDays(c).some(d => d >= confirmD)) continue; // 추가발주 전산일이 확정일 이후면 미완료
+        const hh = []; for (let w = 1; w <= 6 && hh.length < 4; w++) { const t = addDaysStr(c, -7 * w); if (rv[t] > 0) hh.push(t); }
+        if (!hh.length) continue;
+        const ww = [4, 3, 2, 1].slice(0, hh.length);
+        const bc = hh.reduce((a, t, i) => a + rv[t] / promoFactor(t, item).f * ww[i], 0) / ww.reduce((a, b) => a + b, 0);
+        done.push({ c, ratio: rv[c] / promoFactor(c, item).f / bc });
+      }
+      const mom = done.length ? Math.min(1.1, Math.max(0.9, done.reduce((a, x) => a + x.ratio, 0) / done.length)) : 1;
+      const forecast = Math.round(base * mom * tf.f);
+      // 판매 기반 참고: 직전 같은 요일 회차(판매 데이터 다 있는) 판매 ÷ 포장당 개수, 행사 계수 보정
+      const upp = pack[item]?.unitsPerPack || 1;
+      let salesRef = null, salesT = null;
+      for (const t of hist) { const ds = cycleDays(t); if (ds.every(d => salesDays.has(d) && d < cd0)) { const sq = ds.reduce((a, d) => a + ((soldBy[item] || {})[d] || 0), 0); if (sq > 0) { salesRef = Math.round(sq / upp / promoFactor(t, item).f * tf.f); salesT = t; break; } } }
+      const actualT = rv[T] || null;
+      return { item, lim, unit: pack[item]?.packUnit || '', used: deflated, base: Math.round(base), mom, momCycles: done, tf, forecast, salesRef, salesT, actualT };
+    });
+    prodRows = rows; prodMeta = { T };
+    const judge = (v, lim) => v == null || lim.min == null ? '' : v < lim.min ? `<span class="pill pill-bad">최소 미달</span>` : lim.max != null && v > lim.max ? `<span class="pill pill-bad">최대 초과</span>` : `<span class="pill pill-ok">범위 내 · 타깃 ${lim.target ? Math.round(v / lim.target * 100) + '%' : '-'}</span>`;
+    const past = !rows.every(r => r.noData || r.actualT == null);
+    const cdT = confirmDateOf(T);
+    st.innerHTML = `<span class="pill pill-ok">✓ ${T.slice(5)}(${DOW_KO[dowOf(T)]}) 입고 · ${esc(cycleKind(T))} 회차</span><span>사용일 ${cycleDays(T).map(d => d.slice(5)).join(', ')} · 생산 확정 ${cdT.slice(5)}(${DOW_KO[dowOf(cdT)]}) — 확정일 전날까지 끝난 회차 실적만 사용${past ? ' · 지난 회차라 실제 입고와 비교합니다(그때 알 수 있던 데이터로만 예측)' : ''}</span>`;
+    let html = `<div class="table-wrap"><table><thead><tr><th>품목</th><th>최근 같은 요일 회차 입고(포장)</th><th class="num">기준선<br>(행사 제외)</th><th class="num">최근 흐름</th><th>다음 회차 행사·공휴일</th><th class="num">행사 계수</th><th class="num">예측 생산</th><th class="num">판매 기반<br>참고</th><th class="num">최소 / 타깃 / 최대</th><th>판정</th>${past ? '<th class="num">실제 입고</th><th class="num">오차</th>' : ''}<th class="num">공유 수량(수정 가능)</th></tr></thead><tbody>`;
+    rows.forEach((r, i) => {
+      const lim = r.lim, lt = `${lim.min != null ? fmtNum(lim.min) : '-'} / ${lim.target != null ? fmtNum(lim.target) : '-'} / ${lim.max != null ? fmtNum(lim.max) : '-'}`;
+      if (r.noData) { html += `<tr><td><strong>${esc(r.item)}</strong></td><td colspan="${past ? 11 : 9}"><span class="note">입고 실적 없음 — 발주코드 매핑표에 이 품목의 발주코드를 등록하고 배송 원장을 올리면 계산됩니다.</span> (범위 ${lt})</td></tr>`; return; }
+      html += `<tr><td><strong>${esc(r.item)}</strong></td>
+        <td style="font-size:12px;">${r.used.map(x => `${x.t.slice(5)} ${fmtNum(x.actual)}${x.pf.f !== 1 ? `<span style="color:#b45309;" title="${esc(x.pf.notes.join(' / '))}">(÷${x.pf.f.toFixed(2)})</span>` : ''}`).join(' · ')}</td>
+        <td class="num">${fmtNum(r.base)}</td>
+        <td class="num" title="${esc(r.momCycles.map(x => `${x.c.slice(5)}(${DOW_KO[dowOf(x.c)]}) 회차: 기준선 대비 ${Math.round((x.ratio - 1) * 100)}%`).join(' / ') || '확정일 전에 끝난 최근 회차 없음')}">${r.mom === 1 ? '-' : (r.mom > 1 ? '▲' : '▼') + Math.round(Math.abs(r.mom - 1) * 100) + '%'}</td>
+        <td style="font-size:12px;">${r.tf.notes.length ? esc(r.tf.notes.join(' / ')) : '-'}</td>
+        <td class="num">${r.tf.f.toFixed(2)}</td>
+        <td class="num"><strong>${fmtNum(r.forecast)}</strong> ${esc(r.unit)}</td>
+        <td class="num" title="${r.salesT ? `${r.salesT.slice(5)} 회차 판매 기준` : ''}">${r.salesRef != null ? fmtNum(r.salesRef) : '-'}</td>
+        <td class="num">${lt}</td><td>${judge(r.forecast, lim)}</td>
+        ${past ? `<td class="num">${r.actualT != null ? fmtNum(r.actualT) : '-'}</td><td class="num">${r.actualT ? `${r.forecast - r.actualT > 0 ? '+' : ''}${Math.round((r.forecast - r.actualT) / r.actualT * 100)}%` : '-'}</td>` : ''}
+        <td class="num"><input class="search-input prod-final" data-i="${i}" style="width:100px; text-align:right;" value="${r.forecast}"></td></tr>`;
+    });
+    wrap.innerHTML = html + '</tbody></table></div>';
+  } catch (err) { console.error(err); st.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`; }
+}
+function downloadProduction() {
+  if (!prodRows.length) { alert('먼저 예측해주세요.'); return; }
+  const finals = {}; document.querySelectorAll('.prod-final').forEach(el => { finals[el.dataset.i] = Number(String(el.value).replace(/[^0-9.]/g, '')) || 0; });
+  const T = prodMeta.T, ds = cycleDays(T);
+  const cdT = confirmDateOf(T);
+  const aoa = [[`생산 수량 공유 — ${T}(${DOW_KO[dowOf(T)]}) 입고 회차 (${ds[0]} ~ ${ds[ds.length - 1]} 사용분) · 확정일 ${cdT}(${DOW_KO[dowOf(cdT)]})`], [], ['품목', '공유 수량', '단위', '예측 생산', '기준선(행사 제외)', '최근 흐름 계수', '행사 계수', '반영 행사·공휴일', '최소', '타깃', '최대', '타깃 대비', '판매 기반 참고']];
+  prodRows.forEach((r, i) => {
+    if (r.noData) { aoa.push([r.item, '', '', '', '', '', '', '입고 실적 없음', r.lim.min ?? '', r.lim.target ?? '', r.lim.max ?? '', '', '']); return; }
+    const fv = finals[i] ?? r.forecast;
+    aoa.push([r.item, fv, r.unit, r.forecast, r.base, Math.round(r.mom * 100) / 100, Math.round(r.tf.f * 100) / 100, r.tf.notes.join(' / '), r.lim.min ?? '', r.lim.target ?? '', r.lim.max ?? '', r.lim.target ? Math.round(fv / r.lim.target * 100) + '%' : '', r.salesRef ?? '']);
+  });
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '생산수량');
+  XLSX.writeFile(wb, `생산수량_${T}입고.xlsx`);
+}
+
 function populateRecOrderDates() {
   const sel = document.getElementById('recOrderDate'); if (!sel) return;
   const sd = [...salesDaySetNow()].sort();
@@ -5404,7 +5608,7 @@ Object.assign(window, {
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
   deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, checkSoldDetail, backfillSoldLedger,
-  filterStockStores, pickFirstStockStore, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
+  filterStockStores, pickFirstStockStore, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
   addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
