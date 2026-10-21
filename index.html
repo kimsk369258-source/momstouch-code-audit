@@ -1269,6 +1269,9 @@ function buildMasterRows() {
 // 분류 자체는 항상 전체 기준표로 한다(작년 상품이 다시 팔려도 분류는 정상). 연도별 기준표는
 // 다운로드·통합 파일의 용량을 줄이기 위한 "보기/내려받기" 범위다.
 // ==========================================================================
+// 연도별 기준표(사용 이력) 기능 스위치 — 지금은 꺼 둠: 기준표 다운로드·통합 파일 모두 예전처럼
+// 전체 누적 기준표로 내보내고, 저장할 때 사용 이력도 쌓지 않는다. 다시 켜려면 true로.
+const YEAR_MASTER_ENABLED = false;
 const usageCache = {}; // year -> {pc:Set, pa:Set, mc:Set, sc:Set, nm:Set, dates:Set}
 let currentUsageByDate = {}; // 방금 처리한 파일의 날짜별 사용 키
 // 사용 이력 v2: 키뿐 아니라 그 상품의 대·중·소분류/상품명도 저장해서(items), 기준표에 아직 없는
@@ -1346,6 +1349,8 @@ function cumulativeYearRows(all, usages) {
 let lastExportUsageNote = '';
 async function masterRowsForDates(dates) {
   const all = masterRowsForExport();
+  lastExportUsageNote = '';
+  if (!YEAR_MASTER_ENABLED) return all; // 예전 방식: 전체 누적 기준표
   const years = [...new Set(dates.map(d => String(d).slice(0, 4)))];
   const us = []; for (const y of years) us.push(await loadUsage(y));
   lastExportUsageNote = '';
@@ -1365,6 +1370,7 @@ async function masterRowsForYear(year) {
   return { rows: cumulativeYearRows(all, [u]), filtered: true, total: all.length };
 }
 async function downloadMasterByYear() {
+  if (!YEAR_MASTER_ENABLED) { downloadMasterFile(); return; }
   const year = document.getElementById('masterYearSel').value;
   if (!year) { downloadMasterFile(); return; }
   const { rows, filtered, total } = await masterRowsForYear(year);
@@ -1374,7 +1380,44 @@ async function downloadMasterByYear() {
   document.getElementById('masterYearStatus').innerHTML = `<span class="pill pill-ok">✓ ${year}년 기준표</span><span>${fmtNum(r.length)}행 / 전체 ${fmtNum(total)}행</span>`;
 }
 // 저장된 합본 파일에서 사용 이력을 만든다(이 기능 이전에 저장한 날짜용, 날짜마다 합본을 내려받으므로 시간이 걸림).
+// ── 대용량 합본 CSV를 메모리를 적게 쓰며 읽기 ──────────────────────────────
+// 예전에는 합본(25만 행 안팎) 전체를 문자열로 받은 뒤 SheetJS로 통째로 변환해서, 여러 날짜를 연달아
+// 읽으면 브라우저가 "Out of Memory"로 멈췄다. 이제는 내려받는 대로 조금씩 잘라 한 줄씩 처리하고,
+// 필요한 열만 꺼낸 뒤 버린다.
+async function streamCsvRows(url, onHeader, onRow) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('합본 파일을 받지 못했습니다(' + res.status + ')');
+  const reader = res.body.getReader();
+  const dec = new TextDecoder('utf-8');
+  let field = '', row = [], inQ = false, first = true, header = null, pendingQuote = false;
+  const endRow = () => {
+    row.push(field); field = '';
+    if (!header) { header = row.map(h => String(h).trim()); onHeader(header); }
+    else if (row.length > 1 || row[0] !== '') onRow(row);
+    row = [];
+  };
+  for (;;) {
+    const { value, done } = await reader.read();
+    let chunk = done ? dec.decode() : dec.decode(value, { stream: true });
+    if (first && chunk) { if (chunk.charCodeAt(0) === 0xFEFF) chunk = chunk.slice(1); first = false; }
+    for (let i = 0; i < chunk.length; i++) {
+      const c = chunk[i];
+      if (pendingQuote) { pendingQuote = false; if (c === '"') { field += '"'; continue; } inQ = false; }
+      if (inQ) { if (c === '"') pendingQuote = true; else field += c; continue; }
+      if (c === '"') inQ = true;
+      else if (c === ',') { row.push(field); field = ''; }
+      else if (c === '\n') endRow();
+      else if (c !== '\r') field += c;
+    }
+    if (done) break;
+  }
+  if (pendingQuote) inQ = false;
+  if (field !== '' || row.length) endRow();
+}
+// 사이트 전체에서 무거운 작업(사용 이력 만들기·판매 원장 채우기)이 동시에 돌지 않게 한다.
+let heavyJob = null;
 async function rebuildUsageFromHistory() {
+  if (!YEAR_MASTER_ENABLED) return;
   const st = document.getElementById('masterYearStatus');
   const dates = dailyIndex.map(d => d.date).sort();
   const years = [...new Set(dates.map(d => d.slice(0, 4)))];
@@ -1383,32 +1426,46 @@ async function rebuildUsageFromHistory() {
   for (const y of years) if (usageCache[y].legacy) { const n = emptyUsage(); usageCache[y] = n; }
   const todo = dates.filter(d => !usageCache[d.slice(0, 4)].dates.has(d));
   if (!todo.length) { st.innerHTML = '<span class="pill pill-ok">✓ 모든 저장 날짜의 사용 이력이 있습니다.</span>'; await renderMasterYearInfo(); return; }
+  if (heavyJob) { st.innerHTML = `<span class="pill pill-warn">다른 작업(${heavyJob}) 진행 중 — 끝난 뒤 다시 눌러주세요.</span>`; return; }
   if (!confirm(`사용 이력이 없는 ${todo.length}개 날짜의 합본 파일을 읽어 연도별 사용 이력을 만듭니다. 날짜 수에 따라 몇 분 걸릴 수 있습니다. 진행할까요?`)) return;
-  let n = 0; const failed = [];
-  for (const date of todo) {
-    st.innerHTML = `<span class="pill pill-neutral">사용 이력 만드는 중 ${++n}/${todo.length}</span><span>${date}</span>`;
-    try {
-      const url = await getDownloadURL(exportStorageRef(date));
-      let text = await (await fetch(url)).text();
-      if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
-      const wb = XLSX.read(text, { type: 'string', raw: true });
-      const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: true });
-      const cols = resolveRawCols(json[0].map(String));
-      const u = emptyUsage();
-      json.slice(1).forEach(r => {
-        const g = k => cols[k] >= 0 ? r[cols[k]] : '';
-        addUsageKey(u, normCode(g('minorCode')), normCode(g('productCode')), normCode(g('sideProductCode')), String(g('gubun') || '').trim(), String(g('productName') || '').trim(),
-          { majorCode: g('majorCode'), majorName: g('majorName'), midCode: g('midCode'), midName: g('midName'), minorName: g('minorName') });
-      });
-      await mergeUsage(date.slice(0, 4), u, date);
-    } catch (e) { console.error('usage rebuild failed', date, e); failed.push(date); }
-  }
+  heavyJob = '사용 이력 만들기';
+  let n = 0; const failed = []; const dirty = new Set();
+  // 같은 상품 정보는 날짜마다 반복되므로 연도별로 메모리에 모으고, 10개 날짜마다 한 번씩만 저장한다.
+  const flush = async () => { for (const y of dirty) await mergeUsage(y, emptyUsage(), null); dirty.clear(); };
+  try {
+    for (const date of todo) {
+      st.innerHTML = `<span class="pill pill-neutral">사용 이력 만드는 중 ${++n}/${todo.length}</span><span>${date}</span>`;
+      try {
+        const url = await getDownloadURL(exportStorageRef(date));
+        const y = date.slice(0, 4), u = usageCache[y];
+        let cols = null;
+        await streamCsvRows(url, h => { cols = resolveRawCols(h); }, r => {
+          const g = k => cols[k] >= 0 ? r[cols[k]] : '';
+          addUsageKey(u, normCode(g('minorCode')), normCode(g('productCode')), normCode(g('sideProductCode')), String(g('gubun') || '').trim(), String(g('productName') || '').trim(),
+            { majorCode: g('majorCode'), majorName: g('majorName'), midCode: g('midCode'), midName: g('midName'), minorName: g('minorName') });
+        });
+        u.dates.add(date); dirty.add(y);
+        if (n % 10 === 0) await flush();
+      } catch (e) { console.error('usage rebuild failed', date, e); failed.push(date); }
+      await new Promise(r => setTimeout(r, 0)); // 화면이 멈추지 않게 잠깐 양보
+    }
+    await flush();
+  } finally { heavyJob = null; }
   st.innerHTML = `<span class="pill ${failed.length ? 'pill-warn' : 'pill-ok'}">${failed.length ? '⚠ 일부 완료' : '✓ 완료'}</span><span>${todo.length - failed.length}개 날짜 반영${failed.length ? ` · 실패 ${failed.length}건(합본 파일 없음): ${failed.slice(0, 5).join(', ')}` : ''}</span>`;
   await renderMasterYearInfo();
 }
 async function renderMasterYearInfo() {
   const sel = document.getElementById('masterYearSel'), info = document.getElementById('masterYearInfo');
   if (!sel || !info) return;
+  if (!YEAR_MASTER_ENABLED) {
+    // 기능을 끈 동안은 연도 선택·사용 이력 버튼·안내를 숨긴다
+    sel.style.display = 'none';
+    document.querySelectorAll('[onclick="rebuildUsageFromHistory()"]').forEach(b => { b.style.display = 'none'; });
+    info.style.display = 'none';
+    const note = info.parentElement && [...info.parentElement.querySelectorAll('.note')].find(n => n.textContent.includes('연도별 기준표 ='));
+    if (note) note.style.display = 'none';
+    return;
+  }
   const years = [...new Set([...dailyIndex.map(d => d.date.slice(0, 4)), '2025', String(new Date().getFullYear())])].sort().reverse();
   const prev = sel.value;
   sel.innerHTML = '<option value="">전체 기준표</option>' + years.map(y => `<option value="${y}">${y}년 기준표</option>`).join('');
@@ -1940,7 +1997,7 @@ async function processRawDailyFiles(fileList) {
   // 조회기간과 다르면 잘못된 파일일 수 있으니 알려준다(이름을 바꾼 파일·합본 파일은 확인 생략).
   if (fileDateWarnings.length) setTimeout(() => alert('파일명 기간과 파일 안 매출일자가 다릅니다 — 올바른 파일인지 확인해주세요.\n\n' + fileDateWarnings.join('\n')), 0);
   currentUsageByDate = {};
-  Object.entries(byDate).forEach(([dk, items]) => {
+  if (YEAR_MASTER_ENABLED) Object.entries(byDate).forEach(([dk, items]) => {
     const u = emptyUsage();
     items.forEach(it => addUsageKey(u, it.minorCode, it.productCode, it.sideProductCode, it.gubun, it.productName, it));
     currentUsageByDate[dk] = u;
@@ -3032,7 +3089,7 @@ async function saveDayReport(date, btnEl) {
     }
 
     // 연도별 기준표용 사용 이력(이 날짜/월에 나온 상품) 누적
-    if (currentUsageByDate[date]) { try { await mergeUsage(date.slice(0, 4), currentUsageByDate[date], date); } catch (e) { console.error('usage save failed', e); } }
+    if (YEAR_MASTER_ENABLED && currentUsageByDate[date]) { try { await mergeUsage(date.slice(0, 4), currentUsageByDate[date], date); } catch (e) { console.error('usage save failed', e); } }
 
     // 합본(분류 포함 전체 행) 파일도 Storage에 올려서, 다른 세션에서도 다운로드/재분류할 수 있게 한다.
     // 행 수가 많으면(10만행 이상) 파일 생성 + 업로드에 수십 초 이상 걸릴 수 있다.
@@ -4825,17 +4882,16 @@ async function checkSoldDetail() {
 let soldBackfillRunning = false, soldBackfillDone = false;
 async function consumptionFromStoredExport(date) {
   const url = await getDownloadURL(exportStorageRef(date));
-  let text = await (await fetch(url)).text();
-  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
-  const wb = XLSX.read(text, { type: 'string', raw: true });
-  const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: true });
-  const header = json[0].map(String), cols = resolveRawCols(header);
-  const catIdx = header.indexOf('분류');
-  const d1Idx = header.indexOf('세부구분1') >= 0 ? header.indexOf('세부구분1') : header.indexOf('세부구분');
-  const fIdx = header.indexOf('보정값');
-  if (cols.storeCode < 0 || cols.qty < 0 || d1Idx < 0) throw new Error('합본 형식 인식 실패');
+  let cols, catIdx, d1Idx, fIdx, bad = false;
   const map = {};
-  json.slice(1).forEach(r => {
+  await streamCsvRows(url, header => {
+    cols = resolveRawCols(header);
+    catIdx = header.indexOf('분류');
+    d1Idx = header.indexOf('세부구분1') >= 0 ? header.indexOf('세부구분1') : header.indexOf('세부구분');
+    fIdx = header.indexOf('보정값');
+    if (cols.storeCode < 0 || cols.qty < 0 || d1Idx < 0) bad = true;
+  }, r => {
+    if (bad) return;
     const cat = catIdx >= 0 ? String(r[catIdx] ?? '').trim() : '';
     const item = String(r[d1Idx] ?? '').trim();
     const storeCode = String(r[cols.storeCode] ?? '').trim();
@@ -4845,11 +4901,13 @@ async function consumptionFromStoredExport(date) {
     if (!map[key]) map[key] = { storeCode, storeName: cols.storeName >= 0 ? String(r[cols.storeName] ?? '').trim() : '', orderItem: item, qty: 0 };
     map[key].qty += qty * consumptionPerSale(item, fIdx >= 0 ? r[fIdx] : '', cols.productName >= 0 ? r[cols.productName] : '', cols.productCode >= 0 ? r[cols.productCode] : '');
   });
+  if (bad) throw new Error('합본 형식 인식 실패');
   return map;
 }
 async function backfillSoldLedger(manual) {
   if (soldBackfillRunning || (soldBackfillDone && !manual)) return;
-  soldBackfillRunning = true;
+  if (heavyJob) { const el0 = document.getElementById('ledgerMigrateStatus'); if (manual && el0) el0.innerHTML = `<span class="pill pill-warn">다른 작업(${heavyJob}) 진행 중 — 끝난 뒤 다시 눌러주세요.</span>`; return; }
+  soldBackfillRunning = true; heavyJob = '판매 원장 채우기';
   const el = document.getElementById('ledgerMigrateStatus');
   try {
     await loadSoldDates();
@@ -4865,7 +4923,7 @@ async function backfillSoldLedger(manual) {
     if (el) el.innerHTML = `<span class="pill ${failed.length ? 'pill-warn' : 'pill-ok'}">${failed.length ? '⚠ 일부 완료' : '✓ 자동 채움 완료'}</span><span>${missing.length - failed.length}개 날짜를 원장에 채웠습니다.${failed.length ? ` 실패 ${failed.length}건(${failed.slice(0, 5).join(', ')}${failed.length > 5 ? ' 외' : ''}) — 합본 파일이 저장되지 않은 날짜입니다.` : ''}</span>`;
     if (document.getElementById('stockStoreSelect')?.value) renderStockTable();
   } finally {
-    soldBackfillRunning = false; soldBackfillDone = true;
+    soldBackfillRunning = false; soldBackfillDone = true; if (heavyJob === '판매 원장 채우기') heavyJob = null;
   }
 }
 
