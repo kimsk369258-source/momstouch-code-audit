@@ -1271,7 +1271,7 @@ function buildMasterRows() {
 // ==========================================================================
 // 연도별 기준표(사용 이력) 기능 스위치 — 지금은 꺼 둠: 기준표 다운로드·통합 파일 모두 예전처럼
 // 전체 누적 기준표로 내보내고, 저장할 때 사용 이력도 쌓지 않는다. 다시 켜려면 true로.
-const YEAR_MASTER_ENABLED = false;
+const YEAR_MASTER_ENABLED = true;
 const usageCache = {}; // year -> {pc:Set, pa:Set, mc:Set, sc:Set, nm:Set, dates:Set}
 let currentUsageByDate = {}; // 방금 처리한 파일의 날짜별 사용 키
 // 사용 이력 v2: 키뿐 아니라 그 상품의 대·중·소분류/상품명도 저장해서(items), 기준표에 아직 없는
