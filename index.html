@@ -1337,18 +1337,28 @@ function usageMissingDates(year, u) {
 }
 // 연도별 누적 기준표 = ① 그 해에 쓰인 기준표 행 + ② 그 해에 팔렸지만 기준표에 상품코드로 없는 상품
 // (현재 기준표로 분류해서 채움, 못 하면 빈칸). 그 해 날짜를 저장할수록 행이 늘어나기만 한다.
+// 연도별 기준표 = 전체 기준표 중 그 해 판매에 한 번이라도 나온 행만(순수한 부분집합).
+// 전체 기준표에 등록된 값이 그대로 나오므로, 전체에 누락이 없으면 연도별에도 누락이 없고,
+// 전체에 없는 상품은 연도별에도 없다(미등록 상품은 대조 화면의 이상 항목·통합 파일에서 확인).
 function cumulativeYearRows(all, usages) {
-  const rows = all.filter(r => usages.some(u => masterRowUsedIn(r, u)));
-  const reg = new Set(all.map(r => normCode(r[6]) + '|' + normCode(r[7])));
-  const seen = new Set();
-  usages.forEach(u => Object.entries(u.items || {}).forEach(([k, rec]) => {
-    const pk = rec[6] + '|' + rec[7];
-    if (reg.has(pk) || seen.has(k)) return;
-    seen.add(k);
-    const c = classifyForRow(rec[4], rec[1], rec[3], rec[9], rec[5], rec[6], rec[7], rec[8]);
-    rows.push([...rec, c.salesCat || '', c.cat || '', c.detail1 || '', c.detail2 || '', c.cat === '제외' ? '' : (c.factor ?? ''), '']);
-  }));
-  return rows;
+  return all.filter(r => usages.some(u => masterRowUsedIn(r, u)));
+}
+let _minorSuggestCache = { src: null, map: null };
+function suggestByMinor(all, minorCode) {
+  const mc = normCode(minorCode); if (!mc) return null;
+  if (_minorSuggestCache.src !== all) {
+    const m = new Map();
+    all.forEach(r => {
+      const code = normCode(r[4]); if (!code || !r[6] || !r[11]) return;
+      const v = [r[11], r[12] || ''].join('|');
+      const o = m.get(code) || { vals: new Set(), salesCat: r[10] || '', cat: r[11], detail1: r[12] || '' };
+      o.vals.add(v); if (!o.salesCat && r[10]) o.salesCat = r[10];
+      m.set(code, o);
+    });
+    _minorSuggestCache = { src: all, map: m };
+  }
+  const o = _minorSuggestCache.map.get(mc);
+  return o && o.vals.size === 1 ? o : null; // 분류가 엇갈리면 제안하지 않음
 }
 let lastExportUsageNote = '';
 async function masterRowsForDates(dates) {
@@ -1478,7 +1488,7 @@ async function renderMasterYearInfo() {
   const parts = [];
   for (const y of years) {
     const u = await loadUsage(y);
-    parts.push(!u.dates.size ? `${y}년 사용 이력 없음` : u.legacy ? `${y}년 사용 이력 예전 형식("사용 이력 만들기" 필요)` : `${y}년 누적 ${fmtNum(cumulativeYearRows(all, [u]).length)}행(판매 ${u.dates.size}개 날짜/월 기준, 미등록 상품 포함)`);
+    parts.push(!u.dates.size ? `${y}년 사용 이력 없음` : u.legacy ? `${y}년 사용 이력 예전 형식("사용 이력 만들기" 필요)` : `${y}년 ${fmtNum(cumulativeYearRows(all, [u]).length)}행(판매 ${u.dates.size}개 날짜/월 기준, 전체 기준표 중 그 해 사용분)`);
   }
   info.innerHTML = `전체 ${fmtNum(all.length)}행 · ${parts.join(' · ')}`;
 }
