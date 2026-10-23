@@ -232,7 +232,11 @@
 
     <div class="card">
       <h2>기준표 업로드 / 갱신</h2>
-      <div class="card-sub">새 파일을 업로드하면 기존 기준표를 완전히 대체합니다.</div>
+      <div class="card-sub">업로드 방식을 먼저 고르세요. <strong>합치기</strong>는 기존 기준표는 그대로 두고 파일에 있는 행만 추가·수정합니다(연도별 기준표·하루치 통합 파일처럼 일부만 담긴 파일을 고쳐 올릴 때). <strong>전체 교체</strong>는 파일 내용으로 기준표 전체를 바꿉니다(전체 기준표를 새로 올릴 때만).</div>
+      <div class="toolbar" style="gap:14px; margin:8px 0;">
+        <label style="font-size:13px;"><input type="radio" name="masterUploadMode" value="merge" checked> 합치기(추가·수정만)</label>
+        <label style="font-size:13px;"><input type="radio" name="masterUploadMode" value="replace"> 전체 교체</label>
+      </div>
       <div class="drop-zone" id="masterDropZone">
         <div class="dz-icon">📁</div>
         <div class="dz-text">상품코드정리.xlsx 파일을 여기로 드래그하거나 클릭 (이 도구에서 내려받은 기준표 .csv도 가능)</div>
@@ -1574,6 +1578,36 @@ setupDropZone('masterDropZone', 'masterFileInput', async (file) => {
     const headerMatchesCombined = rawHeader.length === COMBINED_HEADER.length && rawHeader.every((h,i) => h === COMBINED_HEADER[i]);
     const cleanedRows = headerMatchesCombined ? cleanSnapshotRows(rawRows) : rawRows;
     const rawSnapshot = { header: rawHeader, rows: cleanedRows };
+    // 이 업로드는 기준표를 "전체 교체"한다. 지금보다 행이 크게 적은 파일(예: 하루치 통합 파일·연도별
+    // 기준표)을 올리면 그 파일에 없는 상품 등록이 모두 사라져, 재분류 때 미등록 코드가 쏟아진다.
+    const curRows = masterRawSnapshot?.rows?.length || 0;
+    const mode = document.querySelector('input[name="masterUploadMode"]:checked')?.value || 'merge';
+    const curIsCombined = masterRawSnapshot?.header?.length === COMBINED_HEADER.length && masterRawSnapshot.header.every((h, i) => h === COMBINED_HEADER[i]);
+    if (mode === 'merge' && curRows && headerMatchesCombined && curIsCombined) {
+      // 합치기: 같은 행(소분류코드·상품코드·사이드상품코드·구분·상품명이 같은 행)은 파일 값으로 바꾸고, 없는 행은 추가.
+      // 기존 기준표에만 있는 행은 그대로 남는다.
+      const keyOf = r => [normCode(r[4]), normCode(r[6]), normCode(r[7]), String(r[8] || '').trim(), String(r[9] || '').trim()].join('|');
+      const merged = masterRawSnapshot.rows.map(r => r.slice());
+      const idx = new Map(); merged.forEach((r, i) => idx.set(keyOf(r), i));
+      let upd = 0, add = 0, same = 0;
+      cleanedRows.forEach(r => {
+        const k = keyOf(r);
+        if (idx.has(k)) {
+          const i = idx.get(k);
+          if (merged[i].join('\u0001') === r.join('\u0001')) same++; else { merged[i] = r.slice(); upd++; }
+        } else { idx.set(k, merged.length); merged.push(r.slice()); add++; }
+      });
+      await withMasterLock(() => saveMaster({ header: COMBINED_HEADER, rows: merged }));
+      preview.innerHTML = `<div class="status-line" style="margin-top:10px;"><span class="pill pill-ok">✓ 합치기 완료</span><span>${esc(file.name)} ${cleanedRows.length.toLocaleString()}행 → 수정 ${upd.toLocaleString()} · 추가 ${add.toLocaleString()} · 변경 없음 ${same.toLocaleString()} · 기준표 ${curRows.toLocaleString()}행 → ${merged.length.toLocaleString()}행</span></div>`;
+      return;
+    }
+    if (mode === 'merge' && curRows && !(headerMatchesCombined && curIsCombined)) {
+      if (!confirm('이 파일 또는 현재 기준표가 표준 16열 형식이 아니라 합치기를 할 수 없습니다. 전체 교체로 진행할까요?')) { preview.innerHTML = `<div class="note">취소했습니다.</div>`; return; }
+    }
+    if (curRows && cleanedRows.length < curRows * 0.8) {
+      const ok = confirm(`⚠ 기준표 전체 교체 경고\n\n현재 기준표: ${curRows.toLocaleString()}행\n업로드 파일: ${cleanedRows.length.toLocaleString()}행\n\n이대로 저장하면 이 파일에 없는 약 ${(curRows - cleanedRows.length).toLocaleString()}행의 등록이 사라집니다.\n기존 기준표에 수정분만 합치려면 취소하고, 대조 화면의 "기준코드에 저장"으로 올려주세요.\n\n그래도 전체 교체할까요?`);
+      if (!ok) { preview.innerHTML = `<div class="note">취소했습니다. 기준표는 바뀌지 않았습니다.</div>`; return; }
+    }
     await withMasterLock(() => saveMaster(rawSnapshot));
     const overrideNote = overrideCount > count ? ` (상품명별 개별 분류 ${overrideCount.toLocaleString()}건 포함)` : '';
     const pcNote = pcOverrideCount > 0 ? ` · 상품코드 기준 정밀 매칭 ${pcOverrideCount.toLocaleString()}건 포함` : '';
