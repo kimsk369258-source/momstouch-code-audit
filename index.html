@@ -1813,14 +1813,27 @@ function unitsPerPackOf(item) {
   if (_uppCache.key !== key) { _uppCache = { key, map: {} }; orderCodeEntries.forEach(e => { if (e.unitsPerPack && !_uppCache.map[e.codeName]) _uppCache.map[e.codeName] = e.unitsPerPack; }); }
   return _uppCache.map[item] || null;
 }
-// 발주품목 item의 판매 1건당 소진량(소진 단위 = 발주 규격의 낱개). 규칙이 없으면 보정값.
+// 상품명 배수 규칙: 보정값에 추가로 곱한다(보정값이 이미 "개수"를 나타내는 경우와 함께 쓰기 위해).
+//   싸이패티: 이름에 "싸이플렉스"가 들어간 메뉴(싸이플렉스버거·쉬림프싸이플렉스·후덕죽XO쉬림프싸이플렉스 등)는
+//   버거 1개에 싸이패티 2장 → 보정값 × 2.
+const NAME_MULTIPLIERS = {
+  싸이패티: [{ kw: '싸이플렉스', mult: 2 }],
+};
+function nameMultiplier(item, productName) {
+  const rules = NAME_MULTIPLIERS[item]; if (!rules) return 1;
+  const n = String(productName || '').replace(/\s/g, '');
+  const hit = rules.find(r => n.includes(r.kw));
+  return hit ? hit.mult : 1;
+}
+// 발주품목 item의 판매 1건당 소진량(소진 단위 = 발주 규격의 낱개). 규칙이 없으면 보정값(× 상품명 배수).
 function consumptionPerSale(item, factor, productName, productCode) {
   const rule = CONSUMPTION_RULES[item];
   if (rule) return rule(productName, productCode) * (unitsPerPackOf(item) || 10);
-  return qtyMultiplier(factor);
+  return qtyMultiplier(factor) * nameMultiplier(item, productName);
 }
 function consumptionRuleLabel(item, productName, productCode) {
-  const rule = CONSUMPTION_RULES[item]; if (!rule) return '';
+  const rule = CONSUMPTION_RULES[item];
+  if (!rule) { const m = nameMultiplier(item, productName); return m !== 1 ? `보정값 × ${m}(상품명 규칙)` : ''; }
   return `${rule(productName, productCode)}봉 × ${unitsPerPackOf(item) || 10}pc`;
 }
 
