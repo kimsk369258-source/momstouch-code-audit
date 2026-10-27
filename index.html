@@ -444,6 +444,10 @@
       <div class="toolbar" style="flex-wrap:wrap; gap:8px;">
         <select id="recOrderDate" class="search-input" style="flex:none; min-width:260px;"></select>
         <select id="recItemSelect" class="search-input" style="flex:none; min-width:150px;"></select>
+        <select id="recStockMode" class="search-input" style="flex:none;" title="평소 재고 대비: 지금 재고가 평소(지난 4주 같은 시점)보다 많은지·적은지만 반영 — 추정재고의 고정 오차(기초재고·폐기·대여)가 상쇄됨">
+          <option value="typical" selected>재고: 평소 대비</option>
+          <option value="absolute">재고: 추정치 그대로</option>
+        </select>
         <select id="recPromo" class="search-input" style="flex:none;" title="계획·진행 중인 프로모션 효과를 회차 예상 판매에 곱하고, 과거 행사일 판매는 평소 수준으로 되돌려 계산">
           <option value="on" selected>프로모션 반영</option>
           <option value="off">프로모션 미반영</option>
@@ -5668,7 +5672,7 @@ const REC_BALANCE_DAYS = 56, REC_HISTORY_DAYS = 42;
 // 사라진 물량(인근·다점포 매장에 빌려줌, 폐기 등)으로 보고 잘라낸다. 0 아래로 내려가면 0으로
 // 되돌리는 것(빌려옴·사입 등)과 짝을 이루어, 잔고가 양쪽 방향 모두 현실 범위 안에서 수렴한다.
 let STOCK_CAP_DAYS = 4;
-function computeRec({ recvRaw, sold, orderDate, salesDays, unitsPerPack, k, capDays, pdf }) {
+function computeRec({ recvRaw, sold, orderDate, salesDays, unitsPerPack, k, capDays, pdf, stockMode }) {
   // pdf(d): 그날 행사 계수(없으면 1). 과거 같은 요일 판매는 그 계수로 나눠 평소 수준으로 만들고,
   // 예측하는 날에는 그날 계수를 곱한다 → 계획된 프로모션이 권장량에 반영된다.
   const PF = typeof pdf === 'function' ? pdf : () => 1;
@@ -5684,11 +5688,18 @@ function computeRec({ recvRaw, sold, orderDate, salesDays, unitsPerPack, k, capD
   const cap = capD > 0 && avg14 > 0 ? avg14 * capD : Infinity;
   let bal = 0, borrowedIn = 0, lostOut = 0;
   const recentFrom = addDaysStr(cutoff, -27);
+  const balAt = {};
   for (let d = addDaysStr(cutoff, -(REC_BALANCE_DAYS - 1)); d <= cutoff; d = addDaysStr(d, 1)) {
     bal += (recvAct[d] || 0) - (salesDays.has(d) ? (S[d] || 0) : 0);
     if (bal < 0) { if (d >= recentFrom) borrowedIn += -bal; bal = 0; }
     if (bal > cap) { if (d >= recentFrom) lostOut += bal - cap; bal = cap; }
+    balAt[d] = bal;
   }
+  // 평소 재고: 지난 4주 "같은 시점(같은 요일 마감)"의 추정재고 중앙값. 추정재고에는 기초재고·폐기·대여처럼
+  // 데이터로 안 잡히는 고정 오차가 섞이는데, 그 오차는 평소 재고에도 똑같이 들어 있으므로
+  // "지금 재고 − 평소 재고"(평소보다 많은가·적은가)만 보면 상쇄된다.
+  const typVals = [1, 2, 3, 4].map(w => balAt[addDaysStr(cutoff, -7 * w)]).filter(v => v != null).sort((a, b) => a - b);
+  const typBal = typVals.length >= 2 ? (typVals.length % 2 ? typVals[(typVals.length - 1) / 2] : (typVals[typVals.length / 2 - 1] + typVals[typVals.length / 2]) / 2) : null;
   // ② 일별 예측: 같은 요일 최근 4회 가중평균 × 추세
   // 영업일 판정: 그날 판매 업로드가 있고(salesDays) 이 매장 기록이 있으면 영업(판매 0이어도 기록은 남음),
   // 기록이 아예 없으면 휴무로 본다. 월요일 격주·매주 휴무점이 평균을 깎지 않게 하기 위함.
@@ -5728,13 +5739,20 @@ function computeRec({ recvRaw, sold, orderDate, salesDays, unitsPerPack, k, capD
   const resid = win.map(d => (S[d] || 0) - dowMean[dowOf(d)]);
   const sigma = resid.length > 1 ? Math.sqrt(resid.reduce((a, r) => a + r * r, 0) / (resid.length - 1)) : 0;
   const safety = k * sigma * Math.sqrt(cdays.length);
-  const needUnits = Math.max(0, cycleUse + safety - projected);
+  // 재고 판단 방식
+  //  · typical(기본): 평소 재고 대비 — 권장 = 회차 예상사용 + 안전재고 − (지금 재고 − 평소 재고).
+  //    평소처럼 재고를 들고 있으면 "쓸 만큼 보충", 평소보다 많으면 덜, 적으면 더 권한다.
+  //  · absolute: 추정 재고 그대로 — 권장 = 회차 예상사용 + 안전재고 − (전날 재고 − 입고 전 판매).
+  //    추정재고의 고정 오차가 그대로 남아 권장이 실제보다 크게 낮게 나올 수 있다.
+  const useTyp = stockMode !== 'absolute' && typBal != null;
+  const stockDev = useTyp ? bal - typBal : null;
+  const needUnits = useTyp ? Math.max(0, cycleUse + safety - stockDev) : Math.max(0, cycleUse + safety - projected);
   const recPacks = Math.max(0, Math.ceil(needUnits / upp - 1e-9)) + 0; // +0: -0 방지
   // ⑤ 실제 발주(해당 회차 정상 + 추가)
   const R = recvRaw || {};
   const actNormal = R[T] || 0, actAdd = cdays.slice(1).reduce((a, d) => a + (R[d] || 0), 0);
   const hasActual = Object.keys(R).some(d => d >= T && d <= cdays[cdays.length - 1]);
-  return { T, cdays, cutoff, closedPred, bal, borrowedIn, lostOut, capUnits: isFinite(cap) ? cap : null, preSales, preRecv, projected, cycleF, cycleUse, trend, sigma, safety, needUnits, recPacks, actNormal, actAdd, actTotal: actNormal + actAdd, hasActual, thin };
+  return { T, cdays, cutoff, closedPred, bal, typBal, stockDev, useTyp, borrowedIn, lostOut, capUnits: isFinite(cap) ? cap : null, preSales, preRecv, projected, cycleF, cycleUse, trend, sigma, safety, needUnits, recPacks, actNormal, actAdd, actTotal: actNormal + actAdd, hasActual, thin };
 }
 
 
@@ -6302,6 +6320,7 @@ async function renderRecommendation() {
     const onlyActive = document.getElementById('recOnlyActive')?.checked !== false;
     const calibOn = (document.getElementById('recCalib')?.value || 'auto') === 'auto';
     const promoOn = (document.getElementById('recPromo')?.value || 'on') === 'on';
+    const stockMode = document.getElementById('recStockMode')?.value || 'typical';
     const recPdf = {};
     const calCut = (() => { let c = addDaysStr(orderDate, -1); for (let i = 0; i < 7 && !salesDays.has(c); i++) c = addDaysStr(c, -1); return c; })();
     const calib = calcUsageCalib(R, S, pack, addDaysStr(calCut, -27), calCut, [...registeredOrderItems()],
@@ -6320,7 +6339,7 @@ async function renderRecommendation() {
         if (itemFilter && item !== itemFilter) return;
         const upp = pack[item]?.unitsPerPack || 1;
         const kc = calibOn ? (calib[item]?.k || 1) : 1;
-        const x = computeRec({ recvRaw: r.byItem[item], sold: scaleSeries(sv.byItem[item], kc), orderDate, salesDays, unitsPerPack: upp, k, capDays, pdf: promoOn ? (recPdf[item] = recPdf[item] || makePdf(item)) : null });
+        const x = computeRec({ recvRaw: r.byItem[item], sold: scaleSeries(sv.byItem[item], kc), orderDate, salesDays, unitsPerPack: upp, k, capDays, stockMode, pdf: promoOn ? (recPdf[item] = recPdf[item] || makePdf(item)) : null });
         x.pos = selfPos ? '자체POS' : '';
         if (selfPos) {
           // 판매 기반 값은 의미가 없으므로 비우고, 최근 같은 요일 회차 입고 평균을 권장으로 쓴다.
@@ -6349,7 +6368,7 @@ async function renderRecommendation() {
     Object.values(excluded).forEach(ex => {
       new Set([...Object.keys(ex.store.r.byItem), ...Object.keys(ex.store.sv.byItem)]).forEach(item => {
         if (!reg2.has(item) || (itemFilter && item !== itemFilter)) return;
-        const x = computeRec({ recvRaw: ex.store.r.byItem[item], sold: scaleSeries(ex.store.sv.byItem[item], calibOn ? (calib[item]?.k || 1) : 1), orderDate, salesDays, unitsPerPack: pack[item]?.unitsPerPack || 1, k, capDays, pdf: promoOn ? (recPdf[item] = recPdf[item] || makePdf(item)) : null });
+        const x = computeRec({ recvRaw: ex.store.r.byItem[item], sold: scaleSeries(ex.store.sv.byItem[item], calibOn ? (calib[item]?.k || 1) : 1), orderDate, salesDays, unitsPerPack: pack[item]?.unitsPerPack || 1, k, capDays, stockMode, pdf: promoOn ? (recPdf[item] = recPdf[item] || makePdf(item)) : null });
         ex.packs += x.recPacks;
       });
     });
@@ -6411,7 +6430,7 @@ async function renderRecommendation() {
     rows.slice(0, 500).forEach(x => {
       const dash = v => v == null ? '-' : fmtNum(Math.round(v));
       html += `<tr><td>${esc(x.code)}</td><td>${esc(x.name)}</td><td>${esc(x.team)}</td><td>${x.pos ? '<span class="pill pill-neutral">자체POS</span>' : 'POS'}</td><td>${esc(x.item)}${x.thin ? ' <span class="pill pill-neutral" title="예측에 쓸 같은 요일 이력이 2회 미만이라 불안정합니다">이력부족</span>' : ''}</td>
-        <td class="num" title="${x.pos ? '' : `최근 4주: 입고로 설명 안 되는 판매(빌려옴·사입 추정) ${Math.round(x.borrowedIn || 0)}개 / 장부에서 빠진 물량(빌려줌·폐기 추정) ${Math.round(x.lostOut || 0)}개${x.capUnits ? ` / 재고 상한 ${Math.round(x.capUnits)}개` : ''}`}">${dash(x.bal)}${!x.pos && x.lostOut > 0 ? ' <span style="color:#b45309;" title="상한 초과분을 잘라냄">✂</span>' : ''}${!x.pos && x.borrowedIn > 0 ? ' <span style="color:#b91c1c;" title="입고보다 판매가 많았던 적 있음">↙</span>' : ''}</td><td class="num">${dash(x.preSales)}</td>
+        <td class="num" title="${x.pos ? '' : `${x.useTyp ? `평소 재고(지난 4주 같은 시점 중앙값) ${Math.round(x.typBal)}개 · 평소 대비 ${x.stockDev >= 0 ? '+' : ''}${Math.round(x.stockDev)}개 / ` : ''}최근 4주: 입고로 설명 안 되는 판매(빌려옴·사입 추정) ${Math.round(x.borrowedIn || 0)}개 / 장부에서 빠진 물량(빌려줌·폐기 추정) ${Math.round(x.lostOut || 0)}개${x.capUnits ? ` / 재고 상한 ${Math.round(x.capUnits)}개` : ''}`}">${dash(x.bal)}${!x.pos && x.lostOut > 0 ? ' <span style="color:#b45309;" title="상한 초과분을 잘라냄">✂</span>' : ''}${!x.pos && x.borrowedIn > 0 ? ' <span style="color:#b91c1c;" title="입고보다 판매가 많았던 적 있음">↙</span>' : ''}</td><td class="num">${dash(x.preSales)}</td>
         <td class="num" title="${x.pos ? `최근 같은 요일 회차 ${x.histN}회 입고 평균` : x.cdays.map((d, i) => d.slice(5) + ' ' + Math.round(x.cycleF[i])).join(' / ') + (x.closedPred?.length ? ` · 휴무 예상: ${x.closedPred.map(d => d.slice(5) + '(' + DOW_KO[dowOf(d)] + ')').join(', ')}` : '')}">${x.pos ? '<span class="note">입고평균</span>' : fmtNum(Math.round(x.cycleUse))}${!x.pos && x.closedPred?.length ? ' <span class="pill pill-neutral" style="font-size:10px;">휴무 ' + x.closedPred.map(d => DOW_KO[dowOf(d)]).join('') + '</span>' : ''}</td>
         <td class="num">${x.pos || x.trend === 1 ? '-' : (x.trend > 1 ? '▲' : '▼') + Math.round(Math.abs(x.trend - 1) * 100) + '%'}</td>
         <td class="num">${dash(x.safety)}</td>
