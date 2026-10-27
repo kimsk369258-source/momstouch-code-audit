@@ -281,7 +281,20 @@
         <table id="masterTable"><thead></thead><tbody></tbody></table>
       </div>
     </div>
-  </section>
+      <div class="card">
+      <h2>발주품목 누락 메뉴 찾기</h2>
+      <div class="card-sub">권장 발주가 실제 발주보다 크게 낮게 나오는 품목은 대부분 "그 계육을 쓰는데 세부구분1이 그 품목으로 안 잡힌 메뉴"가 원인입니다. 저장된 합본에서 상품명(또는 세트명)에 키워드가 들어간 판매 중 세부구분1이 그 품목이 아닌 상품을 판매량 순으로 보여줍니다.</div>
+      <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:8px;">
+        <select id="mfItem" class="search-input" style="flex:none;" onchange="document.getElementById('mfKw').value = (MISSING_KW[this.value] || this.value).toString()"></select>
+        <input id="mfKw" class="search-input" style="flex:none; width:220px;" placeholder="키워드(쉼표로)">
+        <input id="mfEx" class="search-input" style="flex:none; width:200px;" placeholder="제외 키워드(쉼표로)">
+        <input id="mfDate" type="date" class="search-input" style="flex:none;">
+        <button class="btn btn-primary btn-sm" onclick="findMissingMenus()">찾기</button>
+      </div>
+      <div class="status-line" id="mfStatus" style="margin-top:6px;"></div>
+      <div id="mfWrap"></div>
+    </div>
+</section>
 
   <!-- ===================== TAB 2: 일별 대조 ===================== -->
   <section class="panel" id="panel-daily">
@@ -4458,6 +4471,7 @@ async function loadOrdersIndex() {
   await loadProdLimits(); // 확정 요일 설정을 먼저 읽어야 회차 목록의 확정일이 맞다
   populateProdCycles();
   renderSoldExItems();
+  initMissingFinder();
   populateStockStoreSelect();
 }
 
@@ -5583,6 +5597,65 @@ async function downloadDailySold() {
 }
 
 // ==========================================================================
+// 발주품목 누락 메뉴 찾기
+// ==========================================================================
+const MISSING_KW = { 싸이패티: ['싸이'], 빅싸이순살: ['빅싸이'], 빅싸이순살맥스: ['빅싸이', '맥스'], 가슴살패티: ['가슴살'], 와우순살: ['와우'], 와우순살맥스: ['와우'], 뼈치킨: ['뼈', '후라이드', '양념', '한마리', '반마리', '반반'] };
+const MISSING_EX = { 싸이패티: ['빅싸이', '싸이순살'] };
+function initMissingFinder() {
+  const sel = document.getElementById('mfItem'); if (!sel) return;
+  const items = [...new Set([...registeredOrderItems(), ...Object.keys(MISSING_KW)])];
+  sel.innerHTML = items.map(it => `<option value="${esc(it)}">${esc(it)}</option>`).join('');
+  document.getElementById('mfKw').value = (MISSING_KW[sel.value] || [sel.value]).join(', ');
+  document.getElementById('mfEx').value = (MISSING_EX[sel.value] || []).join(', ');
+  sel.onchange = () => { document.getElementById('mfKw').value = (MISSING_KW[sel.value] || [sel.value]).join(', '); document.getElementById('mfEx').value = (MISSING_EX[sel.value] || []).join(', '); };
+  const sd = [...salesDaySetNow()].sort(); if (sd.length) document.getElementById('mfDate').value = sd[sd.length - 1];
+}
+async function findMissingMenus() {
+  const item = document.getElementById('mfItem').value, date = document.getElementById('mfDate').value;
+  const kws = document.getElementById('mfKw').value.split(',').map(x => x.trim().replace(/\s/g, '')).filter(Boolean);
+  const exs = document.getElementById('mfEx').value.split(',').map(x => x.trim().replace(/\s/g, '')).filter(Boolean);
+  const st = document.getElementById('mfStatus'), wrap = document.getElementById('mfWrap');
+  if (!item || !date || !kws.length) { st.innerHTML = '<span class="pill pill-warn">품목·키워드·날짜를 넣어주세요.</span>'; return; }
+  if (heavyJob) { st.innerHTML = `<span class="pill pill-warn">다른 작업(${heavyJob}) 진행 중</span>`; return; }
+  heavyJob = '누락 메뉴 찾기';
+  st.innerHTML = '<span class="pill pill-neutral">합본 읽는 중...</span>';
+  try {
+    const url = await getDownloadURL(exportStorageRef(date));
+    let cols, catI, d1I, fI; const parentName = new Map(); const rows = [];
+    let mappedQty = 0;
+    await streamCsvRows(url, h => { cols = resolveRawCols(h); catI = h.indexOf('분류'); d1I = h.indexOf('세부구분1') >= 0 ? h.indexOf('세부구분1') : h.indexOf('세부구분'); fI = h.indexOf('보정값'); }, r => {
+      const pc = cols.productCode >= 0 ? normCode(r[cols.productCode]) : '';
+      const gb = cols.gubun >= 0 ? String(r[cols.gubun] ?? '').trim() : '';
+      const name = String(r[cols.productName] ?? '');
+      if (gb === '사이드모상품' && pc && !parentName.has(pc)) parentName.set(pc, name);
+      const q = toNum(r[cols.qty]); if (!q) return;
+      const d1 = d1I >= 0 ? String(r[d1I] ?? '').trim() : '', cat = catI >= 0 ? String(r[catI] ?? '').trim() : '';
+      if (d1 === item && cat !== '제외') { mappedQty += q * consumptionPerSale(item, fI >= 0 ? r[fI] : '', name, pc); return; }
+      rows.push({ pc, side: cols.sideProductCode >= 0 ? normCode(r[cols.sideProductCode]) : '', gb, name, d1, cat, q, store: String(r[cols.storeCode] ?? '').trim() });
+    });
+    const agg = new Map();
+    rows.forEach(x => {
+      const nk = x.name.replace(/\s/g, ''), pk = x.gb === '사이드상품' ? (parentName.get(x.pc) || '').replace(/\s/g, '') : '';
+      // 세트 본체(사이드모상품)는 구성품에서 세니 빼고, 상품명(구성품은 상품명만)에 키워드가 있는 것만
+      if (x.gb === '사이드모상품') return;
+      if (!kws.some(k => nk.includes(k))) return;
+      if (exs.some(k => nk.includes(k))) return;
+      const key = [x.pc, x.side, x.gb, x.name].join('|');
+      const o = agg.get(key) || { ...x, parent: parentName.get(x.pc) || '', q: 0, stores: new Set() };
+      o.q += x.q; o.stores.add(x.store); agg.set(key, o);
+    });
+    const list = [...agg.values()].sort((a, b) => b.q - a.q);
+    const totalMiss = list.reduce((a, x) => a + x.q, 0);
+    st.innerHTML = `<span class="pill ${list.length ? 'pill-warn' : 'pill-ok'}">${date}</span><span>${esc(item)}로 잡힌 소진 ${fmtNum(Math.round(mappedQty))}개 · 키워드에 맞지만 ${esc(item)}로 안 잡힌 판매 ${fmtNum(totalMiss)}건(${list.length}개 상품)${mappedQty ? ` — 잡힌 양의 ${Math.round(totalMiss / mappedQty * 100)}%` : ''}</span>`;
+    if (!list.length) { wrap.innerHTML = '<div class="note">키워드에 맞는 누락 상품이 없습니다. 다른 키워드로도 확인해 보세요.</div>'; return; }
+    wrap.innerHTML = '<div class="table-wrap" style="max-height:420px; overflow:auto;"><table><thead><tr><th>상품코드</th><th>사이드</th><th>구분</th><th>상품명</th><th>세트명</th><th>현재 분류</th><th>현재 세부구분1</th><th class="num">판매수량</th><th class="num">매장 수</th></tr></thead><tbody>'
+      + list.slice(0, 300).map(x => `<tr><td>${esc(x.pc)}</td><td>${esc(x.side)}</td><td>${esc(x.gb)}</td><td>${esc(x.name)}</td><td style="font-size:12px;">${esc(x.parent)}</td><td>${esc(x.cat || '(빈칸)')}</td><td>${esc(x.d1 || '(빈칸)')}</td><td class="num"><strong>${fmtNum(x.q)}</strong></td><td class="num">${fmtNum(x.stores.size)}</td></tr>`).join('')
+      + '</tbody></table></div><div class="note">실제로 ' + esc(item) + '를 쓰는 상품이면 기준표에서 세부구분1을 "' + esc(item) + '"(필요하면 보정값)로 고친 뒤 ① 탭 "합치기"로 올리고 재분류하세요. 이름만 비슷하고 해당 계육을 안 쓰는 상품은 무시하면 됩니다.</div>';
+  } catch (err) { st.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)} (그 날짜 합본이 저장되어 있는지 확인)</span>`; }
+  finally { heavyJob = null; }
+}
+
+// ==========================================================================
 // 권장 발주량 예측
 // ==========================================================================
 // 발주일 O(월·수·금) → 입고 T = O+1(화·목·토), 회차 사용일 = cycleDays(T).
@@ -6457,7 +6530,7 @@ Object.assign(window, {
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
   deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, checkSoldDetail, backfillSoldLedger,
-  filterStockStores, pickFirstStockStore, renderProdAccuracy, downloadProdAccuracy, downloadDailySold, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, measureAllPastPromos, togglePromoFormType, measureLaunch, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
+  filterStockStores, pickFirstStockStore, findMissingMenus, renderProdAccuracy, downloadProdAccuracy, downloadDailySold, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, measureAllPastPromos, togglePromoFormType, measureLaunch, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
   addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
