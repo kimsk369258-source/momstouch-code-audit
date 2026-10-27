@@ -415,6 +415,14 @@
       <div id="prodLimitsBox" style="display:none; margin-top:8px;"></div>
       <div class="status-line" id="prodStatus" style="margin:8px 0;"></div>
       <div id="prodWrap"><div class="empty">회차를 고르고 예측을 누르세요.</div></div>
+      <div class="toolbar" style="gap:8px; margin-top:12px; flex-wrap:wrap; border-top:1px dashed #e5e7eb; padding-top:10px;">
+        <strong style="font-size:14px;">예측 vs 실제 발주 비교</strong>
+        <select id="accN" class="search-input" style="flex:none;"><option value="6">최근 6회차(2주)</option><option value="9" selected>최근 9회차(3주)</option><option value="12">최근 12회차(4주)</option><option value="18">최근 18회차(6주)</option></select>
+        <button class="btn btn-primary btn-sm" onclick="renderProdAccuracy()">비교 보기</button>
+        <button class="btn btn-ghost btn-sm" onclick="downloadProdAccuracy()">비교 엑셀</button>
+      </div>
+      <div class="status-line" id="accStatus" style="margin:6px 0;"></div>
+      <div id="accWrap"></div>
       <div class="note">※ 타깃 = 기준선(최근 같은 요일 회차 4번 입고 실적 가중평균 4:3:2:1, 그 회차 행사 효과는 나눠서 제거) × 최근 흐름 계수(확정일 전 끝난 최근 2회차가 평소 대비 높았나·낮았나, ±10%) × 이번 회차 행사 계수(⑥ 프로모션 측정값 → 예상 증가율 → 없으면 0%).<br>※ 최소 = 타깃 − 갭/2, 최대 = 타깃 + 갭/2. 갭은 품목별 고정 수량(기본값 = 예시표의 최대 − 최소, 예: 싸이패티 10,000 → 타깃 ±5,000)이며 "설정"에서 바꿀 수 있습니다. 타깃을 고치면 갭은 그대로 두고 최소·최대가 함께 움직입니다. "과거 예측 오차 vs 갭"은 같은 요일 과거 회차를 그 시점 데이터로 다시 예측했을 때 오차가 갭/2 안에 들어온 횟수로, 갭이 실제 변동을 감당하는지 판단하는 참고치입니다.</div>
     </div>
     <div class="card">
@@ -423,6 +431,10 @@
       <div class="toolbar" style="flex-wrap:wrap; gap:8px;">
         <select id="recOrderDate" class="search-input" style="flex:none; min-width:260px;"></select>
         <select id="recItemSelect" class="search-input" style="flex:none; min-width:150px;"></select>
+        <select id="recPromo" class="search-input" style="flex:none;" title="계획·진행 중인 프로모션 효과를 회차 예상 판매에 곱하고, 과거 행사일 판매는 평소 수준으로 되돌려 계산">
+          <option value="on" selected>프로모션 반영</option>
+          <option value="off">프로모션 미반영</option>
+        </select>
         <select id="recCalib" class="search-input" style="flex:none;" title="POS에 안 잡히는 사용(폐기·분류 누락·환산 차이)을 품목별 전국 입고/판매 비율로 보정">
           <option value="auto" selected>실사용 보정 자동</option>
           <option value="off">실사용 보정 없음</option>
@@ -524,6 +536,7 @@
         <button class="btn btn-primary btn-sm" onclick="openPromoForm()">+ 프로모션/이벤트 등록</button>
         <button class="btn btn-ghost btn-sm" onclick="togglePromoPaste()">엑셀 붙여넣기 일괄 등록</button>
         <button class="btn btn-ghost btn-sm" onclick="downloadPromos()">엑셀 다운로드</button>
+        <button class="btn btn-ghost btn-sm" onclick="measureAllPastPromos()" title="끝난 프로모션·공휴일 중 아직 측정 안 한 것을 차례로 측정해, 계획된 행사의 효과 추정에 쓸 자료를 쌓습니다">지난 행사 일괄 측정</button>
       </div>
       <div id="promoPasteBox" style="display:none; margin-top:10px;">
         <div class="note">엑셀에서 아래 순서의 열을 복사해 붙여넣으세요(쿠폰 1개 = 1행, 같은 프로모션명·기간이면 한 프로모션으로 묶임, 첫 행 헤더는 있어도 됨):<br>
@@ -5232,12 +5245,13 @@ function renderPromoList() {
   tl += list.map(p => `<div style="position:relative; height:20px; margin:2px 0; background:#f9fafb; border-radius:4px;"><div title="${esc(p.name)} ${p.start}~${p.end || '진행 중'}" style="position:absolute; left:${pos(p.start)}%; width:${Math.max(0.6, pos(addDaysStr(promoEnd(p), 1)) - pos(p.start))}%; top:2px; bottom:2px; background:${PROMO_COLORS[p.channel] || '#64748b'}; border-radius:3px;"></div><span style="position:absolute; left:${Math.min(80, pos(addDaysStr(promoEnd(p), 1)))}%; padding-left:6px; font-size:11px; line-height:20px; white-space:nowrap;">${esc(p.name)}</span></div>`).join('');
   document.getElementById('promoTimeline').innerHTML = list.length ? tl : '';
   const lift = p => p.type === 'launch' ? (p.measured ? Object.entries(p.measured.items || {}).map(([it, v]) => `${esc(it)} 순증 <strong style="color:${v.incr >= 0 ? '#b91c1c' : '#2563eb'}">${v.incr >= 0 ? '+' : ''}${Math.round(v.incr * 100)}%</strong>${v.cannib != null ? ` · 잠식 ${Math.round(v.cannib * 100)}%` : ''}`).join(', ') : '-') : p.measured ? Object.entries(p.measured.items || {}).map(([it, v]) => { const u = usableLift(p, v.lift); return `${esc(it)} <strong style="color:${v.lift >= 0 ? '#b91c1c' : '#2563eb'}">${v.lift >= 0 ? '+' : ''}${Math.round(v.lift * 100)}%</strong>${u.note ? ` <span class="pill pill-warn" title="${esc(u.note)}">예측엔 ${Math.round(u.v * 100)}%</span>` : ''}`; }).join(', ') : '-';
-  let html = '<div class="table-wrap"><table><thead><tr><th>구분·채널</th><th>이름</th><th>기간</th><th>내용</th><th class="num">예상 증가율</th><th>측정 효과</th><th></th></tr></thead><tbody>';
+  let html = '<div class="table-wrap"><table><thead><tr><th>구분·채널</th><th>이름</th><th>기간</th><th>내용</th><th class="num">예상 증가율</th><th>측정 효과</th><th>예측에 쓰는 효과</th><th></th></tr></thead><tbody>';
   list.forEach(p => {
     const nd = (new Date(promoEnd(p) + 'T00:00:00Z') - new Date(p.start + 'T00:00:00Z')) / 864e5 + 1;
     html += `<tr><td><span class="pill" style="background:${PROMO_COLORS[p.channel] || '#64748b'}; color:#fff;">${esc(p.channel)}</span></td><td><strong>${esc(p.name)}</strong>${p.note ? `<div class="note">${esc(p.note)}</div>` : ''}</td>
       <td>${p.start.slice(5)}(${DOW_KO[dowOf(p.start)]}) ~ ${p.end ? `${p.end.slice(5)}(${DOW_KO[dowOf(p.end)]}) · ${nd}일` : `<span class="pill pill-neutral">진행 중</span> · 출시 ${nd}일째`}</td><td style="font-size:12px;">${esc(promoSummary(p))}${p.orderType ? ` · ${esc(p.orderType)}` : ''}${p.target && p.target !== '전체' ? ` · 대상 ${esc(p.target)}` : ''}</td>
       <td class="num">${p.expectedLift != null ? p.expectedLift + '%' : '-'}</td><td style="font-size:12px;">${lift(p)}</td>
+      <td style="font-size:12px;">${p.type === 'launch' ? '-' : [...registeredOrderItems()].map(it => { const L = liftFor(p, it); return L.lift == null ? '' : `${esc(it)} ${L.lift >= 0 ? '+' : ''}${Math.round(L.lift * 100)}%<span class="note">(${L.src === 'measured' ? '측정' : L.src === 'expected' ? '예상' : '유사 ' + L.sm.n + '건'})</span>`; }).filter(Boolean).join(', ') || '<span class="note">자료 없음(0%)</span>'}</td>
       <td style="white-space:nowrap;"><button class="btn btn-ghost btn-sm" onclick="${p.type === 'launch' ? 'measureLaunch' : 'measurePromo'}('${p.id}')">${p.type === 'launch' ? '카니발·증분 분석' : '효과 측정'}</button> <button class="btn btn-ghost btn-sm" onclick="openPromoForm('${p.id}')">수정</button> <button class="btn btn-danger btn-sm" onclick="deletePromo('${p.id}')">삭제</button></td></tr>`;
   });
   document.getElementById('promoList').innerHTML = list.length ? html + '</tbody></table></div>' : '<div class="empty">등록된 프로모션이 없습니다.</div>';
@@ -5245,12 +5259,21 @@ function renderPromoList() {
 
 // 효과 측정: 전체 매장 합계 기준. 기준선 = 행사 시작 전 5주 안의 같은 요일 중
 // 어떤 행사·공휴일도 없던 날의 평균. 상승률 = 행사일 실제 합 ÷ 기준선 합 − 1.
+async function measureAllPastPromos() {
+  const today = formatDate(new Date());
+  const todo = salesPromos().filter(p => p.end < today && (!p.measured || p.measured.at < p.end));
+  if (!todo.length) { alert('측정할 지난 행사가 없습니다(모두 측정됨).'); return; }
+  if (!confirm(`끝난 행사 ${todo.length}건을 차례로 측정합니다. 계속할까요?`)) return;
+  for (const p of todo) await measurePromo(p.id);
+  renderPromoList();
+  alert(`${todo.length}건 측정 완료 — "예측에 쓰는 효과" 열에서 품목별 적용값을 확인하세요.`);
+}
 async function measurePromo(id) {
   const p = promos.find(x => x.id === id); if (!p) return;
   const wrap = document.getElementById('promoEffectWrap');
   wrap.innerHTML = '<div class="empty">판매 원장 불러오는 중... (전체 매장)</div>';
   try {
-    const from = addDaysStr(p.start, -35);
+    const from = addDaysStr(p.start, -70); // 기준선을 최대 10주까지 넓힐 수 있게
     const months = []; for (let m = from.slice(0, 7); m <= p.end.slice(0, 7); m = addDaysStr(m + '-28', 5).slice(0, 7)) months.push(m);
     const S = await ledgerLoadMonthsCached(LEDGER_SOLD, months);
     const reg = registeredOrderItems(); const salesDays = salesDaySetNow();
@@ -5274,19 +5297,43 @@ async function measurePromo(id) {
     Object.keys(tot).forEach(item => { const per = {}; Object.entries(tot[item]).forEach(([d, q]) => { if (opStores[d]) per[d] = q / opStores[d]; }); tot[item] = per; });
     const isEventDay = d => salesPromos().some(x => d >= x.start && d <= x.end);
     const baseN = [];
+    // 기준선 찾기 — 행사가 연달아 있어 "행사 없는 날"이 거의 없을 때를 대비해 단계적으로 넓힌다.
+    //  1단계: 행사 전 5주, 어떤 행사·공휴일도 없는 같은 요일
+    //  2단계: 행사 전 10주로 넓힘
+    //  3단계: 공휴일과 같은 채널 행사만 빼고, 다른 채널 행사가 있던 날도 쓰되 그 행사 효과(측정·예상·유사 추정)만큼 나눠 평소 수준으로 되돌림
+    let baseMode = 1, baseItem = null;
+    const sameChannelOrHoliday = x => salesPromos().some(q => x >= q.start && x <= q.end && (q.type === 'holiday' || q.channel === p.channel));
+    const otherFactor = (x, item) => 1 + salesPromos().filter(q => q !== p && q.type === 'promo' && q.channel !== p.channel && x >= q.start && x <= q.end).reduce((a, q) => a + (liftFor(q, item).lift || 0), 0);
+    const baseDays = (d, mode) => {
+      const out = [];
+      for (let w = 1; w <= (mode === 1 ? 5 : 10); w++) {
+        const x = addDaysStr(d, -7 * w);
+        if (x >= p.start || !salesDays.has(x)) continue;
+        if (mode < 3 ? isEventDay(x) : sameChannelOrHoliday(x)) continue;
+        out.push(x); if (out.length >= 4) break;
+      }
+      return out;
+    };
     const baseOf = (series, d, track) => {
-      const v = [];
-      for (let w = 1; w <= 5; w++) { const x = addDaysStr(d, -7 * w); if (x < p.start && salesDays.has(x) && !isEventDay(x)) v.push(series[x] || 0); }
+      const xs = baseDays(d, baseMode);
+      const v = xs.map(x => (series[x] || 0) / (baseMode === 3 ? Math.max(0.5, otherFactor(x, baseItem)) : 1));
       if (track) baseN.push(v.length);
       return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+    };
+    const pickMode = () => {
+      for (const m of [1, 2, 3]) { const avg = pdays.reduce((a, d) => a + baseDays(d, m).length, 0) / Math.max(1, pdays.length); if (avg >= 2) return m; }
+      return 3;
     };
     const pdays = []; for (let d = p.start; d <= p.end; d = addDaysStr(d, 1)) if (salesDays.has(d)) pdays.push(d);
     if (!pdays.length) { wrap.innerHTML = `<div class="note">"${esc(p.name)}" 기간의 판매 데이터가 사이트에 없습니다. 그 기간 일별 대조를 저장하면 측정할 수 있습니다.</div>`; return; }
     const measured = { at: nowISO(), days: pdays.length, items: {} };
     let html = `<h3 style="margin:14px 0 6px; font-size:15px;">효과 측정 — ${esc(p.name)} (판매 데이터 ${pdays.length}일 / 행사 ${(new Date(p.end) - new Date(p.start)) / 864e5 + 1}일)</h3>`;
+    baseMode = pickMode();
+    const modeLabel = { 1: '행사 전 5주 · 행사·공휴일 없는 같은 요일', 2: '행사 전 10주 · 행사·공휴일 없는 같은 요일(5주 안에 부족해 넓힘)', 3: '행사 전 10주 · 공휴일·같은 채널 행사만 제외, 다른 채널 행사일은 그 효과만큼 보정(행사가 연달아 있어 넓힘)' }[baseMode];
+    html += `<div class="note">기준선: ${modeLabel}. 첫 행사일 기준 사용 날짜: ${baseDays(pdays[0], baseMode).map(x => x.slice(5) + '(' + DOW_KO[dowOf(x)] + ')').join(', ') || '없음'}</div>`;
     Object.keys(tot).sort().forEach(item => {
       let act = 0, base = 0; const rows = [];
-      baseN.length = 0;
+      baseN.length = 0; baseItem = item;
       pdays.forEach(d => { const b = baseOf(tot[item], d, true); if (b == null) return; act += tot[item][d] || 0; base += b; rows.push({ d, a: tot[item][d] || 0, b, cs: (p.coupons || []).filter(c => c.days && c.days !== '매일' && couponActiveOn(c, d, p)) }); });
       if (!base) return;
       const lift = act / base - 1;
@@ -5300,7 +5347,7 @@ async function measurePromo(id) {
         return { code, a, b, lift: b ? a / b - 1 : null };
       }).filter(x => x.lift != null && x.b >= rows.length * 5).sort((a, b) => b.lift - a.lift);
       const avgN = baseN.length ? baseN.reduce((a, b) => a + b, 0) / baseN.length : 0;
-      measured.items[item] = { lift, special: sp, actual: act, baseline: base, storeCount: st.length, baseN: Math.round(avgN * 10) / 10 };
+      measured.items[item] = { lift, special: sp, actual: act, baseline: base, storeCount: st.length, baseN: Math.round(avgN * 10) / 10, baseMode };
       const warnLow = avgN < 2 || lift < 0;
       html += (warnLow ? `<div class="note" style="color:#b91c1c;">⚠ ${esc(item)}: 기준선이 행사일당 평균 ${Math.round(avgN * 10) / 10}일분${lift < 0 ? ', 할인 행사인데 마이너스' : ''} — 신뢰도가 낮습니다. 행사 시작 전 4~5주 일별 판매를 저장한 뒤 다시 측정하세요(생산·발주 예측에는 마이너스 값을 0%로 씁니다).</div>` : '')
         + `<div class="status-line" style="flex-wrap:wrap;"><span class="pill pill-neutral">${esc(item)}</span><span>행사일 영업 매장당 판매 합 ${(Math.round(act * 10) / 10).toLocaleString()} vs 평소 ${(Math.round(base * 10) / 10).toLocaleString()} → <strong>${lift >= 0 ? '+' : ''}${Math.round(lift * 100)}%</strong>${Object.entries(sp).map(([k, v]) => ` · ${esc(k)} ${v >= 0 ? '+' : ''}${Math.round(v * 100)}%`).join('')}</span></div>`;
@@ -5541,7 +5588,10 @@ const REC_BALANCE_DAYS = 56, REC_HISTORY_DAYS = 42;
 // 사라진 물량(인근·다점포 매장에 빌려줌, 폐기 등)으로 보고 잘라낸다. 0 아래로 내려가면 0으로
 // 되돌리는 것(빌려옴·사입 등)과 짝을 이루어, 잔고가 양쪽 방향 모두 현실 범위 안에서 수렴한다.
 let STOCK_CAP_DAYS = 4;
-function computeRec({ recvRaw, sold, orderDate, salesDays, unitsPerPack, k, capDays }) {
+function computeRec({ recvRaw, sold, orderDate, salesDays, unitsPerPack, k, capDays, pdf }) {
+  // pdf(d): 그날 행사 계수(없으면 1). 과거 같은 요일 판매는 그 계수로 나눠 평소 수준으로 만들고,
+  // 예측하는 날에는 그날 계수를 곱한다 → 계획된 프로모션이 권장량에 반영된다.
+  const PF = typeof pdf === 'function' ? pdf : () => 1;
   const T = addDaysStr(orderDate, 1);
   const cdays = cycleDays(T);
   const cutoff = (() => { let c = addDaysStr(orderDate, -1); for (let i = 0; i < 7 && !salesDays.has(c); i++) c = addDaysStr(c, -1); return c; })();
@@ -5572,7 +5622,7 @@ function computeRec({ recvRaw, sold, orderDate, salesDays, unitsPerPack, k, capD
   const dayFcst = d => {
     // 같은 요일 최근 4회(업로드 있는 날)의 영업 여부와 판매
     const obs = [];
-    for (let w = 1; obs.length < 4 && w <= 8; w++) { const x = addDaysStr(d, -7 * w); if (x <= cutoff && salesDays.has(x)) obs.push({ x, open: S[x] !== undefined, v: S[x] || 0 }); }
+    for (let w = 1; obs.length < 4 && w <= 8; w++) { const x = addDaysStr(d, -7 * w); if (x <= cutoff && salesDays.has(x)) obs.push({ x, open: S[x] !== undefined, v: (S[x] || 0) / PF(x) }); }
     if (obs.length < 2) thin = true;
     if (!obs.length) return 0;
     const open = obs.filter(o => o.open);
@@ -5583,7 +5633,7 @@ function computeRec({ recvRaw, sold, orderDate, salesDays, unitsPerPack, k, capD
     const openExp = alternating ? (st[0] ? 0 : 1) : (!st[0] && st[1] === false) ? 0 : (st.filter(Boolean).length >= st.length - 1 ? 1 : open.length / obs.length);
     if (openExp === 0) { closedPred.push(d); return 0; }
     const wts = [4, 3, 2, 1].slice(0, open.length);
-    return open.reduce((a, o, i) => a + o.v * wts[i], 0) / wts.reduce((a, b) => a + b, 0) * trend * openExp;
+    return open.reduce((a, o, i) => a + o.v * wts[i], 0) / wts.reduce((a, b) => a + b, 0) * trend * openExp * PF(d);
   };
   // ③ 입고 전 판매(마감 다음날 ~ 입고 전날) + 그 사이 입고
   let preSales = 0, preRecv = 0;
@@ -5693,14 +5743,63 @@ function usableLift(p, v) {
   return { v, note: '' };
 }
 // 회차 t(입고일)의 행사 계수 — 측정값(검증 후) → 예상 증가율 → 0(미측정 표시)
+// ── 계획된(아직 측정 전) 프로모션의 효과를 과거 비슷한 행사의 측정값으로 추정 ──────────────
+// 비슷함 = 같은 채널(가장 큼) · 최대 할인금액이 가까움 · 쿠폰 형태(다운로드/스토어 부착)·선착순 여부가 같음.
+// 측정값이 믿을 만한 과거 행사(마이너스·기준선 부족 제외)만 쓰고, 가중평균한다.
+function promoTraits(p) {
+  const cs = p.coupons || [];
+  const forms = cs.map(c => String(c.form || '')).join(' ');
+  return { channel: p.channel, maxDisc: Math.max(0, ...cs.map(c => Number(c.total) || 0)), dl: /다운/.test(forms), store: /부착|스토어/.test(forms),
+    fcfs: cs.some(c => /선착/.test(String(c.kind || ''))), days: (new Date(promoEnd(p)) - new Date(p.start)) / 864e5 + 1 };
+}
+function similarPromoLift(p, item) {
+  const tp = promoTraits(p);
+  const cands = salesPromos().filter(q => q !== p && q.type === 'promo' && q.measured?.items?.[item]).map(q => {
+    const m = q.measured.items[item];
+    if (m.lift == null || m.lift < 0 || (m.baseN != null && m.baseN < 2)) return null; // 못 믿을 측정은 제외
+    const tq = promoTraits(q);
+    let w = tq.channel === tp.channel ? 3 : 1;
+    w *= 1 / (1 + Math.abs(tq.maxDisc - tp.maxDisc) / 2000);
+    if (tq.dl === tp.dl) w *= 1.2; if (tq.store === tp.store) w *= 1.2; if (tq.fcfs === tp.fcfs) w *= 1.3;
+    return { q, w, lift: Math.min(1, m.lift) };
+  }).filter(Boolean);
+  if (!cands.length) return null;
+  const W = cands.reduce((a, x) => a + x.w, 0);
+  const top = cands.slice().sort((a, b) => b.w - a.w).slice(0, 3);
+  return { lift: cands.reduce((a, x) => a + x.lift * x.w, 0) / W, n: cands.length, basis: top.map(x => `${x.q.name} ${Math.round(x.lift * 100)}%`) };
+}
+// 한 행사·한 품목에 쓸 상승률: ① 그 행사 측정값(검증 통과) ② 입력한 예상 증가율 ③ 비슷한 과거 행사 추정 ④ 없음
+function liftFor(p, item) {
+  const m = p.measured?.items?.[item];
+  if (m) { const mu = usableLift(p, m.lift); if (!mu.note) return { lift: mu.v, src: 'measured', mu, m }; }
+  if (p.expectedLift != null) return { lift: p.expectedLift / 100, src: 'expected' };
+  if (p.type === 'promo') { const sm = similarPromoLift(p, item); if (sm) return { lift: sm.lift, src: 'similar', sm }; }
+  if (m) { const mu = usableLift(p, m.lift); return { lift: mu.v, src: 'measured', mu, m }; }
+  return { lift: null, src: null };
+}
+// 하루 단위 행사 계수(매장별 권장 발주용) — 그날 진행 중인 행사들의 상승률 합(특별 쿠폰일은 그 값)
+function promoDayFactor(d, item) {
+  let f = 1;
+  salesPromos().forEach(p => {
+    if (d < p.start || d > p.end) return;
+    const L = liftFor(p, item); let l = L.lift || 0;
+    const m = L.src === 'measured' ? L.m : null;
+    if (m && m.special) (p.coupons || []).forEach(c => { const key = `${c.kind} ${c.total}원 적용일`; if (m.special[key] != null && couponActiveOn(c, d, p)) { const su = usableLift(p, m.special[key]); if (su.v != null) l = su.v; } });
+    f += l;
+  });
+  return Math.max(0.5, f);
+}
+// 품목별 하루 행사 계수를 캐시해 매장 수천 곳 계산에서 반복 계산을 피한다
+function makePdf(item) { const c = {}; return d => (d in c) ? c[d] : (c[d] = promoDayFactor(d, item)); }
 function promoFactor(t, item) {
   const days = cycleDays(t); let f = 1; const notes = []; let unmeasured = false, unreliable = false;
   salesPromos().forEach(p => {
     const inDays = days.filter(d => d >= p.start && d <= p.end);
     if (!inDays.length) return;
-    const m = p.measured?.items?.[item];
-    const mu = m ? usableLift(p, m.lift) : null;
-    const lift = m ? mu.v : (p.expectedLift != null ? p.expectedLift / 100 : null);
+    const L = liftFor(p, item);
+    const m = L.src === 'measured' ? L.m : null;
+    const mu = L.mu || null;
+    const lift = L.lift;
     if (lift == null && p.type !== 'holiday') unmeasured = true;
     if (lift == null || (mu && mu.note)) unreliable = true; // 효과를 모르거나 측정값을 못 믿는 행사·명절
     let add = 0;
@@ -5710,7 +5809,8 @@ function promoFactor(t, item) {
       add += (l || 0) / days.length;
     });
     f += add;
-    notes.push(`${p.name}${lift == null ? '(효과 미측정·0% 적용)' : ` ${lift >= 0 ? '+' : ''}${Math.round(lift * 100)}%`}${mu && mu.note ? `[${mu.note}]` : ''} ${inDays.length}/${days.length}일`);
+    const srcLabel = L.src === 'similar' ? `[유사 행사 ${L.sm.n}건 추정: ${L.sm.basis.join(', ')}]` : L.src === 'expected' ? '[예상 증가율]' : '';
+    notes.push(`${p.name}${lift == null ? '(효과 미측정·0% 적용)' : ` ${lift >= 0 ? '+' : ''}${Math.round(lift * 100)}%`}${srcLabel}${mu && mu.note ? `[${mu.note}]` : ''} ${inDays.length}/${days.length}일`);
   });
   return { f: Math.max(0.5, f), notes, unmeasured, unreliable };
 }
@@ -5797,6 +5897,7 @@ async function renderProduction() {
     const salesDaysCut = new Set([...salesDaysAll].filter(d => d < cd0T));
     const orderDay = addDaysStr(T, -1);
     const coach = {}; // item -> { short, stores, list:[...] , salesNeed }
+    const pdfBy = {};
     const prodCalCut = (() => { let c = addDaysStr(cd0T, -1); for (let i = 0; i < 7 && !salesDaysCut.has(c); i++) c = addDaysStr(c, -1); return c; })();
     const prodCalib = calcUsageCalib(R, S, pack, addDaysStr(prodCalCut, -27), prodCalCut, items,
       code => !isActiveStore(code) || isSelfPosStore(R[code] || { byItem: {} }, S[code] || { byItem: {} }, orderDay));
@@ -5810,7 +5911,7 @@ async function renderProduction() {
       Object.keys(sv.byItem).forEach(item => {
         if (!itemSet.has(item)) return;
         const upp = pack[item]?.unitsPerPack || 1;
-        const x = computeRec({ recvRaw: r.byItem[item], sold: scaleSeries(sv.byItem[item], prodCalib[item]?.k || 1), orderDate: orderDay, salesDays: salesDaysCut, unitsPerPack: upp, k: 0.5 });
+        const x = computeRec({ recvRaw: r.byItem[item], sold: scaleSeries(sv.byItem[item], prodCalib[item]?.k || 1), orderDate: orderDay, salesDays: salesDaysCut, unitsPerPack: upp, k: 0.5, pdf: pdfBy[item] = pdfBy[item] || makePdf(item) });
         const raw = r.byItem[item] || {};
         const pc = pastCyclesBy[item];
         const vals = pc.map(t => cycleDays(t).reduce((a, d) => a + (raw[d] || 0), 0));
@@ -5864,6 +5965,110 @@ async function renderProduction() {
     wrap.innerHTML = html + '</tbody></table></div></details>';
   } catch (err) { console.error(err); st.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`; }
 }
+
+// ==========================================================================
+// 예측 vs 실제 발주 비교 — 입고가 끝난 최근 N회차를 각 회차 확정일 시점 데이터로 다시 예측해
+// 실제 입고(정상+추가)와 나란히 놓는다. 화면·엑셀 모두 "회차 × 품목" 한 장 표로 본다.
+// ==========================================================================
+let accData = null;
+async function computeProdAccuracy(n) {
+  const L = await loadProdLimits();
+  const recvDates = [...new Set(ordersIndex.filter(o => o.ledger).map(o => actualRecvDate(o.date)))].sort();
+  const today = formatDate(new Date());
+  // 추가발주 전산일(회차 마지막 날)까지 지난 회차만 = 실적 확정
+  const done = recvDates.filter(t => [2, 4, 6].includes(dowOf(t)) && cycleDays(t)[cycleDays(t).length - 1] < today).slice(-n);
+  if (!done.length) return null;
+  const from = addDaysStr(done[0], -112);
+  const months = []; for (let m = from.slice(0, 7); m <= done[done.length - 1].slice(0, 7); m = addDaysStr(m + '-28', 5).slice(0, 7)) months.push(m);
+  const R = await ledgerLoadMonthsCached(LEDGER_RECV, months);
+  const recvBy = {};
+  Object.values(R).forEach(o => Object.entries(o.byItem).forEach(([it, days]) => Object.entries(days).forEach(([d, q]) => {
+    const a = actualRecvDate(d); (recvBy[it] = recvBy[it] || {})[a] = (recvBy[it][a] || 0) + q;
+  })));
+  const items = [...new Set([...L.order, ...registeredOrderItems()])].filter(it => recvBy[it]);
+  const cycles = done.map(T => ({
+    T, cd: confirmDateOf(T),
+    items: Object.fromEntries(items.map(it => {
+      const rv = recvBy[it], fc = forecastProd(it, T, rv);
+      if (!fc) return [it, null];
+      const target = Math.round(fc.target), half = L.gaps[it] > 0 ? L.gaps[it] / 2 : null;
+      const min = half != null ? Math.max(0, Math.round(target - half)) : null, max = half != null ? Math.round(target + half) : null;
+      const actual = rv[T] || 0;
+      const res = min == null ? '-' : actual < min ? '▼' : actual > max ? '▲' : '○';
+      return [it, { target, min, max, actual, diff: actual - target, rate: target ? actual / target - 1 : null, res }];
+    })),
+  }));
+  const summary = items.map(it => {
+    const xs = cycles.map(c => c.items[it]).filter(Boolean);
+    const inR = xs.filter(x => x.res === '○').length;
+    const rates = xs.filter(x => x.rate != null).map(x => x.rate);
+    const mean = rates.length ? rates.reduce((a, b) => a + b, 0) / rates.length : null;
+    const mae = rates.length ? rates.reduce((a, b) => a + Math.abs(b), 0) / rates.length : null;
+    return { it, n: xs.length, inR, under: xs.filter(x => x.res === '▲').length, over: xs.filter(x => x.res === '▼').length,
+      meanDiff: xs.length ? Math.round(xs.reduce((a, x) => a + x.diff, 0) / xs.length) : null, mean, mae };
+  });
+  return { cycles, items, summary, gaps: L.gaps };
+}
+async function renderProdAccuracy() {
+  const st = document.getElementById('accStatus'), wrap = document.getElementById('accWrap');
+  const n = Number(document.getElementById('accN').value) || 9;
+  st.innerHTML = '<span class="pill pill-neutral">회차별로 다시 예측하는 중...</span>';
+  try {
+    const d = await computeProdAccuracy(n);
+    if (!d) { st.innerHTML = '<span class="pill pill-warn">입고가 끝난 회차가 없습니다.</span>'; wrap.innerHTML = ''; return; }
+    accData = d;
+    st.innerHTML = `<span class="pill pill-ok">✓ ${d.cycles.length}회차</span><span>${d.cycles[0].T} ~ ${d.cycles[d.cycles.length - 1].T} · 각 회차 확정일 시점 데이터로 예측 · ○ 범위 안 / ▲ 실제가 최대 초과(예측 부족) / ▼ 실제가 최소 미만(예측 과다)</span>`;
+    // ① 요약
+    let html = '<div class="table-wrap"><table><thead><tr><th>품목</th><th class="num">비교 회차</th><th class="num">범위 안 ○</th><th class="num">예측 부족 ▲</th><th class="num">예측 과다 ▼</th><th class="num">평균 차이<br>(실제−타깃)</th><th class="num">평균 차이율</th><th class="num">평균 오차율<br>(절대값)</th><th>경향</th></tr></thead><tbody>';
+    d.summary.forEach(x => {
+      const tend = x.mean == null ? '-' : Math.abs(x.mean) < 0.03 ? '균형' : x.mean > 0 ? '예측이 낮은 편(실제가 더 많음)' : '예측이 높은 편(실제가 더 적음)';
+      html += `<tr><td><strong>${esc(x.it)}</strong></td><td class="num">${x.n}</td><td class="num"><strong>${x.inR}</strong> (${x.n ? Math.round(x.inR / x.n * 100) : 0}%)</td><td class="num">${x.under}</td><td class="num">${x.over}</td>
+        <td class="num">${x.meanDiff == null ? '-' : (x.meanDiff > 0 ? '+' : '') + fmtNum(x.meanDiff)}</td><td class="num">${x.mean == null ? '-' : (x.mean >= 0 ? '+' : '') + Math.round(x.mean * 100) + '%'}</td><td class="num">${x.mae == null ? '-' : Math.round(x.mae * 100) + '%'}</td><td>${tend}</td></tr>`;
+    });
+    html += '</tbody></table></div>';
+    // ② 회차 × 품목 (타깃 / 실제 / 결과)
+    html += '<div class="table-wrap" style="margin-top:10px;"><table><thead><tr><th rowspan="2">입고 회차</th><th rowspan="2">확정일</th>' + d.items.map(it => `<th colspan="3" style="text-align:center; border-left:2px solid #e5e7eb;">${esc(it)}</th>`).join('') + '</tr><tr>' + d.items.map(() => '<th class="num" style="border-left:2px solid #e5e7eb;">타깃</th><th class="num">실제</th><th class="num">차이</th>').join('') + '</tr></thead><tbody>';
+    d.cycles.slice().reverse().forEach(c => {
+      html += `<tr><td>${c.T.slice(5)}(${DOW_KO[dowOf(c.T)]})</td><td>${c.cd.slice(5)}(${DOW_KO[dowOf(c.cd)]})</td>` + d.items.map(it => {
+        const x = c.items[it]; if (!x) return '<td class="num" style="border-left:2px solid #e5e7eb;">-</td><td></td><td></td>';
+        const col = x.res === '○' ? '#047857' : x.res === '▲' ? '#b91c1c' : x.res === '▼' ? '#2563eb' : '#6b7280';
+        return `<td class="num" style="border-left:2px solid #e5e7eb;" title="범위 ${x.min ?? '-'} ~ ${x.max ?? '-'}">${fmtNum(x.target)}</td><td class="num">${fmtNum(x.actual)}</td><td class="num" style="color:${col}; font-weight:600;">${x.res} ${x.diff > 0 ? '+' : ''}${fmtNum(x.diff)}</td>`;
+      }).join('') + '</tr>';
+    });
+    wrap.innerHTML = html + '</tbody></table></div>';
+  } catch (err) { console.error(err); st.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`; }
+}
+async function downloadProdAccuracy() {
+  if (!accData) await renderProdAccuracy();
+  const d = accData; if (!d) return;
+  const wb = XLSX.utils.book_new();
+  // 시트1: 한눈에 — 회차 × 품목(타깃·실제·차이·결과), 품목명은 2행 병합 머리글
+  const head1 = ['입고 회차', '요일', '확정일'], head2 = ['', '', ''];
+  d.items.forEach(it => { head1.push(it, '', '', '', '', ''); head2.push('최소', '타깃', '최대', '실제', '차이(실제−타깃)', '결과'); });
+  const aoa = [head1, head2];
+  d.cycles.slice().reverse().forEach(c => {
+    const row = [c.T, DOW_KO[dowOf(c.T)], c.cd];
+    d.items.forEach(it => { const x = c.items[it]; row.push(...(x ? [x.min ?? '', x.target, x.max ?? '', x.actual, x.diff, x.res === '○' ? '○ 범위 안' : x.res === '▲' ? '▲ 예측 부족' : x.res === '▼' ? '▼ 예측 과다' : '-'] : ['', '', '', '', '', ''])); });
+    aoa.push(row);
+  });
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 1, c: 0 } }, { s: { r: 0, c: 1 }, e: { r: 1, c: 1 } }, { s: { r: 0, c: 2 }, e: { r: 1, c: 2 } },
+    ...d.items.map((_, i) => ({ s: { r: 0, c: 3 + i * 6 }, e: { r: 0, c: 3 + i * 6 + 5 } }))];
+  ws['!cols'] = [{ wch: 11 }, { wch: 5 }, { wch: 11 }, ...d.items.flatMap(() => [{ wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 12 }, { wch: 11 }])];
+  ws['!freeze'] = { xSplit: 3, ySplit: 2 };
+  XLSX.utils.book_append_sheet(wb, ws, '예측vs실제(회차별)');
+  // 시트2: 품목 요약
+  const sum = [['품목', '비교 회차', '범위 안(○)', '범위 안 비율', '예측 부족(▲, 실제>최대)', '예측 과다(▼, 실제<최소)', '평균 차이(실제−타깃)', '평균 차이율', '평균 오차율(절대값)', '갭(최소~최대)']];
+  d.summary.forEach(x => sum.push([x.it, x.n, x.inR, x.n ? Math.round(x.inR / x.n * 100) + '%' : '', x.under, x.over, x.meanDiff ?? '', x.mean == null ? '' : Math.round(x.mean * 100) + '%', x.mae == null ? '' : Math.round(x.mae * 100) + '%', d.gaps[x.it] ?? '']));
+  const ws2 = XLSX.utils.aoa_to_sheet(sum); ws2['!cols'] = [{ wch: 14 }, { wch: 9 }, { wch: 10 }, { wch: 11 }, { wch: 20 }, { wch: 20 }, { wch: 18 }, { wch: 11 }, { wch: 16 }, { wch: 13 }];
+  XLSX.utils.book_append_sheet(wb, ws2, '품목별 정확도');
+  // 시트3: 긴 형식(피벗·필터용)
+  const long = [['입고 회차', '요일', '확정일', '품목', '최소', '타깃', '최대', '실제', '차이', '차이율', '결과']];
+  d.cycles.forEach(c => d.items.forEach(it => { const x = c.items[it]; if (x) long.push([c.T, DOW_KO[dowOf(c.T)], c.cd, it, x.min ?? '', x.target, x.max ?? '', x.actual, x.diff, x.rate == null ? '' : Math.round(x.rate * 1000) / 10 + '%', x.res]); }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(long), '원자료(필터용)');
+  XLSX.writeFile(wb, `생산예측_vs_실제발주_${d.cycles[0].T}_${d.cycles[d.cycles.length - 1].T}.xlsx`);
+}
+
 function downloadProduction() {
   if (!prodRows.length) { alert('먼저 예측해주세요.'); return; }
   const finals = {}; document.querySelectorAll('.prod-final').forEach(el => { finals[el.dataset.i] = Number(String(el.value).replace(/[^0-9.]/g, '')) || 0; });
@@ -5881,6 +6086,13 @@ function downloadProduction() {
     ['최대', ...v.map(x => x ? x.max : '')],
     ['추가 발주 제안(판매 기준)', ...prodRows.map(r => r.noData ? '' : r.addSuggest)],
     [`제안 반영 타깃(반영률 ${Math.round((prodMeta.coachRate ?? 0.5) * 100)}%)`, ...prodRows.map((r, i) => r.noData ? '' : Math.round(v[i].target + r.addSuggest * (prodMeta.coachRate ?? 0.5)))]];
+  if (prodRows.some(r => !r.noData && r.actualT != null)) {
+    aoa.push([],
+      ['실제 입고(정상+추가)', ...prodRows.map(r => r.noData || r.actualT == null ? '' : r.actualT)],
+      ['차이(실제 − 타깃)', ...prodRows.map((r, i) => r.noData || r.actualT == null ? '' : r.actualT - v[i].target)],
+      ['차이율', ...prodRows.map((r, i) => r.noData || r.actualT == null || !v[i].target ? '' : `${r.actualT >= v[i].target ? '+' : ''}${Math.round((r.actualT / v[i].target - 1) * 100)}%`)],
+      ['결과', ...prodRows.map((r, i) => r.noData || r.actualT == null ? '' : v[i].min === '' ? '-' : r.actualT < v[i].min ? '▼ 최소 미만' : r.actualT > v[i].max ? '▲ 최대 초과' : '○ 범위 안')]);
+  }
   const detail = [['품목', '단위', '최소', '타깃', '최대', '갭', '기준선(행사 제외)', '최근 흐름 계수', '행사 계수', '반영 행사·공휴일', '과거 예측 오차 vs 갭', '최근 같은 요일 회차 입고']];
   prodRows.forEach((r, i) => {
     if (r.noData) { detail.push([r.item, '', '', '', '', '', '', '', '', '', '입고 실적 없음(발주코드 매핑 필요)', '']); return; }
@@ -6009,6 +6221,8 @@ async function renderRecommendation() {
     if (snap) Object.values(snap.data).forEach(m => Object.keys(m).forEach(c => { if (!R[c] && !S[c]) R[c] = { storeName: snap.names?.[c] || '', byItem: {} }; }));
     const onlyActive = document.getElementById('recOnlyActive')?.checked !== false;
     const calibOn = (document.getElementById('recCalib')?.value || 'auto') === 'auto';
+    const promoOn = (document.getElementById('recPromo')?.value || 'on') === 'on';
+    const recPdf = {};
     const calCut = (() => { let c = addDaysStr(orderDate, -1); for (let i = 0; i < 7 && !salesDays.has(c); i++) c = addDaysStr(c, -1); return c; })();
     const calib = calcUsageCalib(R, S, pack, addDaysStr(calCut, -27), calCut, [...registeredOrderItems()],
       code => !isActiveStore(code) || isSelfPosStore(R[code] || { byItem: {} }, S[code] || { byItem: {} }, orderDate));
@@ -6026,7 +6240,7 @@ async function renderRecommendation() {
         if (itemFilter && item !== itemFilter) return;
         const upp = pack[item]?.unitsPerPack || 1;
         const kc = calibOn ? (calib[item]?.k || 1) : 1;
-        const x = computeRec({ recvRaw: r.byItem[item], sold: scaleSeries(sv.byItem[item], kc), orderDate, salesDays, unitsPerPack: upp, k, capDays });
+        const x = computeRec({ recvRaw: r.byItem[item], sold: scaleSeries(sv.byItem[item], kc), orderDate, salesDays, unitsPerPack: upp, k, capDays, pdf: promoOn ? (recPdf[item] = recPdf[item] || makePdf(item)) : null });
         x.pos = selfPos ? '자체POS' : '';
         if (selfPos) {
           // 판매 기반 값은 의미가 없으므로 비우고, 최근 같은 요일 회차 입고 평균을 권장으로 쓴다.
@@ -6055,7 +6269,7 @@ async function renderRecommendation() {
     Object.values(excluded).forEach(ex => {
       new Set([...Object.keys(ex.store.r.byItem), ...Object.keys(ex.store.sv.byItem)]).forEach(item => {
         if (!reg2.has(item) || (itemFilter && item !== itemFilter)) return;
-        const x = computeRec({ recvRaw: ex.store.r.byItem[item], sold: scaleSeries(ex.store.sv.byItem[item], calibOn ? (calib[item]?.k || 1) : 1), orderDate, salesDays, unitsPerPack: pack[item]?.unitsPerPack || 1, k, capDays });
+        const x = computeRec({ recvRaw: ex.store.r.byItem[item], sold: scaleSeries(ex.store.sv.byItem[item], calibOn ? (calib[item]?.k || 1) : 1), orderDate, salesDays, unitsPerPack: pack[item]?.unitsPerPack || 1, k, capDays, pdf: promoOn ? (recPdf[item] = recPdf[item] || makePdf(item)) : null });
         ex.packs += x.recPacks;
       });
     });
@@ -6071,7 +6285,7 @@ async function renderRecommendation() {
       + (() => {
         const act = []; cd.forEach(d => promosOn(d).forEach(p => { if (!act.includes(p)) act.push(p); }));
         if (!act.length) return '';
-        return `<div class="note" style="margin-top:4px; color:#1d4ed8;">📣 이 회차(${cd[0].slice(5)}~${cd[cd.length - 1].slice(5)}) 진행 행사: ${act.map(p => `<strong>${esc(p.name)}</strong>(${esc(p.channel)}${p.type === 'launch' ? ', 신제품 · ' + esc((p.items || []).join('/')) : p.measured ? ', 과거 측정 ' + Object.entries(p.measured.items).map(([k, v]) => `${esc(k)} ${v.lift >= 0 ? '+' : ''}${Math.round(v.lift * 100)}%`).join('/') : ''}${p.expectedLift != null ? ', 예상 +' + p.expectedLift + '%' : ''}; ${cd.filter(d => (p.coupons || []).some(c => c.days && c.days !== '매일' && couponActiveOn(c, d, p))).map(d => d.slice(5) + ' 특별쿠폰').join(', ')})`).join(' · ')} — 아직 권장량에 자동 반영되지 않으니, 행사 효과를 감안해 판단해주세요.</div>`;
+        return `<div class="note" style="margin-top:4px; color:#1d4ed8;">📣 이 회차(${cd[0].slice(5)}~${cd[cd.length - 1].slice(5)}) 진행 행사: ${act.map(p => `<strong>${esc(p.name)}</strong>(${esc(p.channel)}${p.type === 'launch' ? ', 신제품 · ' + esc((p.items || []).join('/')) : p.measured ? ', 과거 측정 ' + Object.entries(p.measured.items).map(([k, v]) => `${esc(k)} ${v.lift >= 0 ? '+' : ''}${Math.round(v.lift * 100)}%`).join('/') : ''}${p.expectedLift != null ? ', 예상 +' + p.expectedLift + '%' : ''}; ${cd.filter(d => (p.coupons || []).some(c => c.days && c.days !== '매일' && couponActiveOn(c, d, p))).map(d => d.slice(5) + ' 특별쿠폰').join(', ')})`).join(' · ')} — ${promoOn ? '권장량에 행사 효과(측정값 → 예상 증가율 → 비슷한 과거 행사 추정)를 반영했습니다.' : '"프로모션 미반영"으로 계산했습니다.'}</div>`;
       })()
       + (cutoff !== addDaysStr(orderDate, -1) ? `<div class="note" style="color:#b91c1c; margin-top:4px;">⚠ 발주 전날(${addDaysStr(orderDate, -1)}) 판매가 아직 저장되지 않아 ${cutoff}까지만 반영했습니다. 그 사이 판매는 예측값으로 채웠습니다.</div>` : '');
     const pill = f => ({ 미발주: 'pill-bad', 과소발주: 'pill-bad', 과다발주: 'pill-warn', 적정: 'pill-ok' }[f] || 'pill-neutral');
@@ -6236,7 +6450,7 @@ Object.assign(window, {
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
   deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, checkSoldDetail, backfillSoldLedger,
-  filterStockStores, pickFirstStockStore, downloadDailySold, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, togglePromoFormType, measureLaunch, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
+  filterStockStores, pickFirstStockStore, renderProdAccuracy, downloadProdAccuracy, downloadDailySold, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, measureAllPastPromos, togglePromoFormType, measureLaunch, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
   addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
