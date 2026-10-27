@@ -5303,7 +5303,12 @@ async function measurePromo(id) {
     //  3단계: 공휴일과 같은 채널 행사만 빼고, 다른 채널 행사가 있던 날도 쓰되 그 행사 효과(측정·예상·유사 추정)만큼 나눠 평소 수준으로 되돌림
     let baseMode = 1, baseItem = null;
     const sameChannelOrHoliday = x => salesPromos().some(q => x >= q.start && x <= q.end && (q.type === 'holiday' || q.channel === p.channel));
-    const otherFactor = (x, item) => 1 + salesPromos().filter(q => q !== p && q.type === 'promo' && q.channel !== p.channel && x >= q.start && x <= q.end).reduce((a, q) => a + (liftFor(q, item).lift || 0), 0);
+    // 다른 채널 행사 보정은 "그 행사를 직접 측정한, 믿을 만한 값"만 쓴다. 유사 행사 추정값을 쓰면
+    // 측정 → 추정 → 측정이 서로 부풀리는 순환(예: 배민 측정이 쿠팡 추정을 키우고, 그 추정이 다시
+    // 배민 기준선을 낮춰 배민 효과를 키움)이 생기기 때문. 믿을 만한 측정이 없으면 보정하지 않는다(보수적).
+    const measuredOnlyLift = (q, item) => { const m = q.measured?.items?.[item]; if (!m || m.lift == null) return 0; const u = usableLift(q, m.lift); return u.note || (m.baseN != null && m.baseN < 2) ? 0 : u.v; };
+    const otherPromosOn = x => salesPromos().filter(q => q !== p && q.type === 'promo' && q.channel !== p.channel && x >= q.start && x <= q.end);
+    const otherFactor = (x, item) => 1 + otherPromosOn(x).reduce((a, q) => a + measuredOnlyLift(q, item), 0);
     const baseDays = (d, mode) => {
       const out = [];
       for (let w = 1; w <= (mode === 1 ? 5 : 10); w++) {
@@ -5330,11 +5335,13 @@ async function measurePromo(id) {
     let html = `<h3 style="margin:14px 0 6px; font-size:15px;">효과 측정 — ${esc(p.name)} (판매 데이터 ${pdays.length}일 / 행사 ${(new Date(p.end) - new Date(p.start)) / 864e5 + 1}일)</h3>`;
     baseMode = pickMode();
     const modeLabel = { 1: '행사 전 5주 · 행사·공휴일 없는 같은 요일', 2: '행사 전 10주 · 행사·공휴일 없는 같은 요일(5주 안에 부족해 넓힘)', 3: '행사 전 10주 · 공휴일·같은 채널 행사만 제외, 다른 채널 행사일은 그 효과만큼 보정(행사가 연달아 있어 넓힘)' }[baseMode];
-    html += `<div class="note">기준선: ${modeLabel}. 첫 행사일 기준 사용 날짜: ${baseDays(pdays[0], baseMode).map(x => x.slice(5) + '(' + DOW_KO[dowOf(x)] + ')').join(', ') || '없음'}</div>`;
+    const overl = [...new Set(pdays.flatMap(d => otherPromosOn(d).map(q => q.name)))];
+    html += `<div class="note">기준선: ${modeLabel}. 첫 행사일 기준 사용 날짜: ${baseDays(pdays[0], baseMode).map(x => x.slice(5) + '(' + DOW_KO[dowOf(x)] + ')' + (otherPromosOn(x).length ? '[' + otherPromosOn(x).map(q => q.name).join('·') + ' 보정]' : '')).join(', ') || '없음'}${overl.length ? ` · 행사 기간에 겹친 다른 채널 행사: ${esc(overl.join(', '))} — 직접 측정값이 있으면 그만큼 빼고, 없으면 그대로 섞여 있음` : ''}</div>`;
     Object.keys(tot).sort().forEach(item => {
       let act = 0, base = 0; const rows = [];
       baseN.length = 0; baseItem = item;
-      pdays.forEach(d => { const b = baseOf(tot[item], d, true); if (b == null) return; act += tot[item][d] || 0; base += b; rows.push({ d, a: tot[item][d] || 0, b, cs: (p.coupons || []).filter(c => c.days && c.days !== '매일' && couponActiveOn(c, d, p)) }); });
+      // 행사 기간에 다른 채널 행사가 겹쳐 있으면(예: 배민 행사 중 땡겨요 진행) 그 효과(직접 측정값)만큼 나눠 이 행사 몫만 남긴다
+      pdays.forEach(d => { const b = baseOf(tot[item], d, true); if (b == null) return; const of = Math.max(0.5, otherFactor(d, item)); const a = (tot[item][d] || 0) / of; act += a; base += b; rows.push({ d, a, b, of, cs: (p.coupons || []).filter(c => c.days && c.days !== '매일' && couponActiveOn(c, d, p)) }); });
       if (!base) return;
       const lift = act / base - 1;
       const sp = {}; (p.coupons || []).filter(c => c.days && c.days !== '매일').forEach(c => {
