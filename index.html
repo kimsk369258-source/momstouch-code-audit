@@ -331,6 +331,10 @@
       </div>
       <div class="card-sub">날짜별로 저장된 대조 결과 목록입니다. 기준표를 고친 뒤 "전체 재분류"를 누르면, 저장된 모든 날짜를 하나씩 다시 저장하지 않아도 한 번에 최신 기준표로 다시 계산됩니다.</div>
       <div id="reclassifyAllStatus" style="margin-bottom:8px;"></div>
+      <div class="toolbar" style="gap:8px; margin-bottom:8px; flex-wrap:wrap;">
+        <select id="histYear" class="search-input" style="flex:none;" onchange="setHistMonth('')"></select>
+        <div id="histMonths" style="display:flex; gap:4px; flex-wrap:wrap;"></div>
+      </div>
       <div class="table-wrap">
         <table id="historyTable"><thead></thead><tbody></tbody></table>
       </div>
@@ -565,7 +569,7 @@
     </div>
     <div class="card">
       <h2>등록된 프로모션·이벤트</h2>
-      <div class="toolbar" style="gap:8px;"><select id="promoYear" class="search-input" style="flex:none;" onchange="renderPromoList()"></select></div>
+      <div class="toolbar" style="gap:8px; flex-wrap:wrap;"><select id="promoYear" class="search-input" style="flex:none;" onchange="setPromoMonth('')"></select><div id="promoMonths" style="display:flex; gap:4px; flex-wrap:wrap;"></div></div>
       <div id="promoTimeline" style="margin:10px 0;"></div>
       <div id="promoList"><div class="empty">불러오는 중...</div></div>
       <div id="promoEffectWrap"></div>
@@ -3592,9 +3596,36 @@ function renderTrendChart() {
   }).join('')}</div>`;
 }
 
+// 연도 선택 + 월 버튼(그 달 저장 날짜 수 표시)으로 보고 싶은 달만 펼친다. 기본은 가장 최근 달.
+let histMonthSel = '';
+function setHistMonth(m) { histMonthSel = m; renderHistoryTable(); }
+function setPromoMonth(m) { promoMonthSel = m; renderPromoList(); }
+function histMonthButton(ym, list, active) {
+  const days = list.filter(d => !isMonthKey(d.date)).length, bad = list.filter(d => d.status !== 'ok').length;
+  return `<button class="btn btn-sm ${active ? 'btn-primary' : 'btn-ghost'}" onclick="setHistMonth('${ym}')">${ym === 'all' ? '전체' : Number(ym.slice(5)) + '월'}${ym === 'all' ? '' : ` <span style="opacity:.75;">${days}일${list.some(d => isMonthKey(d.date)) ? '+월합계' : ''}</span>`}${bad ? ` <span style="color:#dc2626;">●</span>` : ''}</button>`;
+}
 function renderHistoryTable() {
   const table = document.getElementById('historyTable');
-  const sorted = [...dailyIndex].sort((a,b) => b.date.localeCompare(a.date));
+  const ySel = document.getElementById('histYear'), mBox = document.getElementById('histMonths');
+  const years = [...new Set(dailyIndex.map(d => d.date.slice(0, 4)))].sort().reverse();
+  if (ySel) {
+    const cur = years.includes(ySel.value) ? ySel.value : (years[0] || '');
+    ySel.innerHTML = years.map(y => `<option value="${y}"${y === cur ? ' selected' : ''}>${y}년 (${dailyIndex.filter(d => d.date.startsWith(y)).length}건)</option>`).join('') || '<option value="">-</option>';
+  }
+  const year = ySel?.value || years[0] || '';
+  const inYear = dailyIndex.filter(d => d.date.startsWith(year));
+  const months = [...new Set(inYear.map(d => d.date.slice(0, 7)))].sort().reverse();
+  if (!histMonthSel || (histMonthSel !== 'all' && !months.includes(histMonthSel))) histMonthSel = months[0] || 'all';
+  if (mBox) mBox.innerHTML = months.map(m => histMonthButton(m, inYear.filter(d => d.date.startsWith(m)), histMonthSel === m)).join('') + histMonthButton('all', inYear, histMonthSel === 'all');
+  const shown = histMonthSel === 'all' ? inYear : inYear.filter(d => d.date.startsWith(histMonthSel));
+  const sorted = [...shown].sort((a,b) => b.date.localeCompare(a.date));
+  // 선택한 달에서 저장 안 된 날짜(오늘 이전) 표시
+  let missNote = '';
+  if (histMonthSel !== 'all' && histMonthSel) {
+    const have = new Set(shown.map(d => d.date)); const today = formatDate(new Date()); const miss = [];
+    for (let d = histMonthSel + '-01'; d.startsWith(histMonthSel) && d < today; d = addDaysStr(d, 1)) if (!have.has(d)) miss.push(d);
+    if (miss.length && !shown.some(d => isMonthKey(d.date))) missNote = `<tr><td colspan="8"><div class="note">이 달에 저장 안 된 날짜 ${miss.length}일: ${miss.map(d => d.slice(8) + '일').join(', ')}</div></td></tr>`;
+  }
   let html = '<thead><tr><th>날짜</th><th>파일명</th><th class="num">처리행수</th><th class="num">매출합계(참고)</th><th class="num">코드수</th><th class="num">이상건수</th><th>상태</th><th></th></tr></thead><tbody>';
   if (sorted.length === 0) {
     html += `<tr><td colspan="8"><div class="empty">저장된 이력이 없습니다. '② 일별 대조' 탭에서 파일을 업로드하고 저장해보세요.</div></td></tr>`;
@@ -3613,7 +3644,7 @@ function renderHistoryTable() {
       </tr>`;
     });
   }
-  html += '</tbody>';
+  html += missNote + '</tbody>';
   table.innerHTML = html;
 }
 
@@ -5179,6 +5210,7 @@ function fmtTime(iso) { try { const d = new Date(iso); return `${d.getMonth() + 
 //           expectedLift(%), note, coupons:[{kind,total,hq,store,channelShare,form,days,daily}], measured }
 // ==========================================================================
 let promos = [];
+let promoMonthSel = '';
 const PROMO_CHANNELS = ['쿠팡이츠', '배달의민족', '요기요', '땡겨요', '자사앱', '전체'];
 const PROMO_COLORS = { 쿠팡이츠: '#2563eb', 배달의민족: '#0d9488', 요기요: '#dc2626', 땡겨요: '#ea580c', 자사앱: '#7c3aed', 전체: '#475569', 공휴일: '#a16207', 신제품: '#be185d' };
 // 계육 선택지: 기준표 세부구분1에 쓰인 값(제외 제외) + 발주품목
@@ -5333,7 +5365,15 @@ function renderPromoList() {
   const years = [...new Set(promos.map(p => p.start.slice(0, 4)))].sort().reverse();
   const cur = ysel.value || years[0] || String(new Date().getFullYear());
   ysel.innerHTML = (years.length ? years : [cur]).map(y => `<option${y === cur ? ' selected' : ''}>${y}</option>`).join('');
-  const list = promos.filter(p => p.start.slice(0, 4) <= cur && promoEnd(p).slice(0, 4) >= cur).sort((a, b) => a.start.localeCompare(b.start));
+  const listYear = promos.filter(p => p.start.slice(0, 4) <= cur && promoEnd(p).slice(0, 4) >= cur);
+  // 월 버튼: 그 달에 걸친 행사 수. 기본은 이번 달(없으면 가장 최근 달). 타임라인은 연간 그대로 보여주고 표만 거른다.
+  const monthsOf = p => { const out = []; for (let m = (p.start.slice(0, 4) < cur ? cur + '-01' : p.start.slice(0, 7)); m <= promoEnd(p).slice(0, 7) && m.startsWith(cur); m = addDaysStr(m + '-28', 5).slice(0, 7)) out.push(m); return out; };
+  const mset = [...new Set(listYear.flatMap(monthsOf))].sort();
+  const thisM = formatDate(new Date()).slice(0, 7);
+  if (!promoMonthSel || (promoMonthSel !== 'all' && !mset.includes(promoMonthSel))) promoMonthSel = mset.includes(thisM) ? thisM : (mset[mset.length - 1] || 'all');
+  const pm = document.getElementById('promoMonths');
+  if (pm) pm.innerHTML = [...mset].reverse().map(m => `<button class="btn btn-sm ${promoMonthSel === m ? 'btn-primary' : 'btn-ghost'}" onclick="setPromoMonth('${m}')">${Number(m.slice(5))}월 <span style="opacity:.75;">${listYear.filter(p => monthsOf(p).includes(m)).length}</span></button>`).join('') + `<button class="btn btn-sm ${promoMonthSel === 'all' ? 'btn-primary' : 'btn-ghost'}" onclick="setPromoMonth('all')">전체 ${listYear.length}</button>`;
+  const list = listYear.sort((a, b) => a.start.localeCompare(b.start));
   // 타임라인(연간)
   const y0 = `${cur}-01-01`, days = (new Date(`${+cur + 1}-01-01T00:00:00Z`) - new Date(y0 + 'T00:00:00Z')) / 864e5;
   const pos = d => Math.max(0, Math.min(100, (new Date(d + 'T00:00:00Z') - new Date(y0 + 'T00:00:00Z')) / 864e5 / days * 100));
@@ -5342,7 +5382,8 @@ function renderPromoList() {
   document.getElementById('promoTimeline').innerHTML = list.length ? tl : '';
   const lift = p => p.type === 'launch' ? (p.measured ? Object.entries(p.measured.items || {}).map(([it, v]) => `${esc(it)} 순증 <strong style="color:${v.incr >= 0 ? '#b91c1c' : '#2563eb'}">${v.incr >= 0 ? '+' : ''}${Math.round(v.incr * 100)}%</strong>${v.cannib != null ? ` · 잠식 ${Math.round(v.cannib * 100)}%` : ''}`).join(', ') : '-') : p.measured ? Object.entries(p.measured.items || {}).map(([it, v]) => { const u = usableLift(p, v.lift); return `${esc(it)} <strong style="color:${v.lift >= 0 ? '#b91c1c' : '#2563eb'}">${v.lift >= 0 ? '+' : ''}${Math.round(v.lift * 100)}%</strong>${u.note ? ` <span class="pill pill-warn" title="${esc(u.note)}">예측엔 ${Math.round(u.v * 100)}%</span>` : ''}`; }).join(', ') : '-';
   let html = '<div class="table-wrap"><table><thead><tr><th>구분·채널</th><th>이름</th><th>기간</th><th>내용</th><th class="num">예상 증가율</th><th>측정 효과</th><th>예측에 쓰는 효과</th><th></th></tr></thead><tbody>';
-  list.forEach(p => {
+  const tableList = (promoMonthSel === 'all' ? list : list.filter(p => monthsOf(p).includes(promoMonthSel))).slice().sort((x, y) => y.start.localeCompare(x.start));
+  tableList.forEach(p => {
     const nd = (new Date(promoEnd(p) + 'T00:00:00Z') - new Date(p.start + 'T00:00:00Z')) / 864e5 + 1;
     html += `<tr><td><span class="pill" style="background:${PROMO_COLORS[p.channel] || '#64748b'}; color:#fff;">${esc(p.channel)}</span></td><td><strong>${esc(p.name)}</strong>${p.note ? `<div class="note">${esc(p.note)}</div>` : ''}</td>
       <td>${p.start.slice(5)}(${DOW_KO[dowOf(p.start)]}) ~ ${p.end ? `${p.end.slice(5)}(${DOW_KO[dowOf(p.end)]}) · ${nd}일` : `<span class="pill pill-neutral">진행 중</span> · 출시 ${nd}일째`}</td><td style="font-size:12px;">${esc(promoSummary(p))}${p.orderType ? ` · ${esc(p.orderType)}` : ''}${p.target && p.target !== '전체' ? ` · 대상 ${esc(p.target)}` : ''}</td>
@@ -5350,7 +5391,7 @@ function renderPromoList() {
       <td style="font-size:12px;">${p.type === 'launch' ? '-' : [...registeredOrderItems()].map(it => { const L = liftFor(p, it); return L.lift == null ? '' : `${esc(it)} ${L.lift >= 0 ? '+' : ''}${Math.round(L.lift * 100)}%<span class="note">(${L.src === 'measured' ? '측정' : L.src === 'expected' ? '예상' : '유사 ' + L.sm.n + '건'})</span>`; }).filter(Boolean).join(', ') || '<span class="note">자료 없음(0%)</span>'}</td>
       <td style="white-space:nowrap;"><button class="btn btn-ghost btn-sm" onclick="${p.type === 'launch' ? 'measureLaunch' : 'measurePromo'}('${p.id}')">${p.type === 'launch' ? '카니발·증분 분석' : '효과 측정'}</button> <button class="btn btn-ghost btn-sm" onclick="openPromoForm('${p.id}')">수정</button> <button class="btn btn-danger btn-sm" onclick="deletePromo('${p.id}')">삭제</button></td></tr>`;
   });
-  document.getElementById('promoList').innerHTML = list.length ? html + '</tbody></table></div>' : '<div class="empty">등록된 프로모션이 없습니다.</div>';
+  document.getElementById('promoList').innerHTML = tableList.length ? html + '</tbody></table></div>' : '<div class="empty">등록된 프로모션이 없습니다.</div>';
 }
 
 // 효과 측정: 전체 매장 합계 기준. 기준선 = 행사 시작 전 5주 안의 같은 요일 중
@@ -6627,7 +6668,7 @@ Object.assign(window, {
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
   deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, checkSoldDetail, backfillSoldLedger,
-  filterStockStores, pickFirstStockStore, findMissingMenus, renderProdAccuracy, downloadProdAccuracy, downloadDailySold, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, measureAllPastPromos, togglePromoFormType, measureLaunch, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
+  filterStockStores, pickFirstStockStore, setHistMonth, setPromoMonth, findMissingMenus, renderProdAccuracy, downloadProdAccuracy, downloadDailySold, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, measureAllPastPromos, togglePromoFormType, measureLaunch, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
   addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
