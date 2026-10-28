@@ -1169,9 +1169,15 @@ function renderKeywordRules() {
 // 기준표를 읽고(현재 masterMap) 고쳐서 다시 저장하는 모든 동작(코드 추가/이름 갱신/파일 업로드 등)을
 // 이 큐를 통해 하나씩 순서대로만 실행한다. 그렇지 않으면 "추가" 버튼을 연달아 빠르게 눌렀을 때
 // 나중 저장이 먼저 것 위에 겹쳐써서 앞서 추가한 내용이 사라지는 경쟁 상태(race condition)가 생긴다.
+// 서버 응답이 오래 없으면 기다림을 끝내고 다음 작업으로 넘어가게 한다(쓰기는 뒤에서 계속 끝날 수 있음).
+// 예전에는 저장 하나가 응답 없이 멈추면 뒤의 기준표 저장이 모두 줄 서서 기다려, 새로고침해야 풀렸다.
+function withTimeout(p, ms, label) {
+  let t; const timer = new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`${label} — 서버 응답이 ${Math.round(ms / 1000)}초 넘게 없음(뒤에서 계속 저장 중일 수 있으니 잠시 후 새로고침해 확인)`)), ms); });
+  return Promise.race([Promise.resolve(p).finally(() => clearTimeout(t)), timer]);
+}
 let masterQueue = Promise.resolve();
 function withMasterLock(fn) {
-  const run = masterQueue.then(fn, fn);
+  const run = masterQueue.then(() => withTimeout(fn(), 120000, '기준표 저장'), () => withTimeout(fn(), 120000, '기준표 저장'));
   masterQueue = run.then(() => {}, () => {});
   return run;
 }
@@ -3174,27 +3180,51 @@ async function updateMasterName(code, newName) {
   alert(`코드 ${code} 의 기준표 상품명을 "${newName}" 으로 갱신했습니다.`);
 }
 
+// 여러 날짜의 "저장"을 연달아 누르면 한 번에 하나씩 순서대로 저장한다(동시에 돌면 서버 쓰기가 몰려
+// 모두 느려지고, 응답이 늦은 저장이 "저장 중..."에 멈춰 보였다).
+let daySaveQueue = Promise.resolve(); let daySaveWaiting = 0;
+function setSaveStatus(btnEl, html) {
+  if (!btnEl) return;
+  let el = btnEl.parentElement.querySelector('.save-status');
+  if (!el) { el = document.createElement('div'); el.className = 'save-status note'; el.style.cssText = 'flex-basis:100%; text-align:right; margin-top:4px;'; btnEl.parentElement.appendChild(el); }
+  el.innerHTML = html;
+}
 async function saveDayReport(date, btnEl) {
   const report = currentDailyReports[date];
   if (!report) return;
-
   const existing = dailyIndex.find(d => d.date === date);
-  if (existing) {
-    if (!confirm(`${date} 날짜의 저장된 이력이 이미 있습니다. 덮어쓸까요?`)) return;
-  }
-
+  if (existing && !confirm(`${date} 날짜의 저장된 이력이 이미 있습니다. 덮어쓸까요?`)) return;
   const originalText = btnEl ? btnEl.textContent : '';
-  if (btnEl) { btnEl.disabled = true; btnEl.textContent = '저장 중...'; }
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = daySaveWaiting ? `대기 중 (${daySaveWaiting}번째)` : '저장 중...'; }
+  daySaveWaiting++;
+  const run = daySaveQueue.then(() => saveDayReportInner(date, report, btnEl));
+  daySaveQueue = run.then(() => {}, () => {});
   try {
-    const ok = await storageSet('daily:' + date, JSON.stringify(report));
-    if (!ok) {
-      alert(`${date} 대조 결과 저장에 실패했습니다. 브라우저 개발자 도구(F12) 콘솔에서 에러 메시지를 확인하고, 로그인이 유지되어 있는지 확인해주세요.`);
-      return;
-    }
+    const res = await run;
+    if (btnEl) { btnEl.textContent = '✓ 저장됨'; btnEl.disabled = false; }
+    setSaveStatus(btnEl, res);
+  } catch (err) {
+    console.error('save failed', date, err);
+    if (btnEl) { btnEl.textContent = originalText || '이 날짜 결과 저장'; btnEl.disabled = false; }
+    setSaveStatus(btnEl, `<span class="pill pill-bad">✗ 저장 실패</span> ${esc(err.message)}`);
+  } finally { daySaveWaiting--; }
+}
+async function saveDayReportInner(date, report, btnEl) {
+  if (btnEl) btnEl.textContent = '저장 중...';
+  {
+    const ok = await withTimeout(storageSet('daily:' + date, JSON.stringify(report)), 60000, '대조 결과 저장');
+    if (!ok) throw new Error('대조 결과 저장 실패 — 로그인이 유지되어 있는지 확인해주세요.');
 
     // ── 나머지 저장은 서로 독립이라 동시에 진행한다(전체 시간 = 가장 오래 걸리는 작업 하나 수준) ──
     const t0 = Date.now(); const timing = {};
-    const step = async (label, fn) => { const s0 = Date.now(); try { return await fn(); } finally { timing[label] = Math.round((Date.now() - s0) / 100) / 10; } };
+    const warns = [];
+    const LIMIT = { '합본 업로드': 300000, '판매 소진 원장': 180000, '분류 수량': 120000, '사용 이력': 120000 };
+    const step = async (label, fn) => {
+      const s0 = Date.now();
+      try { return await withTimeout(fn(), LIMIT[label] || 120000, label); }
+      catch (e) { warns.push(`${label}: ${e.message}`); }
+      finally { timing[label] = Math.round((Date.now() - s0) / 100) / 10; if (btnEl) btnEl.textContent = `저장 중... (${Object.keys(timing).length}/${jobs.length} 완료)`; }
+    };
     let exportNote = '';
     const jobs = [];
     if (YEAR_MASTER_ENABLED && currentUsageByDate[date]) jobs.push(step('사용 이력', async () => { try { await mergeUsage(date.slice(0, 4), currentUsageByDate[date], date); } catch (e) { console.error('usage save failed', e); } }));
@@ -3227,9 +3257,9 @@ async function saveDayReport(date, btnEl) {
     dailyIndex = [...dailyIndex.filter(d => d.date !== date), summary];
     renderHistoryTab();
     try { populateRecOrderDates(); } catch (e) {}
-    alert(`${periodLabel(date)} 대조 결과를 저장했습니다(${totalSec}초 · ${Object.entries(timing).map(([k, v]) => `${k} ${v}초`).join(', ')}). '③ 이력' 탭에서 확인할 수 있습니다.${monthNote}${exportNote}`);
-  } finally {
-    if (btnEl) { btnEl.disabled = false; btnEl.textContent = originalText; }
+    return `<span class="pill ${warns.length ? 'pill-warn' : 'pill-ok'}">${warns.length ? '⚠ 일부 지연' : '✓ 저장 완료'}</span> ${totalSec}초 · ${Object.entries(timing).map(([k, v]) => `${k} ${v}초`).join(' · ')}`
+      + (warns.length ? `<div style="color:#b45309;">${warns.map(esc).join('<br>')}</div>` : '')
+      + (exportNote || monthNote ? `<div>${esc((monthNote + exportNote).trim())}</div>` : '');
   }
 }
 
