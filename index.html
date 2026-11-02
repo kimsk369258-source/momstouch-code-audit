@@ -6142,9 +6142,10 @@ async function renderProduction() {
   try {
     const [R, S] = await Promise.all([ledgerLoadMonthsCached(LEDGER_RECV, months), ledgerLoadMonthsCached(LEDGER_SOLD, months)]);
     const pack = packInfoMap();
-    const recvBy = {};
+    const recvBy = {}, rawBy = {};
     Object.values(R).forEach(o => Object.entries(o.byItem).forEach(([it, days]) => Object.entries(days).forEach(([d, q]) => {
       const a = actualRecvDate(d); (recvBy[it] = recvBy[it] || {})[a] = (recvBy[it][a] || 0) + q;
+      (rawBy[it] = rawBy[it] || {})[d] = (rawBy[it][d] || 0) + q;
     })));
     const items = [...new Set([...L.order, ...registeredOrderItems()])];
     const rows = items.map(item => {
@@ -6155,7 +6156,8 @@ async function renderProduction() {
       const rg = prodRange(item, T, rv, fc, L.gaps[item]);
       return { item, unit: pack[item]?.packUnit || '', fc, rg, target,
         min: rg.half != null ? Math.max(0, Math.round(target - rg.half)) : null,
-        max: rg.half != null ? Math.round(target + rg.half) : null, actualT: rv[T] || null };
+        max: rg.half != null ? Math.round(target + rg.half) : null, actualT: rv[T] || null,
+        actualNormal: (rawBy[item] || {})[T] || 0, actualAdd: cycleDays(T).slice(1).reduce((a, d) => a + ((rawBy[item] || {})[d] || 0), 0) };
     });
     // ── 판매 기준 추가 발주 제안: 매장별로 "판매 기반 필요량(권장 발주)"과 "평소 발주량(같은 요일
     // 최근 4회차 입고 평균)"을 비교해, 평소대로 주문하면 모자랄 매장들의 부족분을 더한다.
@@ -6213,7 +6215,8 @@ async function renderProduction() {
     html += `<tr><td>최대</td>${rows.map(r => `<td class="num">${r.noData || r.max == null ? '-' : fmtNum(r.max)}</td>`).join('')}</tr>`;
     html += `<tr style="background:#fef2f2;"><td>추가 발주 제안<br><span class="note">(판매 기준 부족분 합)</span></td>${rows.map(r => `<td class="num">${r.noData ? '-' : `<strong style="color:#b91c1c;">+${fmtNum(r.addSuggest)}</strong><div class="note">${fmtNum(r.coach.stores)}개 매장${r.calib?.raw != null ? ` · 보정 ×${r.calib.raw.toFixed(2)}` : ''}</div>`}</td>`).join('')}</tr>`;
     html += `<tr style="background:#eff6ff;"><td>제안 반영 타깃<br><span class="note">(타깃 + 제안 × ${Math.round(coachRate * 100)}%)</span></td>${rows.map(r => `<td class="num">${r.noData ? '-' : `<strong>${fmtNum(r.coachTarget)}</strong>`}</td>`).join('')}</tr>`;
-    if (past) html += `<tr style="background:#f9fafb;"><td>실제 입고</td>${rows.map(r => `<td class="num">${r.noData || r.actualT == null ? '-' : `${fmtNum(r.actualT)} <span class="note">(${r.min == null ? '' : r.actualT < r.min || r.actualT > r.max ? '범위 밖, ' : '범위 안, '}타깃 대비 ${r.actualT - r.target > 0 ? '+' : ''}${fmtNum(r.actualT - r.target)})</span>`}</td>`).join('')}</tr>`;
+    if (past) html += `<tr style="background:#f9fafb;"><td>정발주 / 추가발주</td>${rows.map(r => `<td class="num">${r.noData || r.actualT == null ? '-' : `${fmtNum(r.actualNormal)} / ${fmtNum(r.actualAdd)}`}</td>`).join('')}</tr>`;
+    if (past) html += `<tr style="background:#f9fafb;"><td>실제 입고(합계)</td>${rows.map(r => `<td class="num">${r.noData || r.actualT == null ? '-' : `${fmtNum(r.actualT)} <span class="note">(${r.min == null ? '' : r.actualT < r.min || r.actualT > r.max ? '범위 밖, ' : '범위 안, '}타깃 대비 ${r.actualT - r.target > 0 ? '+' : ''}${fmtNum(r.actualT - r.target)})</span>`}</td>`).join('')}</tr>`;
     html += '</tbody></table></div>';
     html += `<div class="note">추가 발주 제안 = 매장별 [판매 기반 필요량(권장 발주: 회차 예상 판매 + 안전재고 − 추정재고) − 평소 발주량(같은 요일 최근 회차 입고 평균)] 중 부족한 매장들의 합. 이 매장들에 발주 제안(코칭)을 하면 들어올 수 있는 추가 주문량이고, 그중 실제로 따라올 비율(코칭 반영률, 설정에서 변경)만큼을 "제안 반영 타깃"에 더했습니다. 매장 목록은 엑셀 "추가발주제안_매장별" 시트에 있습니다.</div>`;
     if (rows.some(r => r.noData)) html += `<div class="note">"-" 품목: 입고 실적이 없습니다 — 발주코드 매핑표에 그 품목의 발주코드를 등록하고 배송 원장을 다시 올리면 계산됩니다(${esc(rows.filter(r => r.noData).map(r => r.item).join(', '))}).</div>`;
@@ -6249,9 +6252,10 @@ async function computeProdAccuracy(n) {
   const from = addDaysStr(done[0], -112);
   const months = []; for (let m = from.slice(0, 7); m <= done[done.length - 1].slice(0, 7); m = addDaysStr(m + '-28', 5).slice(0, 7)) months.push(m);
   const R = await ledgerLoadMonthsCached(LEDGER_RECV, months);
-  const recvBy = {};
+  const recvBy = {}, rawBy = {}; // rawBy: 전산일 그대로(정발주 = 입고일 전산, 추가발주 = 회차 다음 날들 전산)
   Object.values(R).forEach(o => Object.entries(o.byItem).forEach(([it, days]) => Object.entries(days).forEach(([d, q]) => {
     const a = actualRecvDate(d); (recvBy[it] = recvBy[it] || {})[a] = (recvBy[it][a] || 0) + q;
+    (rawBy[it] = rawBy[it] || {})[d] = (rawBy[it][d] || 0) + q;
   })));
   const items = [...new Set([...L.order, ...registeredOrderItems()])].filter(it => recvBy[it]);
   const cycles = done.map(T => ({
@@ -6262,8 +6266,10 @@ async function computeProdAccuracy(n) {
       const target = Math.round(fc.target), half = L.gaps[it] > 0 ? L.gaps[it] / 2 : null;
       const min = half != null ? Math.max(0, Math.round(target - half)) : null, max = half != null ? Math.round(target + half) : null;
       const actual = rv[T] || 0;
+      const raw = rawBy[it] || {};
+      const normal = raw[T] || 0, add = cycleDays(T).slice(1).reduce((a, d) => a + (raw[d] || 0), 0);
       const res = min == null ? '-' : actual < min ? '▼' : actual > max ? '▲' : '○';
-      return [it, { target, min, max, actual, diff: actual - target, rate: target ? actual / target - 1 : null, res }];
+      return [it, { target, min, max, actual, normal, add, diff: actual - target, normalDiff: normal - target, rate: target ? actual / target - 1 : null, res }];
     })),
   }));
   const summary = items.map(it => {
@@ -6272,8 +6278,12 @@ async function computeProdAccuracy(n) {
     const rates = xs.filter(x => x.rate != null).map(x => x.rate);
     const mean = rates.length ? rates.reduce((a, b) => a + b, 0) / rates.length : null;
     const mae = rates.length ? rates.reduce((a, b) => a + Math.abs(b), 0) / rates.length : null;
+    const sumA = xs.reduce((a, x) => a + x.actual, 0), sumAdd = xs.reduce((a, x) => a + x.add, 0);
     return { it, n: xs.length, inR, under: xs.filter(x => x.res === '▲').length, over: xs.filter(x => x.res === '▼').length,
-      meanDiff: xs.length ? Math.round(xs.reduce((a, x) => a + x.diff, 0) / xs.length) : null, mean, mae };
+      meanDiff: xs.length ? Math.round(xs.reduce((a, x) => a + x.diff, 0) / xs.length) : null, mean, mae,
+      meanNormal: xs.length ? Math.round(xs.reduce((a, x) => a + x.normal, 0) / xs.length) : null,
+      meanAdd: xs.length ? Math.round(sumAdd / xs.length) : null, addShare: sumA ? sumAdd / sumA : null,
+      meanNormalDiff: xs.length ? Math.round(xs.reduce((a, x) => a + x.normalDiff, 0) / xs.length) : null };
   });
   return { cycles, items, summary, gaps: L.gaps };
 }
@@ -6287,11 +6297,11 @@ async function renderProdAccuracy() {
     accData = d;
     st.innerHTML = `<span class="pill pill-ok">✓ ${d.cycles.length}회차</span><span>${d.cycles[0].T} ~ ${d.cycles[d.cycles.length - 1].T} · 각 회차 확정일 시점 데이터로 예측 · ○ 범위 안 / ▲ 실제가 최대 초과(예측 부족) / ▼ 실제가 최소 미만(예측 과다)</span>`;
     // ① 요약
-    let html = '<div class="table-wrap"><table><thead><tr><th>품목</th><th class="num">비교 회차</th><th class="num">범위 안 ○</th><th class="num">예측 부족 ▲</th><th class="num">예측 과다 ▼</th><th class="num">평균 차이<br>(실제−타깃)</th><th class="num">평균 차이율</th><th class="num">평균 오차율<br>(절대값)</th><th>경향</th></tr></thead><tbody>';
+    let html = '<div class="table-wrap"><table><thead><tr><th>품목</th><th class="num">비교 회차</th><th class="num">범위 안 ○</th><th class="num">예측 부족 ▲</th><th class="num">예측 과다 ▼</th><th class="num">평균 차이<br>(실제−타깃)</th><th class="num">평균 차이율</th><th class="num">평균 오차율<br>(절대값)</th><th class="num">평균 정발주</th><th class="num">평균 추가발주<br>(비중)</th><th>경향</th></tr></thead><tbody>';
     d.summary.forEach(x => {
       const tend = x.mean == null ? '-' : Math.abs(x.mean) < 0.03 ? '균형' : x.mean > 0 ? '예측이 낮은 편(실제가 더 많음)' : '예측이 높은 편(실제가 더 적음)';
       html += `<tr><td><strong>${esc(x.it)}</strong></td><td class="num">${x.n}</td><td class="num"><strong>${x.inR}</strong> (${x.n ? Math.round(x.inR / x.n * 100) : 0}%)</td><td class="num">${x.under}</td><td class="num">${x.over}</td>
-        <td class="num">${x.meanDiff == null ? '-' : (x.meanDiff > 0 ? '+' : '') + fmtNum(x.meanDiff)}</td><td class="num">${x.mean == null ? '-' : (x.mean >= 0 ? '+' : '') + Math.round(x.mean * 100) + '%'}</td><td class="num">${x.mae == null ? '-' : Math.round(x.mae * 100) + '%'}</td><td>${tend}</td></tr>`;
+        <td class="num">${x.meanDiff == null ? '-' : (x.meanDiff > 0 ? '+' : '') + fmtNum(x.meanDiff)}</td><td class="num">${x.mean == null ? '-' : (x.mean >= 0 ? '+' : '') + Math.round(x.mean * 100) + '%'}</td><td class="num">${x.mae == null ? '-' : Math.round(x.mae * 100) + '%'}</td><td class="num">${fmtNum(x.meanNormal)}</td><td class="num">${fmtNum(x.meanAdd)} (${x.addShare == null ? '-' : Math.round(x.addShare * 100) + '%'})</td><td>${tend}</td></tr>`;
     });
     html += '</tbody></table></div>';
     // ② 회차 × 품목 (타깃 / 실제 / 결과)
@@ -6300,7 +6310,7 @@ async function renderProdAccuracy() {
       html += `<tr><td>${c.T.slice(5)}(${DOW_KO[dowOf(c.T)]})</td><td>${c.cd.slice(5)}(${DOW_KO[dowOf(c.cd)]})</td>` + d.items.map(it => {
         const x = c.items[it]; if (!x) return '<td class="num" style="border-left:2px solid #e5e7eb;">-</td><td></td><td></td>';
         const col = x.res === '○' ? '#047857' : x.res === '▲' ? '#b91c1c' : x.res === '▼' ? '#2563eb' : '#6b7280';
-        return `<td class="num" style="border-left:2px solid #e5e7eb;" title="범위 ${x.min ?? '-'} ~ ${x.max ?? '-'}">${fmtNum(x.target)}</td><td class="num">${fmtNum(x.actual)}</td><td class="num" style="color:${col}; font-weight:600;">${x.res} ${x.diff > 0 ? '+' : ''}${fmtNum(x.diff)}</td>`;
+        return `<td class="num" style="border-left:2px solid #e5e7eb;" title="범위 ${x.min ?? '-'} ~ ${x.max ?? '-'}">${fmtNum(x.target)}</td><td class="num" title="정발주 ${fmtNum(x.normal)} + 추가발주 ${fmtNum(x.add)}">${fmtNum(x.actual)}<div class="note" style="font-size:10px;">정 ${fmtNum(x.normal)} · 추 ${fmtNum(x.add)}</div></td><td class="num" style="color:${col}; font-weight:600;">${x.res} ${x.diff > 0 ? '+' : ''}${fmtNum(x.diff)}</td>`;
       }).join('') + '</tr>';
     });
     wrap.innerHTML = html + '</tbody></table></div>';
@@ -6312,27 +6322,28 @@ async function downloadProdAccuracy() {
   const wb = XLSX.utils.book_new();
   // 시트1: 한눈에 — 회차 × 품목(타깃·실제·차이·결과), 품목명은 2행 병합 머리글
   const head1 = ['입고 회차', '요일', '확정일'], head2 = ['', '', ''];
-  d.items.forEach(it => { head1.push(it, '', '', '', '', ''); head2.push('최소', '타깃', '최대', '실제', '차이(실제−타깃)', '결과'); });
+  const NC = 9;
+  d.items.forEach(it => { head1.push(it, ...Array(NC - 1).fill('')); head2.push('최소', '타깃', '최대', '정발주(입고일 전산)', '추가발주(다음날 전산)', '실제 합계', '정발주−타깃', '합계−타깃', '결과'); });
   const aoa = [head1, head2];
   d.cycles.slice().reverse().forEach(c => {
     const row = [c.T, DOW_KO[dowOf(c.T)], c.cd];
-    d.items.forEach(it => { const x = c.items[it]; row.push(...(x ? [x.min ?? '', x.target, x.max ?? '', x.actual, x.diff, x.res === '○' ? '○ 범위 안' : x.res === '▲' ? '▲ 예측 부족' : x.res === '▼' ? '▼ 예측 과다' : '-'] : ['', '', '', '', '', ''])); });
+    d.items.forEach(it => { const x = c.items[it]; row.push(...(x ? [x.min ?? '', x.target, x.max ?? '', x.normal, x.add, x.actual, x.normalDiff, x.diff, x.res === '○' ? '○ 범위 안' : x.res === '▲' ? '▲ 예측 부족' : x.res === '▼' ? '▼ 예측 과다' : '-'] : Array(NC).fill(''))); });
     aoa.push(row);
   });
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 1, c: 0 } }, { s: { r: 0, c: 1 }, e: { r: 1, c: 1 } }, { s: { r: 0, c: 2 }, e: { r: 1, c: 2 } },
-    ...d.items.map((_, i) => ({ s: { r: 0, c: 3 + i * 6 }, e: { r: 0, c: 3 + i * 6 + 5 } }))];
-  ws['!cols'] = [{ wch: 11 }, { wch: 5 }, { wch: 11 }, ...d.items.flatMap(() => [{ wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 12 }, { wch: 11 }])];
+    ...d.items.map((_, i) => ({ s: { r: 0, c: 3 + i * NC }, e: { r: 0, c: 3 + i * NC + NC - 1 } }))];
+  ws['!cols'] = [{ wch: 11 }, { wch: 5 }, { wch: 11 }, ...d.items.flatMap(() => [{ wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 9 }, { wch: 10 }, { wch: 9 }, { wch: 11 }])];
   ws['!freeze'] = { xSplit: 3, ySplit: 2 };
   XLSX.utils.book_append_sheet(wb, ws, '예측vs실제(회차별)');
   // 시트2: 품목 요약
-  const sum = [['품목', '비교 회차', '범위 안(○)', '범위 안 비율', '예측 부족(▲, 실제>최대)', '예측 과다(▼, 실제<최소)', '평균 차이(실제−타깃)', '평균 차이율', '평균 오차율(절대값)', '갭(최소~최대)']];
-  d.summary.forEach(x => sum.push([x.it, x.n, x.inR, x.n ? Math.round(x.inR / x.n * 100) + '%' : '', x.under, x.over, x.meanDiff ?? '', x.mean == null ? '' : Math.round(x.mean * 100) + '%', x.mae == null ? '' : Math.round(x.mae * 100) + '%', d.gaps[x.it] ?? '']));
+  const sum = [['품목', '비교 회차', '범위 안(○)', '범위 안 비율', '예측 부족(▲, 실제>최대)', '예측 과다(▼, 실제<최소)', '평균 차이(합계−타깃)', '평균 차이율', '평균 오차율(절대값)', '평균 정발주', '평균 추가발주', '추가발주 비중', '평균 차이(정발주−타깃)', '갭(최소~최대)']];
+  d.summary.forEach(x => sum.push([x.it, x.n, x.inR, x.n ? Math.round(x.inR / x.n * 100) + '%' : '', x.under, x.over, x.meanDiff ?? '', x.mean == null ? '' : Math.round(x.mean * 100) + '%', x.mae == null ? '' : Math.round(x.mae * 100) + '%', x.meanNormal ?? '', x.meanAdd ?? '', x.addShare == null ? '' : Math.round(x.addShare * 1000) / 10 + '%', x.meanNormalDiff ?? '', d.gaps[x.it] ?? '']));
   const ws2 = XLSX.utils.aoa_to_sheet(sum); ws2['!cols'] = [{ wch: 14 }, { wch: 9 }, { wch: 10 }, { wch: 11 }, { wch: 20 }, { wch: 20 }, { wch: 18 }, { wch: 11 }, { wch: 16 }, { wch: 13 }];
   XLSX.utils.book_append_sheet(wb, ws2, '품목별 정확도');
   // 시트3: 긴 형식(피벗·필터용)
-  const long = [['입고 회차', '요일', '확정일', '품목', '최소', '타깃', '최대', '실제', '차이', '차이율', '결과']];
-  d.cycles.forEach(c => d.items.forEach(it => { const x = c.items[it]; if (x) long.push([c.T, DOW_KO[dowOf(c.T)], c.cd, it, x.min ?? '', x.target, x.max ?? '', x.actual, x.diff, x.rate == null ? '' : Math.round(x.rate * 1000) / 10 + '%', x.res]); }));
+  const long = [['입고 회차', '요일', '확정일', '품목', '최소', '타깃', '최대', '정발주', '추가발주', '실제 합계', '정발주−타깃', '합계−타깃', '차이율(합계)', '결과']];
+  d.cycles.forEach(c => d.items.forEach(it => { const x = c.items[it]; if (x) long.push([c.T, DOW_KO[dowOf(c.T)], c.cd, it, x.min ?? '', x.target, x.max ?? '', x.normal, x.add, x.actual, x.normalDiff, x.diff, x.rate == null ? '' : Math.round(x.rate * 1000) / 10 + '%', x.res]); }));
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(long), '원자료(필터용)');
   XLSX.writeFile(wb, `생산예측_vs_실제발주_${d.cycles[0].T}_${d.cycles[d.cycles.length - 1].T}.xlsx`);
 }
@@ -6356,8 +6367,11 @@ function downloadProduction() {
     [`제안 반영 타깃(반영률 ${Math.round((prodMeta.coachRate ?? 0.5) * 100)}%)`, ...prodRows.map((r, i) => r.noData ? '' : Math.round(v[i].target + r.addSuggest * (prodMeta.coachRate ?? 0.5)))]];
   if (prodRows.some(r => !r.noData && r.actualT != null)) {
     aoa.push([],
-      ['실제 입고(정상+추가)', ...prodRows.map(r => r.noData || r.actualT == null ? '' : r.actualT)],
-      ['차이(실제 − 타깃)', ...prodRows.map((r, i) => r.noData || r.actualT == null ? '' : r.actualT - v[i].target)],
+      ['정발주(입고일 전산)', ...prodRows.map(r => r.noData || r.actualT == null ? '' : r.actualNormal)],
+      ['추가발주(다음날 전산)', ...prodRows.map(r => r.noData || r.actualT == null ? '' : r.actualAdd)],
+      ['실제 입고(합계)', ...prodRows.map(r => r.noData || r.actualT == null ? '' : r.actualT)],
+      ['차이(정발주 − 타깃)', ...prodRows.map((r, i) => r.noData || r.actualT == null ? '' : r.actualNormal - v[i].target)],
+      ['차이(합계 − 타깃)', ...prodRows.map((r, i) => r.noData || r.actualT == null ? '' : r.actualT - v[i].target)],
       ['차이율', ...prodRows.map((r, i) => r.noData || r.actualT == null || !v[i].target ? '' : `${r.actualT >= v[i].target ? '+' : ''}${Math.round((r.actualT / v[i].target - 1) * 100)}%`)],
       ['결과', ...prodRows.map((r, i) => r.noData || r.actualT == null ? '' : v[i].min === '' ? '-' : r.actualT < v[i].min ? '▼ 최소 미만' : r.actualT > v[i].max ? '▲ 최대 초과' : '○ 범위 안')]);
   }
