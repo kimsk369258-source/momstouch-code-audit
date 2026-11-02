@@ -6246,8 +6246,9 @@ async function computeProdAccuracy(n) {
   const L = await loadProdLimits();
   const recvDates = [...new Set(ordersIndex.filter(o => o.ledger).map(o => actualRecvDate(o.date)))].sort();
   const today = formatDate(new Date());
-  // 추가발주 전산일(회차 마지막 날)까지 지난 회차만 = 실적 확정
-  const done = recvDates.filter(t => [2, 4, 6].includes(dowOf(t)) && cycleDays(t)[cycleDays(t).length - 1] < today).slice(-n);
+  // 입고일이 오늘까지 지났고 정발주 데이터가 올라온 회차는 모두 비교한다. 추가발주 전산일(회차 마지막 날)이
+  // 아직 안 지났으면 "추가발주 집계 중"으로 표시(예: 토 입고 회차는 일·월 전산 추가발주까지 반영돼야 확정).
+  const done = recvDates.filter(t => [2, 4, 6].includes(dowOf(t)) && t <= today).slice(-n);
   if (!done.length) return null;
   const from = addDaysStr(done[0], -112);
   const months = []; for (let m = from.slice(0, 7); m <= done[done.length - 1].slice(0, 7); m = addDaysStr(m + '-28', 5).slice(0, 7)) months.push(m);
@@ -6259,7 +6260,7 @@ async function computeProdAccuracy(n) {
   })));
   const items = [...new Set([...L.order, ...registeredOrderItems()])].filter(it => recvBy[it]);
   const cycles = done.map(T => ({
-    T, cd: confirmDateOf(T),
+    T, cd: confirmDateOf(T), pending: cycleDays(T)[cycleDays(T).length - 1] >= today,
     items: Object.fromEntries(items.map(it => {
       const rv = recvBy[it], fc = forecastProd(it, T, rv);
       if (!fc) return [it, null];
@@ -6307,7 +6308,7 @@ async function renderProdAccuracy() {
     // ② 회차 × 품목 (타깃 / 실제 / 결과)
     html += '<div class="table-wrap" style="margin-top:10px;"><table><thead><tr><th rowspan="2">입고 회차</th><th rowspan="2">확정일</th>' + d.items.map(it => `<th colspan="3" style="text-align:center; border-left:2px solid #e5e7eb;">${esc(it)}</th>`).join('') + '</tr><tr>' + d.items.map(() => '<th class="num" style="border-left:2px solid #e5e7eb;">타깃</th><th class="num">실제</th><th class="num">차이</th>').join('') + '</tr></thead><tbody>';
     d.cycles.slice().reverse().forEach(c => {
-      html += `<tr><td>${c.T.slice(5)}(${DOW_KO[dowOf(c.T)]})</td><td>${c.cd.slice(5)}(${DOW_KO[dowOf(c.cd)]})</td>` + d.items.map(it => {
+      html += `<tr${c.pending ? ' style="background:#fffbeb;"' : ''}><td>${c.T.slice(5)}(${DOW_KO[dowOf(c.T)]})${c.pending ? '<div class="note" style="color:#b45309;">추가발주 집계 중</div>' : ''}</td><td>${c.cd.slice(5)}(${DOW_KO[dowOf(c.cd)]})</td>` + d.items.map(it => {
         const x = c.items[it]; if (!x) return '<td class="num" style="border-left:2px solid #e5e7eb;">-</td><td></td><td></td>';
         const col = x.res === '○' ? '#047857' : x.res === '▲' ? '#b91c1c' : x.res === '▼' ? '#2563eb' : '#6b7280';
         return `<td class="num" style="border-left:2px solid #e5e7eb;" title="범위 ${x.min ?? '-'} ~ ${x.max ?? '-'}">${fmtNum(x.target)}</td><td class="num" title="정발주 ${fmtNum(x.normal)} + 추가발주 ${fmtNum(x.add)}">${fmtNum(x.actual)}<div class="note" style="font-size:10px;">정 ${fmtNum(x.normal)} · 추 ${fmtNum(x.add)}</div></td><td class="num" style="color:${col}; font-weight:600;">${x.res} ${x.diff > 0 ? '+' : ''}${fmtNum(x.diff)}</td>`;
@@ -6326,7 +6327,7 @@ async function downloadProdAccuracy() {
   d.items.forEach(it => { head1.push(it, ...Array(NC - 1).fill('')); head2.push('최소', '타깃', '최대', '정발주(입고일 전산)', '추가발주(다음날 전산)', '실제 합계', '정발주−타깃', '합계−타깃', '결과'); });
   const aoa = [head1, head2];
   d.cycles.slice().reverse().forEach(c => {
-    const row = [c.T, DOW_KO[dowOf(c.T)], c.cd];
+    const row = [c.pending ? `${c.T} (추가발주 집계 중)` : c.T, DOW_KO[dowOf(c.T)], c.cd];
     d.items.forEach(it => { const x = c.items[it]; row.push(...(x ? [x.min ?? '', x.target, x.max ?? '', x.normal, x.add, x.actual, x.normalDiff, x.diff, x.res === '○' ? '○ 범위 안' : x.res === '▲' ? '▲ 예측 부족' : x.res === '▼' ? '▼ 예측 과다' : '-'] : Array(NC).fill(''))); });
     aoa.push(row);
   });
