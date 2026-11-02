@@ -6246,8 +6246,8 @@ async function computeProdAccuracy(n) {
   const L = await loadProdLimits();
   const recvDates = [...new Set(ordersIndex.filter(o => o.ledger).map(o => actualRecvDate(o.date)))].sort();
   const today = formatDate(new Date());
-  // 입고일이 오늘까지 지났고 정발주 데이터가 올라온 회차는 모두 비교한다. 추가발주 전산일(회차 마지막 날)이
-  // 아직 안 지났으면 "추가발주 집계 중"으로 표시(예: 토 입고 회차는 일·월 전산 추가발주까지 반영돼야 확정).
+  // 입고일이 오늘까지 지났고 정발주 데이터가 올라온 회차는 모두 비교한다. 추가발주는 전산에 반영된 만큼
+  // (예: 토 입고 회차 → 일·월 전산분) 그 회차 실제에 합산한다.
   const done = recvDates.filter(t => [2, 4, 6].includes(dowOf(t)) && t <= today).slice(-n);
   if (!done.length) return null;
   const from = addDaysStr(done[0], -112);
@@ -6260,7 +6260,7 @@ async function computeProdAccuracy(n) {
   })));
   const items = [...new Set([...L.order, ...registeredOrderItems()])].filter(it => recvBy[it]);
   const cycles = done.map(T => ({
-    T, cd: confirmDateOf(T), pending: cycleDays(T)[cycleDays(T).length - 1] >= today,
+    T, cd: confirmDateOf(T), pending: false, // 추가발주(일·월 전산 등)는 원장에 올라와 있으면 그대로 그 회차에 합산
     items: Object.fromEntries(items.map(it => {
       const rv = recvBy[it], fc = forecastProd(it, T, rv);
       if (!fc) return [it, null];
