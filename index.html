@@ -178,7 +178,8 @@
   <div class="card">
     <h2>🔒 팀 비밀번호 로그인</h2>
     <div class="card-sub">상품코드 대조 대시보드에 접근하려면 팀 공용 비밀번호를 입력하세요.</div>
-    <input type="password" id="loginPassword" placeholder="비밀번호" class="search-input" style="width:100%; margin-bottom:10px;" onkeydown="if(event.key==='Enter') doLogin();">
+    <input type="email" id="loginEmail" placeholder="개인 계정 이메일(선택 — 비우면 팀 공용 계정)" class="search-input" style="width:100%; margin-bottom:8px;" autocomplete="username">
+    <input type="password" id="loginPassword" placeholder="비밀번호" class="search-input" style="width:100%; margin-bottom:10px;" autocomplete="current-password" onkeydown="if(event.key==='Enter') doLogin();">
     <button class="btn btn-primary" style="width:100%;" onclick="doLogin()">로그인</button>
     <div id="loginError" class="status-line" style="margin-top:10px;"></div>
   </div>
@@ -6684,14 +6685,16 @@ function setupMultiDropZone(zoneId, inputId, onFiles) {
 // ==========================================================================
 async function doLogin() {
   const pw = document.getElementById('loginPassword').value;
+  // 개인 계정: Firebase 콘솔 > Authentication > 사용자에 추가한 이메일로 로그인. 비우면 팀 공용 계정.
+  const email = (document.getElementById('loginEmail')?.value || '').trim() || TEAM_EMAIL;
   const errEl = document.getElementById('loginError');
   errEl.innerHTML = '';
   if (!pw) return;
   try {
-    await signInWithEmailAndPassword(auth, TEAM_EMAIL, pw);
+    await signInWithEmailAndPassword(auth, email, pw);
     // onAuthStateChanged handles showing the app
   } catch (e) {
-    errEl.innerHTML = `<span class="pill pill-bad">✗ 로그인 실패</span><span>비밀번호가 올바르지 않습니다.</span>`;
+    errEl.innerHTML = `<span class="pill pill-bad">✗ 로그인 실패</span><span>이메일 또는 비밀번호가 올바르지 않습니다.</span>`;
   }
 }
 
