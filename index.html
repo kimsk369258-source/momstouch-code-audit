@@ -4468,10 +4468,18 @@ function renderPendingOrders() {
       <button class="btn btn-ghost btn-sm" onclick="cancelPendingOrders()">취소</button></span>
     </div>
     <div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>전산 배송일자</th><th>실제 입고</th><th class="num">매장수</th><th class="num">품목수</th><th class="num">배송량(포장 합)</th><th>상태</th></tr></thead><tbody>`;
-  dates.forEach(d => {
+  monthRerender.pendingOrders = renderPendingOrders;
+  dates.forEach(d => { if (saved.has(d)) over++; });
+  const qtyOf = d => Object.values(pendingOrders.byDate[d]).reduce((a, e) => a + e.qty, 0);
+  html += monthGroupRows('pendingOrders', dates.slice().reverse(), d => d, 6, list => [
+    `<td class="note">정발주 ${list.filter(d => !isAdditionalRecv(d)).length}회 · 추가발주 ${list.filter(d => isAdditionalRecv(d)).length}일</td>`,
+    `<td class="num">${fmtNum(Math.max(...list.map(d => new Set(Object.values(pendingOrders.byDate[d]).map(e => e.storeCode)).size)))}</td>`, '<td></td>',
+    `<td class="num">${fmtNum(list.reduce((a, d) => a + qtyOf(d), 0))}</td>`,
+    `<td>${list.some(d => saved.has(d)) ? `<span class="pill pill-warn">덮어쓰기 ${list.filter(d => saved.has(d)).length}일</span>` : '<span class="pill pill-ok">신규</span>'}</td>`,
+  ], d => {
     const es = Object.values(pendingOrders.byDate[d]);
-    const isOver = saved.has(d); if (isOver) over++;
-    html += `<tr><td><strong>${d}</strong> (${DOW_KO[dowOf(d)]})</td><td>${isAdditionalRecv(d) ? `<span class="pill pill-warn">${esc(recvDateLabel(d))}</span>` : esc(recvDateLabel(d))}</td>
+    const isOver = saved.has(d);
+    return `<tr><td><strong>${d}</strong> (${DOW_KO[dowOf(d)]})</td><td>${isAdditionalRecv(d) ? `<span class="pill pill-warn">${esc(recvDateLabel(d))}</span>` : esc(recvDateLabel(d))}</td>
       <td class="num">${fmtNum(new Set(es.map(e => e.storeCode)).size)}</td><td class="num">${fmtNum(new Set(es.map(e => e.orderItem)).size)}</td>
       <td class="num">${fmtNum(es.reduce((a, e) => a + e.qty, 0))}</td>
       <td>${isOver ? '<span class="pill pill-warn">이미 저장됨 → 덮어쓰기</span>' : '<span class="pill pill-ok">신규</span>'}</td></tr>`;
@@ -4579,17 +4587,48 @@ async function loadOrdersIndex() {
   populateStockStoreSelect();
 }
 
+// ==========================================================================
+// 월 단위 접기 — 날짜별로 길게 늘어나는 표를 "월 합계 줄"로 묶고, 누르면 그 달 날짜들이 펼쳐진다.
+// 기본은 가장 최근 달만 펼침. 표마다 펼친 달을 기억한다.
+// ==========================================================================
+const monthOpen = {}, monthRerender = {};
+function monthGroupRows(tableId, items, getDate, cols, summaryCells, rowHtml) {
+  const groups = new Map();
+  items.forEach(x => { const d = getDate(x); const ym = /^\d{4}-\d{2}/.test(d) ? d.slice(0, 7) : '기타'; if (!groups.has(ym)) groups.set(ym, []); groups.get(ym).push(x); });
+  const yms = [...groups.keys()].sort((a, b) => b.localeCompare(a));
+  if (!monthOpen[tableId]) monthOpen[tableId] = new Set(yms.slice(0, 1));
+  let html = '';
+  yms.forEach(ym => {
+    const list = groups.get(ym), open = monthOpen[tableId].has(ym);
+    const label = ym === '기타' ? '기타' : `${ym.slice(0, 4)}년 ${Number(ym.slice(5))}월`;
+    html += `<tr style="background:#f3f4f6; cursor:pointer; font-weight:600;" onclick="toggleMonthGroup('${tableId}','${ym}')"><td>${open ? '▼' : '▶'} ${label} <span class="note" style="font-weight:400;">${list.length}건</span></td>${summaryCells(list).join('')}</tr>`;
+    if (open) list.forEach(x => { html += rowHtml(x); });
+  });
+  return html;
+}
+function toggleMonthGroup(tableId, ym) {
+  const set = monthOpen[tableId] || (monthOpen[tableId] = new Set());
+  set.has(ym) ? set.delete(ym) : set.add(ym);
+  if (monthRerender[tableId]) monthRerender[tableId]();
+}
+function monthToggleAll(tableId, open, yms) {
+  monthOpen[tableId] = new Set(open ? yms : []);
+  if (monthRerender[tableId]) monthRerender[tableId]();
+}
+
 function renderOrderHistoryTable() {
   const table = document.getElementById('orderHistoryTable');
   if (!table) return;
+  monthRerender.orderHistoryTable = renderOrderHistoryTable;
   const sorted = [...ordersIndex].sort((a,b) => b.date.localeCompare(a.date));
   let html = '<thead><tr><th>전산 배송일자</th><th>실제 입고</th><th>파일명</th><th class="num">매장수</th><th class="num">품목수</th><th class="num">총 배송량</th><th></th></tr></thead><tbody>';
   if (sorted.length === 0) {
     html += `<tr><td colspan="7"><div class="empty">저장된 발주 이력이 없습니다.</div></td></tr>`;
   } else {
-    sorted.forEach(d => {
+    const cum = sorted.filter(d => d.date === '_cumulative_'), dated = sorted.filter(d => d.date !== '_cumulative_');
+    const row = d => {
       const dateLabel = d.date === '_cumulative_' ? '📦 누적(날짜없음)' : d.date;
-      html += `<tr>
+      let h = `<tr>
         <td><strong>${esc(dateLabel)}</strong></td>
         <td>${d.ledger ? (isAdditionalRecv(d.date) ? `<span class="pill pill-warn">${esc(recvDateLabel(d.date))}</span>` : esc(recvDateLabel(d.date))) : '-'}</td>
         <td>${esc(d.fileName||'-')}</td>
@@ -4598,7 +4637,14 @@ function renderOrderHistoryTable() {
         <td class="num">${fmtNum(d.totalQty)}</td>
         <td><button class="btn btn-danger btn-sm" onclick="deleteOrderDay('${d.date}', ${d.ledger ? 'true' : 'false'})">삭제</button></td>
       </tr>`;
-    });
+      return h;
+    };
+    cum.forEach(d => { html += row(d); });
+    // 월 합계 줄: 입고 회차 수(정발주일)·추가발주 일수·총 배송량
+    html += monthGroupRows('orderHistoryTable', dated, d => d.date, 7, list => {
+      const normal = list.filter(d => d.ledger && !isAdditionalRecv(d.date)).length, add = list.length - normal;
+      return [`<td class="note">정발주 ${normal}회 · 추가발주 ${add}일</td>`, '<td></td>', `<td class="num">${fmtNum(Math.max(...list.map(d => d.storeCount || 0)))}</td>`, '<td></td>', `<td class="num">${fmtNum(list.reduce((a, d) => a + (d.totalQty || 0), 0))}</td>`, '<td></td>'];
+    }, row);
   }
   html += '</tbody>';
   table.innerHTML = html;
@@ -4820,16 +4866,26 @@ async function renderStockTable() {
     html += '<details style="margin-top:8px;" open><summary style="cursor:pointer; font-size:13px;">일자별 입고·판매·추정재고</summary><div class="table-wrap"><table><thead><tr><th>날짜</th>'
       + items.map(it => `<th class="num">${esc(it)} 입고(개)</th><th class="num">${esc(it)} 판매(개)</th><th class="num">${esc(it)} 추정재고</th>`).join('') + '<th>판매 기록</th></tr></thead><tbody>';
     const balNow = {}; items.forEach(it => { balNow[it] = 0; });
+    // 날짜순으로 잔고를 먼저 계산해 두고, 표는 월 단위로 접어 보여준다(월 줄 = 그 달 입고·판매 합계와 월말 재고)
+    const dayVals = {};
     days.forEach(d => {
-      let cells = '';
+      dayVals[d] = {};
       items.forEach(it => {
         const ru = toUnits(it, (recv.byItem[it] || {})[d] || 0), sq = (sold.byItem[it] || {})[d] || 0;
         const capIt = (rowsOut.find(r => r.item === it) || {}).cap ?? Infinity;
         balNow[it] = Math.min(capIt, Math.max(0, balNow[it] + ru - sq));
-        cells += `<td class="num">${ru ? fmtNum(ru) : '-'}</td><td class="num">${fmtNum(sq)}</td><td class="num">${fmtNum(balNow[it])}</td>`;
+        dayVals[d][it] = { ru, sq, bal: balNow[it] };
       });
+    });
+    monthRerender.stockDaily = () => renderStockTable();
+    html += monthGroupRows('stockDaily', days.slice().reverse(), d => d, 0, list => {
+      const last = list[0]; // 내림차순이라 첫 날이 그 달 마지막 날
+      return [...items.flatMap(it => [`<td class="num">${fmtNum(list.reduce((a, d) => a + dayVals[d][it].ru, 0))}</td>`, `<td class="num">${fmtNum(list.reduce((a, d) => a + dayVals[d][it].sq, 0))}</td>`, `<td class="num">${fmtNum(dayVals[last][it].bal)}</td>`]),
+        `<td>${list.filter(d => !(storeSoldDays.has(d) && salesDaySet.has(d))).length ? `<span class="pill pill-bad">없음 ${list.filter(d => !(storeSoldDays.has(d) && salesDaySet.has(d))).length}일</span>` : '있음'}</td>`];
+    }, d => {
       const has = storeSoldDays.has(d) && salesDaySet.has(d);
-      html += `<tr${has ? '' : ' style="background:#fef2f2;"'}><td>${d.slice(5)}(${DOW_KO[dowOf(d)]})</td>${cells}<td>${has ? '있음' : '<span class="pill pill-bad">없음</span>'}</td></tr>`;
+      const cells = items.map(it => { const v = dayVals[d][it]; return `<td class="num">${v.ru ? fmtNum(v.ru) : '-'}</td><td class="num">${fmtNum(v.sq)}</td><td class="num">${fmtNum(v.bal)}</td>`; }).join('');
+      return `<tr${has ? '' : ' style="background:#fef2f2;"'}><td>${d.slice(5)}(${DOW_KO[dowOf(d)]})</td>${cells}<td>${has ? '있음' : '<span class="pill pill-bad">없음</span>'}</td></tr>`;
     });
     html += '</tbody></table></div></details>';
     wrap.innerHTML = html;
@@ -6737,7 +6793,7 @@ Object.assign(window, {
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
   deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, checkSoldDetail, backfillSoldLedger,
-  filterStockStores, pickFirstStockStore, setHistMonth, setPromoMonth, findMissingMenus, renderProdAccuracy, downloadProdAccuracy, downloadDailySold, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, measureAllPastPromos, togglePromoFormType, measureLaunch, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
+  filterStockStores, pickFirstStockStore, toggleMonthGroup, monthToggleAll, setHistMonth, setPromoMonth, findMissingMenus, renderProdAccuracy, downloadProdAccuracy, downloadDailySold, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, measureAllPastPromos, togglePromoFormType, measureLaunch, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
   addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
