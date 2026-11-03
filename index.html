@@ -326,7 +326,14 @@
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
         <h2>대조 이력</h2>
         <div style="display:flex; gap:6px;">
-          <button class="btn btn-primary btn-sm" onclick="reclassifyAllHistory()">🔄 전체 재분류(최신 기준표 반영)</button>
+          <span style="display:inline-flex; align-items:center; gap:4px; flex-wrap:wrap;">
+            <input type="month" id="reclsFrom" class="search-input" style="flex:none; width:150px;" title="재분류 시작 월"> ~
+            <input type="month" id="reclsTo" class="search-input" style="flex:none; width:150px;" title="재분류 끝 월">
+            <button class="btn btn-ghost btn-sm" onclick="setReclsRange('month')" title="이력에서 보고 있는 달">보는 달</button>
+            <button class="btn btn-ghost btn-sm" onclick="setReclsRange('year')" title="이력에서 보고 있는 연도">보는 연도</button>
+            <button class="btn btn-ghost btn-sm" onclick="setReclsRange('all')">전체</button>
+            <button class="btn btn-primary btn-sm" onclick="reclassifyAllHistory()">🔄 선택 기간 재분류(최신 기준표 반영)</button>
+          </span>
           <button class="btn btn-danger btn-sm" onclick="resetAllHistory()">전체 이력 삭제</button>
         </div>
       </div>
@@ -3415,12 +3422,27 @@ async function reclassifyOneDateSilently(date) {
   return { oldCount: oldReport ? oldReport.anomalyCount : null, newCount: newReport.anomalies.length };
 }
 
+// 재분류 기간 빠른 선택: 이력에서 보고 있는 달·연도, 또는 전체(저장된 첫 달~마지막 달)
+function setReclsRange(kind) {
+  const f = document.getElementById('reclsFrom'), t = document.getElementById('reclsTo');
+  const months = [...new Set(dailyIndex.map(d => d.date.slice(0, 7)))].sort();
+  if (!months.length) return;
+  const y = document.getElementById('histYear')?.value || months[months.length - 1].slice(0, 4);
+  if (kind === 'month') { const m = histMonthSel && histMonthSel !== 'all' ? histMonthSel : months[months.length - 1]; f.value = m; t.value = m; }
+  else if (kind === 'year') { const ys = months.filter(m => m.startsWith(y)); f.value = ys[0] || `${y}-01`; t.value = ys[ys.length - 1] || `${y}-12`; }
+  else { f.value = months[0]; t.value = months[months.length - 1]; }
+}
 async function reclassifyAllHistory() {
   const statusEl = document.getElementById('reclassifyAllStatus');
   if (dailyIndex.length === 0) { alert('저장된 이력이 없습니다.'); return; }
-  if (!confirm(`저장된 ${dailyIndex.length}개 날짜를 전부 최신 기준표로 다시 계산합니다. 시간이 좀 걸릴 수 있습니다. 계속할까요?`)) return;
+  const fEl = document.getElementById('reclsFrom'), tEl = document.getElementById('reclsTo');
+  if (!fEl.value || !tEl.value) setReclsRange('month'); // 기본: 이력에서 보고 있는 달
+  let from = fEl.value, to = tEl.value; if (from > to) [from, to] = [to, from];
+  const dates = [...dailyIndex].map(d => d.date).filter(d => d.slice(0, 7) >= from && d.slice(0, 7) <= to).sort();
+  if (!dates.length) { alert(`${from} ~ ${to} 기간에 저장된 날짜가 없습니다.`); return; }
+  const label = from === to ? `${from.slice(0, 4)}년 ${Number(from.slice(5))}월` : `${from} ~ ${to}`;
+  if (!confirm(`${label} 저장 날짜 ${dates.length}개를 최신 기준표로 다시 계산합니다(약 ${Math.max(1, Math.round(dates.length * 0.5))}분 이상 걸릴 수 있음). 계속할까요?`)) return;
 
-  const dates = [...dailyIndex].sort((a, b) => a.date.localeCompare(b.date)).map(d => d.date);
   let done = 0, failed = [];
   for (const date of dates) {
     statusEl.innerHTML = `<div class="note">재분류 중... (${done + 1}/${dates.length}) ${date}</div>`;
@@ -3436,7 +3458,7 @@ async function reclassifyAllHistory() {
   document.getElementById('historyDetail').innerHTML = '';
 
   const failNote = failed.length > 0 ? ` · 실패 ${failed.length}건(${failed.join(', ')}) — 합본 파일이 저장 안 된 날짜일 수 있습니다.` : '';
-  statusEl.innerHTML = `<div class="status-line"><span class="pill ${failed.length > 0 ? 'pill-bad' : 'pill-ok'}">${failed.length > 0 ? '⚠ 일부 완료' : '✓ 완료'}</span><span>${done}/${dates.length}개 날짜 재분류 완료${failNote}</span></div>`;
+  statusEl.innerHTML = `<div class="status-line"><span class="pill ${failed.length > 0 ? 'pill-bad' : 'pill-ok'}">${failed.length > 0 ? '⚠ 일부 완료' : '✓ 완료'}</span><span>${label} · ${done}/${dates.length}개 날짜 재분류 완료${failNote}</span></div>`;
 }
 
 async function reclassifyAndRedownload(date, btnEl) {
@@ -3599,7 +3621,7 @@ function renderTrendChart() {
 
 // 연도 선택 + 월 버튼(그 달 저장 날짜 수 표시)으로 보고 싶은 달만 펼친다. 기본은 가장 최근 달.
 let histMonthSel = '';
-function setHistMonth(m) { histMonthSel = m; renderHistoryTable(); }
+function setHistMonth(m) { histMonthSel = m; renderHistoryTable(); try { setReclsRange('month'); } catch (e) {} }
 function setPromoMonth(m) { promoMonthSel = m; renderPromoList(); }
 function histMonthButton(ym, list, active) {
   const days = list.filter(d => !isMonthKey(d.date)).length, bad = list.filter(d => d.status !== 'ok').length;
@@ -6793,7 +6815,7 @@ Object.assign(window, {
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
   deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, checkSoldDetail, backfillSoldLedger,
-  filterStockStores, pickFirstStockStore, toggleMonthGroup, monthToggleAll, setHistMonth, setPromoMonth, findMissingMenus, renderProdAccuracy, downloadProdAccuracy, downloadDailySold, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, measureAllPastPromos, togglePromoFormType, measureLaunch, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
+  filterStockStores, pickFirstStockStore, setReclsRange, toggleMonthGroup, monthToggleAll, setHistMonth, setPromoMonth, findMissingMenus, renderProdAccuracy, downloadProdAccuracy, downloadDailySold, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, measureAllPastPromos, togglePromoFormType, measureLaunch, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
   addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
