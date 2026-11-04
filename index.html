@@ -312,7 +312,18 @@
     </div>
 
     <div id="dailyResults"></div>
-  </section>
+      <div class="card">
+      <h2>채널별(내점·포장·배달) 매출분석 파일 분류 붙이기</h2>
+      <div class="card-sub">사업전략팀 "매출분석" 파일(내점·포장·배달 등)을 올리면, 현재 기준표(①)로 각 행의 분류를 찾아 올린 파일들을 <strong>하나의 합본</strong>으로 합칩니다: <strong>A열 매출일자 · B열 요일</strong>(파일 2행 날짜 또는 파일명 조회기간 기준), C~S열 원본, <strong>T열 채널</strong>(파일명의 내점·포장·배달), <strong>U~Z열 매출 분류 · 기준표 분류 · 세부구분1 · 세부구분2 · 세부구분 보정값 · 발주품목</strong>. 머리글은 1행, 소계·합계 행은 제외합니다. 여러 날짜 파일을 함께 올리면 날짜별로 이어 붙입니다. 상품코드(G열)로 기준표 상품코드와 맞추며, 세트 구성품 행(상품명이 "▶"로 시작)은 이 파일에서 G열이 구성품 코드라 기준표의 사이드상품코드와 맞춥니다.</div>
+      <div class="drop-zone" id="chanDropZone" style="margin-top:10px;">
+        <div class="dz-icon">📊</div>
+        <div class="dz-text">매출분석 파일(내점/포장/배달) 여러 개를 여기로 드래그하거나 클릭</div>
+        <div class="dz-hint">파일명에 내점·포장·배달이 들어 있어야 합니다 · 하루치 파일 기준 · "채널합본.csv"(A 매출일자 · B 요일 · T 채널 · U~Z 분류)로 내려받아집니다</div>
+      </div>
+      <input type="file" id="chanFileInput" accept=".xlsx,.xls,.csv" multiple style="display:none;">
+      <div id="chanStatus" style="margin-top:8px;"></div>
+    </div>
+</section>
 
   <!-- ===================== TAB 3: 이력 ===================== -->
   <section class="panel" id="panel-history">
@@ -4458,6 +4469,7 @@ async function handleOrderDataFile(file) {
   }
 }
 setupDropZone('snapDropZone', 'snapFileInput', handleSnapshotFile);
+setupMultiDropZone('chanDropZone', 'chanFileInput', files => handleChannelFiles([...files]));
 setupMultiDropZone('orderDataDropZone', 'orderDataFileInput', async files => {
   const list = [...files]; // 입력칸 초기화 전에 목록을 복사
   for (const f of list) await handleOrderDataFile(f);
@@ -5863,6 +5875,90 @@ async function findMissingMenus() {
       + '</tbody></table></div><div class="note">실제로 ' + esc(item) + '를 쓰는 상품이면 기준표에서 세부구분1을 "' + esc(item) + '"(필요하면 보정값)로 고친 뒤 ① 탭 "합치기"로 올리고 재분류하세요. 이름만 비슷하고 해당 계육을 안 쓰는 상품은 무시하면 됩니다.</div>';
   } catch (err) { st.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)} (그 날짜 합본이 저장되어 있는지 확인)</span>`; }
   finally { heavyJob = null; }
+}
+
+// ==========================================================================
+// 채널별 매출분석 파일에 기준표 분류(K~P열 → R~W열) 붙이기
+//  · 일반 상품 행: G(상품코드) = 기준표 상품코드 & 사이드상품코드 빈칸인 행
+//  · 세트 구성품 행(상품명 "ㅤ- ▶ …"): 이 파일 G열은 구성품 코드 → 기준표 사이드상품코드로 찾음
+//  · 같은 코드에 기준표 행이 여러 개면 가장 많이 쓰인 분류 조합을 쓴다
+// ==========================================================================
+const CHAN_TAIL = ['매출 분류', '기준표 분류', '세부구분1', '세부구분2', '세부구분 보정값', '발주품목'];
+function buildChannelLookup() {
+  const rows = masterRowsForExport();
+  const prod = new Map(), side = new Map(), anyp = new Map();
+  const push = (m, k, v) => { if (!k) return; const o = m.get(k) || new Map(); const key = v.join('\u0001'); o.set(key, (o.get(key) || 0) + 1); m.set(k, o); };
+  rows.forEach(r => {
+    const pc = normCode(r[6]), sc = normCode(r[7]);
+    const v = [r[10] ?? '', r[11] ?? '', r[12] ?? '', r[13] ?? '', r[14] ?? '', r[15] ?? ''].map(x => String(x ?? ''));
+    if (pc && !sc) push(prod, pc, v);
+    if (sc) push(side, sc, v);
+    if (pc) push(anyp, pc, v);
+  });
+  const best = o => { let bk = null, bn = -1; o.forEach((n, k) => { if (n > bn) { bn = n; bk = k; } }); return { v: bk.split('\u0001'), amb: o.size > 1 }; };
+  return (code, name) => {
+    const k = normCode(code); if (!k) return null;
+    const compo = /^[\sㅤ]*[-▶]/.test(String(name || ''));
+    if (compo && side.has(k)) return { ...best(side.get(k)), how: '구성품' };
+    if (prod.has(k)) return { ...best(prod.get(k)), how: '상품' };
+    if (side.has(k)) return { ...best(side.get(k)), how: '구성품' };
+    if (anyp.has(k)) return { ...best(anyp.get(k)), how: '상품(세트 행)' };
+    return null;
+  };
+}
+function channelOfFile(name) { return /내점/.test(name) ? '내점' : /포장/.test(name) ? '포장' : /배달/.test(name) ? '배달' : ''; }
+// 여러 파일(내점·포장·배달)을 한 합본으로 합친다: A~Q 원본 그대로, R = 채널(파일명 기준), S~X = 기준표 분류.
+// 소계·합계 행(상품코드 없음)은 합본에서 빼서, 합본을 바로 피벗해도 매출이 중복되지 않게 한다.
+// 20만 행이 넘을 수 있어(엑셀 변환 한계) CSV로 내려받는다 — 엑셀에서 그대로 열린다.
+async function handleChannelFiles(files) {
+  const st = document.getElementById('chanStatus');
+  if (!masterRowsForExport().length) { st.innerHTML = '<span class="pill pill-warn">기준표가 없습니다. ① 탭에서 먼저 올려주세요.</span>'; return; }
+  const lookup = buildChannelLookup();
+  let html = ''; let header1 = null, header2 = null, width = 0; const outRows = []; const missAll = new Map(); const dates = new Set();
+  for (const file of [...files]) {
+    const ch = channelOfFile(file.name);
+    if (!ch) { html += `<div class="status-line"><span class="pill pill-warn">건너뜀</span><span>${esc(file.name)} — 파일명에 "내점·포장·배달"이 없어 채널을 알 수 없습니다.</span></div>`; st.innerHTML = html; continue; }
+    st.innerHTML = html + `<div class="status-line"><span class="pill pill-neutral">처리 중</span><span>${esc(file.name)} (${ch})</span></div>`;
+    try {
+      const json = await readWorkbook(file);
+      const hdr = (json[0] || []).map(String);
+      const gIdx = hdr.findIndex(h => h.replace(/\s/g, '') === '상품코드'), hIdx = hdr.findIndex(h => h.replace(/\s/g, '') === '상품명');
+      const G = gIdx >= 0 ? gIdx : 6, H = hIdx >= 0 ? hIdx : 7;
+      if (!header1) { width = Math.max(17, ...json.slice(0, 3).map(r => r.length)); header1 = hdr; header2 = (json[1] || []).map(v => v instanceof Date ? formatDate(v) : v); }
+      // 매출일자: 2행의 날짜(L·N·P열) → 없으면 파일명의 조회기간(_YYYYMMDD_YYYYMMDD_)
+      const fileDates = new Set();
+      (json[1] || []).forEach(v => { if (v instanceof Date) fileDates.add(formatDate(v)); else if (/^\d{4}-\d{2}-\d{2}/.test(String(v))) fileDates.add(String(v).slice(0, 10)); });
+      if (!fileDates.size) { const fm = file.name.match(/_(\d{8})_(\d{8})_/); if (fm && fm[1] === fm[2]) fileDates.add(`${fm[1].slice(0, 4)}-${fm[1].slice(4, 6)}-${fm[1].slice(6)}`); }
+      if (fileDates.size > 1) { html += `<div class="status-line"><span class="pill pill-warn">건너뜀</span><span>${esc(file.name)} — 여러 날짜(${[...fileDates].join(', ')})가 한 파일에 열로 나뉘어 있습니다. 하루치 파일로 올려주세요.</span></div>`; st.innerHTML = html; continue; }
+      const saleDate = [...fileDates][0] || '';
+      const saleDow = saleDate ? DOW_KO[dowOf(saleDate)] : '';
+      fileDates.forEach(d => dates.add(d));
+      let n = 0, hit = 0;
+      json.slice(2).forEach(r => {
+        const code = r[G]; if (!code || !normCode(code)) return; // 소계·합계 행 제외
+        const row = r.slice(0, width); while (row.length < width) row.push('');
+        const m = lookup(code, r[H]); n++;
+        if (m) { hit++; outRows.push([saleDate, saleDow, ...row, ch, ...m.v.map((x, j) => j === 4 && x !== '' && isFinite(Number(x)) ? Number(x) : x)]); }
+        else { const k = normCode(code) + ' ' + String(r[H] || '').trim(); missAll.set(k, (missAll.get(k) || 0) + 1); outRows.push([saleDate, saleDow, ...row, ch, '', '', '', '', '', '']); }
+      });
+      html += `<div class="status-line"><span class="pill pill-ok">✓ ${esc(ch)}</span><span>${esc(file.name)} · ${fmtNum(n)}행 중 ${fmtNum(hit)}행 분류</span></div>`;
+    } catch (e) { console.error(e); html += `<div class="status-line"><span class="pill pill-bad">✗ ${esc(file.name)}</span><span>${esc(e.message)}</span></div>`; }
+    st.innerHTML = html;
+  }
+  if (!outRows.length) return;
+  const h1 = header1.slice(0, width); while (h1.length < width) h1.push('');
+  // 2행은 날짜만 남기고 "합계" 글자는 지운다
+  const h2 = (header2 || []).slice(0, width).map(v => String(v ?? '').trim() === '합계' ? '' : v); while (h2.length < width) h2.push('');
+  const header = ['매출일자', '요일', ...h1, '채널', ...CHAN_TAIL];
+  const rows = outRows; // 머리글은 1행만(2행 날짜·합계 줄은 넣지 않음)
+  const blob = buildExportBlob(header, rows);
+  const chs = [...new Set(outRows.map(r => r[width + 2]))].join('·');
+  const dl = [...dates].sort();
+  const name = `매출분석_채널합본_${dl.length ? (dl[0] === dl[dl.length - 1] ? dl[0] : dl[0] + '_' + dl[dl.length - 1]) : formatDate(new Date())}_${chs}.csv`;
+  triggerDownload(blob, name);
+  const missTop = [...missAll.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+  html += `<div class="status-line" style="flex-wrap:wrap; margin-top:4px;"><span class="pill pill-ok">📥 ${esc(name)}</span><span>합본 ${fmtNum(outRows.length)}행(소계·합계 행 제외) · A·B열 = 매출일자·요일, T열 = 채널(${esc(chs)}), U~Z열 = 기준표 분류${missAll.size ? ` · 기준표에 없는 코드 ${missAll.size}개: ${esc(missTop.map(([k, n]) => `${k}(${n})`).join(', '))}` : ''}</span></div>`;
+  st.innerHTML = html;
 }
 
 // ==========================================================================
