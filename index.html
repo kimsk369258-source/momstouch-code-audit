@@ -519,6 +519,11 @@
         <label style="font-size:13px;">적용 월 <input type="month" id="storeInfoMonth" class="search-input" style="flex:none; width:150px;"></label>
         <span class="note" id="storeInfoMonths"></span>
       </div>
+      <details style="margin-top:8px;"><summary style="cursor:pointer; font-size:13px;">매장 묶음(보조 코드 → 대표 매장) — 추출 때 보조 코드 판매를 대표 매장 행에 합치고 B열에 표시</summary>
+        <div class="note">매장운영현황의 피자점포코드(예: E01824 한남대점 ↔ D00050)는 자동으로 묶입니다. 그 외 묶음은 한 줄에 "보조코드 대표코드"로 적고 저장하세요(예: E10322 E10300).</div>
+        <textarea id="storeAliasText" style="width:100%; height:80px; font-family:monospace; font-size:12px;"></textarea>
+        <button class="btn btn-primary btn-sm" onclick="saveStoreAliases()">묶음 저장</button> <span id="storeAliasStatus"></span>
+      </details>
       <div class="drop-zone" id="storeInfoDropZone" style="margin-top:12px;">
         <div class="dz-icon">🏬</div>
         <div class="dz-text">매장운영현황 엑셀(맘스터치매장정보rawdata 시트)을 여기로 드래그하거나 클릭</div>
@@ -3947,6 +3952,30 @@ function renderStoreInfoStatus() {
 // 있는 행)을 찾아서, 그 아래 데이터 행을 위치가 아니라 컬럼명으로 읽는다(D코드/E코드
 // 둘 다 있어서 이름만으론 완전히 안전하진 않지만, 실제로는 "코드"라는 이름이 아니라
 // "E코드"/"D코드"로 구분되어 있어 문제없다).
+// ── 매장 묶음: 보조 코드 판매를 대표 매장 행에 합친다(추출 표 B열에 보조 코드 표시)
+//   ① 매장운영현황의 피자점포코드(예: E01824 한남대점 ↔ D00050 맘스피자 한남대점1)
+//   ② 직접 등록한 묶음(예: E10322 에버랜드점(직영점)_TOGO → E10300 에버랜드점) — meta:storeAliases
+let manualStoreAliases = [{ from: 'E10322', to: 'E10300' }];
+async function loadStoreAliases() {
+  try { const raw = await storageGet('meta:storeAliases'); if (raw) manualStoreAliases = JSON.parse(raw); } catch (e) {}
+  renderStoreAliases();
+}
+function renderStoreAliases() {
+  const ta = document.getElementById('storeAliasText'); if (ta) ta.value = manualStoreAliases.map(x => `${x.from} ${x.to}`).join('\n');
+}
+async function saveStoreAliases() {
+  const lines = (document.getElementById('storeAliasText').value || '').split(/\r?\n/).map(l => l.trim().split(/[\s,→>]+/).filter(Boolean)).filter(p => p.length >= 2);
+  manualStoreAliases = lines.map(([from, to]) => ({ from: from.toUpperCase(), to: to.toUpperCase() }));
+  const ok = await storageSet('meta:storeAliases', JSON.stringify(manualStoreAliases));
+  const el = document.getElementById('storeAliasStatus'); if (el) el.innerHTML = ok ? `<span class="pill pill-ok">✓ ${manualStoreAliases.length}개 묶음 저장</span>` : '<span class="pill pill-bad">저장 실패</span>';
+}
+// info(가맹점현황) 기준 보조코드 → 대표코드
+function buildAliasMap(info) {
+  const IM = info?.map || storeInfoMap; const alias = {};
+  Object.entries(IM).forEach(([code, v]) => { const pz = String(v?.pizza || '').trim(); if (pz && pz !== code && !IM[pz]) alias[pz] = code; });
+  manualStoreAliases.forEach(({ from, to }) => { if (from && to && from !== to) alias[from] = to; });
+  return alias;
+}
 // 직영 매장 판정(추출 표 맨 아래로 보냄)
 function isDirectStore(info) { return !!info && (/직영/.test(info.group || '') || /직영/.test(info.team || '')); }
 // 가맹점현황 순서 + 직영은 맨 아래
@@ -4077,10 +4106,13 @@ function buildPivotSheet(dates, byDate, matchFn, extra, info) {
   const rows = [new Array(header.length).fill(null), header]; // 1행: 빈 줄, 2행: 헤더
   const extraInfo = {}; (extra || []).forEach(x => { extraInfo[x.code] = { name: x.name || '', team: '가맹점현황 없음' }; });
   // 날짜별 매장 합계를 한 번에 계산(매장 × 날짜마다 전체를 훑지 않도록)
-  const qty = {}; dates.forEach(dk => { const m = qty[dk] = {}; (byDate[dk] || []).forEach(e => { if (matchFn(e)) m[e.storeCode] = (m[e.storeCode] || 0) + e.qty; }); });
+  const alias = buildAliasMap({ map: IM });
+  const secondaries = {}; Object.entries(alias).forEach(([from, to]) => { (secondaries[to] = secondaries[to] || []).push(from); });
+  const qty = {}; dates.forEach(dk => { const m = qty[dk] = {}; (byDate[dk] || []).forEach(e => { if (matchFn(e)) { const k = alias[e.storeCode] || e.storeCode; m[k] = (m[k] || 0) + e.qty; } }); });
   const storeRow = code => {
     const sInfo = IM[code] || extraInfo[code] || {};
-    return [code, sInfo.pizza || null, sInfo.name || '', sInfo.group || null, sInfo.team || '', sInfo.ac || null, null, ...dates.map(dk => qty[dk][code] || 0)];
+    const bCol = [...new Set([sInfo.pizza, ...(secondaries[code] || [])].filter(Boolean))].join(', ') || null; // B열: 묶인 보조 코드
+    return [code, bCol, sInfo.name || '', sInfo.group || null, sInfo.team || '', sInfo.ac || null, null, ...dates.map(dk => qty[dk][code] || 0)];
   };
   const blocks = []; // {start, end, label}
   const addBlock = (codes, label) => {
@@ -4168,7 +4200,8 @@ async function downloadCategoryExtract() {
     // 가맹점현황에 없는 매장도 넣을지(체크 해제 시 표 아래에 "가맹점현황 없음"으로 붙임)
     const rangeInfo = await storeInfoForRange(dates[0].length === 7 ? dates[0] + '-01' : dates[0], dates[dates.length - 1].length === 7 ? dates[dates.length - 1] + '-28' : dates[dates.length - 1]);
     const catExtra = document.getElementById('catExActive')?.checked === false ? (() => {
-      const m = new Map(); Object.values(byDate).forEach(list => (list || []).forEach(e => { if (!rangeInfo.map[e.storeCode] && e.qty) m.set(e.storeCode, e.storeName || m.get(e.storeCode) || ''); }));
+      const al = buildAliasMap(rangeInfo);
+      const m = new Map(); Object.values(byDate).forEach(list => (list || []).forEach(e => { if (!rangeInfo.map[e.storeCode] && !al[e.storeCode] && e.qty) m.set(e.storeCode, e.storeName || m.get(e.storeCode) || ''); }));
       return [...m.entries()].sort((x, y) => x[0].localeCompare(y[0])).map(([code, name]) => ({ code, name }));
     })() : null;
     sheets.forEach(s => {
@@ -6176,7 +6209,8 @@ async function downloadChannelExtract() {
     for (const d of savedIn) { const o = await loadChannelQty(d); Object.assign(nameMap, o?.names || {}); byDate[d] = (o?.rows || []).map(([storeCode, cat, detail1, ch, qty]) => ({ storeCode, cat, detail1, ch, qty })); }
     const onlyActive = document.getElementById('chanExActive')?.checked !== false;
     const rangeInfo = await storeInfoForRange(dates[0], dates[dates.length - 1]);
-    const extraCodes = [...new Set(Object.values(byDate).flatMap(l => l.filter(e => !rangeInfo.map[e.storeCode] && e.qty).map(e => e.storeCode)))].sort();
+    const alC = buildAliasMap(rangeInfo);
+    const extraCodes = [...new Set(Object.values(byDate).flatMap(l => l.filter(e => !rangeInfo.map[e.storeCode] && !alC[e.storeCode] && e.qty).map(e => e.storeCode)))].sort();
     const chanExtra = onlyActive ? null : extraCodes.map(code => ({ code, name: nameMap[code] || '' }));
     const yymm = dates[0].slice(2, 4) + dates[0].slice(5, 7);
     const S = [
@@ -7137,6 +7171,7 @@ if (!isConfigured) {
       await loadOrderCodeMap();
       await loadOrdersIndex();
       await loadStoreInfoMap();
+      loadStoreAliases();
       loadPromos();
       renderMasterYearInfo();
     } else {
@@ -7151,7 +7186,7 @@ Object.assign(window, {
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
   deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, checkSoldDetail, backfillSoldLedger,
-  filterStockStores, pickFirstStockStore, saveChannelQty, downloadChannelExtract, setReclsRange, toggleMonthGroup, monthToggleAll, setHistMonth, setPromoMonth, findMissingMenus, renderProdAccuracy, downloadProdAccuracy, downloadDailySold, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, measureAllPastPromos, togglePromoFormType, measureLaunch, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
+  filterStockStores, pickFirstStockStore, saveStoreAliases, saveChannelQty, downloadChannelExtract, setReclsRange, toggleMonthGroup, monthToggleAll, setHistMonth, setPromoMonth, findMissingMenus, renderProdAccuracy, downloadProdAccuracy, downloadDailySold, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, measureAllPastPromos, togglePromoFormType, measureLaunch, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
   addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
