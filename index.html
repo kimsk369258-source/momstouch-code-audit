@@ -318,7 +318,7 @@
       <div class="drop-zone" id="chanDropZone" style="margin-top:10px;">
         <div class="dz-icon">📊</div>
         <div class="dz-text">매출분석 파일(내점/포장/배달) 여러 개를 여기로 드래그하거나 클릭</div>
-        <div class="dz-hint">파일명에 내점·포장·배달이 들어 있어야 합니다 · 하루치 파일 기준 · "채널합본.csv"(A 매출일자 · B 요일 · T 채널 · U~Z 분류)로 내려받아집니다</div>
+        <div class="dz-hint">원본: 파일명에 내점·포장·배달 중 하나 · 하루치 파일 기준 → "채널합본.csv"로 내려받음 · 이미 만든 채널합본(.csv)을 올리면 행마다 채널 열로 구분해 "채널별 수량 저장"만 합니다</div>
       </div>
       <input type="file" id="chanFileInput" accept=".xlsx,.xls,.csv" multiple style="display:none;">
       <div id="chanStatus" style="margin-top:8px;"></div>
@@ -514,7 +514,11 @@
   <section class="panel" id="panel-extract">
     <div class="card">
       <h2>가맹점현황</h2>
-      <div class="card-sub">매장코드(E코드) → 매장명/팀 매핑표입니다. 점포가 수시로 바뀔 수 있어 필요할 때마다 새로 업로드하면 됩니다(전체 교체).</div>
+      <div class="card-sub">매장코드(E코드) → 매장명/팀 매핑표입니다. <strong>월별로 따로 보관</strong>합니다 — 적용 월을 고르고 그 달 매장운영현황을 올리세요. 추출할 때는 기간에 해당하는 달의 현황을 씁니다(그 달 현황이 없으면 가장 가까운 이전 달 현황). 가장 최근 달 현황은 권장 발주·재고 화면의 "가맹점현황 매장" 기준으로도 쓰입니다.</div>
+      <div class="toolbar" style="gap:8px; margin-top:10px; flex-wrap:wrap;">
+        <label style="font-size:13px;">적용 월 <input type="month" id="storeInfoMonth" class="search-input" style="flex:none; width:150px;"></label>
+        <span class="note" id="storeInfoMonths"></span>
+      </div>
       <div class="drop-zone" id="storeInfoDropZone" style="margin-top:12px;">
         <div class="dz-icon">🏬</div>
         <div class="dz-text">가맹점_현황.xlsb (또는 .xlsx) 파일을 여기로 드래그하거나 클릭</div>
@@ -543,6 +547,7 @@
             <option value="month">월별 (열 = 월)</option>
           </select>
         </div>
+        <label style="font-size:12px; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="catExActive" checked> 가맹점현황 매장만</label>
         <button class="btn btn-primary btn-sm" onclick="downloadCategoryExtract()">📥 전체 분류 시트로 한번에 다운로드</button>
       </div>
       <div class="note" style="margin-top:6px;">버거/치킨/비프/피자(전체)/피자(싱글=조각피자)/피자(홀피자) 총 6개 시트가 한 엑셀 파일로 만들어집니다. 기간을 비워두면 저장된 전체 기간이 포함됩니다. 월별로 뽑으면 월합계로 올린 달은 그 값을, 월합계가 없는 달은 저장된 일별 데이터를 합산해서 채웁니다(해당 월의 시작~종료일이 기간에 걸리면 포함).</div>
@@ -551,10 +556,11 @@
     </div>
       <div class="card">
       <h2>채널별(내점·포장·배달) 매장×일자 분류 수량 추출</h2>
-      <div class="card-sub">② 일별 대조의 "채널별 매출분석 파일"을 처리하고 "채널별 수량 저장"한 날짜로 만듭니다. 위 "매장별 분류 판매건수"와 같은 양식(행 = 매장, 열 = 날짜, 판매수량 × 보정값)이며 시트는 버거·치킨·비프 × 내점/포장/배달, 피자 × 내점/싱글/홀피자/포장/배달입니다(싱글·홀피자는 채널 합계).</div>
+      <div class="card-sub">② 일별 대조의 "채널별 매출분석 파일"을 처리하고 "채널별 수량 저장"한 날짜로 만듭니다. 위 "매장별 분류 판매건수"와 같은 양식(행 = 매장, 열 = 날짜, 판매수량 × 보정값)이며 시트는 버거·치킨·비프·피자 × 내점/포장/배달(12개)이고, 기간의 모든 날짜가 열로 들어갑니다(저장 안 된 날은 0).</div>
       <div class="note" id="chanSavedInfo" style="margin-top:6px;"></div>
       <div class="toolbar" style="gap:8px; margin-top:8px; flex-wrap:wrap;">
         <input type="date" id="chanExStart" class="search-input" style="flex:none;"> ~ <input type="date" id="chanExEnd" class="search-input" style="flex:none;">
+        <label style="font-size:12px; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="chanExActive" checked> 가맹점현황 매장만</label>
         <button class="btn btn-primary btn-sm" onclick="downloadChannelExtract()">📥 채널별 엑셀 추출</button>
       </div>
       <div class="status-line" id="chanExStatus" style="margin-top:8px;"></div>
@@ -3878,7 +3884,38 @@ let storeInfoMap = {}; // 매장코드 -> {name, team}
 let storeInfoOrder = []; // 가맹점현황 파일에 나온 매장코드 순서
 let storeInfoUpdatedAt = null;
 
+// ── 월별 가맹점현황: meta:storeInfo:YYYY-MM = {map, order, updatedAt}, 목록 = meta:storeInfoMonths
+// meta:storeInfo(월 표시 없음)는 "현재" 현황 — 가장 최근 달을 올리면 같이 갱신된다(권장 발주·재고 등에서 사용).
+let storeInfoMonths = []; const storeInfoMonthCache = {};
+async function loadStoreInfoMonths() {
+  try { const raw = await storageGet('meta:storeInfoMonths'); storeInfoMonths = raw ? JSON.parse(raw) : []; } catch (e) { storeInfoMonths = []; }
+  renderStoreInfoMonths();
+}
+function renderStoreInfoMonths() {
+  const el = document.getElementById('storeInfoMonths'); if (!el) return;
+  el.innerHTML = storeInfoMonths.length ? '등록된 월: ' + storeInfoMonths.slice().sort((x, y) => y.ym.localeCompare(x.ym)).map(m => `${m.ym}(${fmtNum(m.count)})`).join(' · ') : '월별로 등록된 현황이 아직 없습니다(지금은 하나의 현황을 모든 달에 사용).';
+  const mi = document.getElementById('storeInfoMonth'); if (mi && !mi.value) mi.value = formatDate(new Date()).slice(0, 7);
+}
+async function loadStoreInfoForMonth(ym) {
+  if (storeInfoMonthCache[ym] !== undefined) return storeInfoMonthCache[ym];
+  try { const raw = await storageGet('meta:storeInfo:' + ym); storeInfoMonthCache[ym] = raw ? JSON.parse(raw) : null; } catch (e) { storeInfoMonthCache[ym] = null; }
+  return storeInfoMonthCache[ym];
+}
+// 기간에 쓸 가맹점현황: 기간에 걸친 달마다 그 달 현황(없으면 가장 가까운 이전 달, 그것도 없으면 현재 현황)을 모아
+// 합친다. 순서·이름·팀은 가장 최근 달 기준, 기간 중 폐점 등으로 최근 달에 없는 매장은 뒤에 붙인다.
+async function storeInfoForRange(start, end) {
+  const ms = []; for (let m = start.slice(0, 7); m <= end.slice(0, 7); m = addDaysStr(m + '-28', 5).slice(0, 7)) ms.push(m);
+  const avail = storeInfoMonths.map(x => x.ym).sort();
+  const pick = m => { const prev = avail.filter(a => a <= m); return prev.length ? prev[prev.length - 1] : null; };
+  const used = [...new Set(ms.map(pick))];
+  const snaps = [];
+  for (const u of used) { const o = u ? await loadStoreInfoForMonth(u) : null; snaps.push(o || { map: storeInfoMap, order: storeInfoOrder }); }
+  const map = {}, order = [];
+  snaps.slice().reverse().forEach(o => (o.order || Object.keys(o.map || {})).forEach(c => { if (!map[c] && o.map?.[c]) { map[c] = o.map[c]; order.push(c); } }));
+  return { map, order, months: used.map(u => u || '현재') };
+}
 async function loadStoreInfoMap() {
+  loadStoreInfoMonths();
   const raw = await storageGet('meta:storeInfo');
   if (!raw) { storeInfoMap = {}; storeInfoOrder = []; storeInfoUpdatedAt = null; renderStoreInfoStatus(); return; }
   try {
@@ -3938,7 +3975,18 @@ setupDropZone('storeInfoDropZone', 'storeInfoFileInput', async (file) => {
   try {
     const json = await readWorkbook(file);
     const { map, order } = buildStoreInfoMapFromRows(json);
-    await saveStoreInfoMap(map, order);
+    const ym = document.getElementById('storeInfoMonth')?.value || formatDate(new Date()).slice(0, 7);
+    // 그 달 현황으로 저장
+    const ok = await storageSet('meta:storeInfo:' + ym, JSON.stringify({ map, order, updatedAt: nowISO(), fileName: file.name }));
+    if (!ok) throw new Error('Firebase에 저장하지 못했습니다.');
+    storeInfoMonthCache[ym] = { map, order };
+    storeInfoMonths = [...storeInfoMonths.filter(x => x.ym !== ym), { ym, count: order.length, fileName: file.name }];
+    await storageSet('meta:storeInfoMonths', JSON.stringify(storeInfoMonths));
+    renderStoreInfoMonths();
+    // 가장 최근 달이면 "현재" 현황도 갱신(권장 발주·재고·추출 기본값에 사용)
+    const latest = storeInfoMonths.map(x => x.ym).sort().pop();
+    if (ym === latest) await saveStoreInfoMap(map, order);
+    statusEl.innerHTML += `<div class="note">${ym} 가맹점현황 ${fmtNum(order.length)}개 매장으로 저장${ym === latest ? ' · 현재 현황으로도 적용' : ' (과거 달 — 현재 현황은 그대로)'}</div>`;
   } catch (err) {
     statusEl.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`;
   }
@@ -3994,14 +4042,16 @@ async function loadCategoryQtyForRange(startDate, endDate, keys) {
 // 구조: 1행은 빈 줄(사용자가 쓰던 원본 파일과 같은 여백), 2행이 헤더(D코드/E코드/
 // 매장명/팀/날짜...), 3행부터 매장별 데이터(가맹점현황 파일에 나온 순서 그대로),
 // 그 아래 3줄은 날짜 컬럼별 합계/판매점포수/평균 수식.
-function buildPivotSheet(dates, byDate, matchFn) {
-  const codes = storeInfoOrder.filter(c => storeInfoMap[c]);
+// extra: 가맹점현황에 없지만 데이터가 있는 매장 [{code, name}] — 넘기면 가맹점현황 매장 아래에 붙인다(팀 칸 = "가맹점현황 없음")
+function buildPivotSheet(dates, byDate, matchFn, extra, info) {
+  const IM = info?.map || storeInfoMap, IO = info?.order || storeInfoOrder;
+  const codes = IO.filter(c => IM[c]);
   const header = ['D코드', null, 'E코드', null, '매장명', '팀', null, ...dates.map(k => isMonthKey(k) ? k : toExcelSerialDate(k))];
   const rows = [new Array(header.length).fill(null), header]; // 1행: 빈 줄, 2행: 헤더
-
-  codes.forEach(code => {
-    const info = storeInfoMap[code];
-    const row = [null, null, code, null, info.name, info.team, null];
+  const extraInfo = {}; (extra || []).forEach(x => { extraInfo[x.code] = { name: x.name || '', team: '가맹점현황 없음' }; });
+  [...codes, ...(extra || []).map(x => x.code)].forEach(code => {
+    const sInfo = IM[code] || extraInfo[code];
+    const row = [null, null, code, null, sInfo.name, sInfo.team, null];
     dates.forEach(dk => {
       const entries = byDate[dk] || [];
       let sum = 0;
@@ -4012,7 +4062,7 @@ function buildPivotSheet(dates, byDate, matchFn) {
   });
 
   const dataStartRow = 3; // 엑셀 1-based 행 번호 — 1행은 빈 줄, 2행은 헤더, 3행부터 매장 데이터
-  const dataEndRow = dataStartRow + codes.length - 1;
+  const dataEndRow = dataStartRow + codes.length + (extra || []).length - 1;
   const sumRow = new Array(header.length).fill(null); sumRow[4] = '판매수량';
   const countRow = new Array(header.length).fill(null); countRow[4] = '판매점포수';
   const avgRow = new Array(header.length).fill(null); avgRow[4] = '평균수량';
@@ -4097,8 +4147,14 @@ async function downloadCategoryExtract() {
     ];
 
     const wb = XLSX.utils.book_new();
+    // 가맹점현황에 없는 매장도 넣을지(체크 해제 시 표 아래에 "가맹점현황 없음"으로 붙임)
+    const rangeInfo = await storeInfoForRange(dates[0].length === 7 ? dates[0] + '-01' : dates[0], dates[dates.length - 1].length === 7 ? dates[dates.length - 1] + '-28' : dates[dates.length - 1]);
+    const catExtra = document.getElementById('catExActive')?.checked === false ? (() => {
+      const m = new Map(); Object.values(byDate).forEach(list => (list || []).forEach(e => { if (!rangeInfo.map[e.storeCode] && e.qty) m.set(e.storeCode, e.storeName || m.get(e.storeCode) || ''); }));
+      return [...m.entries()].sort((x, y) => x[0].localeCompare(y[0])).map(([code, name]) => ({ code, name }));
+    })() : null;
     sheets.forEach(s => {
-      const ws = buildPivotSheet(dates, byDate, s.match);
+      const ws = buildPivotSheet(dates, byDate, s.match, catExtra, rangeInfo);
       XLSX.utils.book_append_sheet(wb, ws, s.name);
     });
 
@@ -5917,7 +5973,11 @@ function buildChannelLookup() {
     return null;
   };
 }
-function channelOfFile(name) { return /내점/.test(name) ? '내점' : /포장/.test(name) ? '포장' : /배달/.test(name) ? '배달' : ''; }
+// 파일명에서 채널 찾기 — 채널 단어가 정확히 하나만 있어야 한다(두 개 이상이면 어느 채널인지 모호해서 거절)
+function channelOfFile(name) {
+  const hits = ['내점', '포장', '배달'].filter(c => name.includes(c));
+  return hits.length === 1 ? hits[0] : (hits.length > 1 ? 'AMBIG' : '');
+}
 // 여러 파일(내점·포장·배달)을 한 합본으로 합친다: A~Q 원본 그대로, R = 채널(파일명 기준), S~X = 기준표 분류.
 // 소계·합계 행(상품코드 없음)은 합본에서 빼서, 합본을 바로 피벗해도 매출이 중복되지 않게 한다.
 // 20만 행이 넘을 수 있어(엑셀 변환 한계) CSV로 내려받는다 — 엑셀에서 그대로 열린다.
@@ -5929,9 +5989,39 @@ async function handleChannelFiles(files) {
   if (!masterRowsForExport().length) { st.innerHTML = '<span class="pill pill-warn">기준표가 없습니다. ① 탭에서 먼저 올려주세요.</span>'; return; }
   const lookup = buildChannelLookup();
   let html = ''; let header1 = null, header2 = null, width = 0; const outRows = []; const missAll = new Map(); const dates = new Set();
+  let combinedOnly = true;
   for (const file of [...files]) {
+    // ── 이미 만든 "채널합본"(매출일자·채널 열이 있는 파일)을 올린 경우: 행마다 채널·날짜를 읽어 수량만 모은다
+    if (/\.csv$/i.test(file.name) || /채널합본/.test(file.name)) {
+      const json0 = await readWorkbook(file);
+      const h0 = (json0[0] || []).map(v => String(v ?? '').replace(/\s/g, ''));
+      const iCh = h0.indexOf('채널'), iD = h0.indexOf('매출일자');
+      if (iCh >= 0 && iD >= 0) {
+        const iG = h0.indexOf('상품코드'), iH = h0.indexOf('상품명'), iS = h0.indexOf('매장코드'), iN = h0.indexOf('매장명'), iQ = h0.indexOf('판매수량');
+        const cnt = {};
+        json0.slice(1).forEach(r => {
+          let d = r[iD]; d = d instanceof Date ? formatDate(d) : String(d ?? '').trim().slice(0, 10);
+          const c = String(r[iCh] ?? '').trim();
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || !['내점', '포장', '배달'].includes(c)) return;
+          const code = r[iG]; if (!code || !normCode(code)) return;
+          const mm = lookup(code, r[iH]); // 분류는 지금 기준표로 다시 찾는다
+          cnt[d + '|' + c] = (cnt[d + '|' + c] || 0) + 1;
+          if (!mm || !mm.v[1] || mm.v[1] === '제외') return;
+          const store = String(r[iS] ?? '').trim(), q = toNum(r[iQ]); if (!store || !q) return;
+          const agg = chanAggByDate[d] = chanAggByDate[d] || {};
+          const k = [store, mm.v[1], mm.v[2] || '', c].join('\u0001');
+          const o = agg[k] = agg[k] || { storeCode: store, storeName: String(r[iN] ?? '').trim(), cat: mm.v[1], detail1: mm.v[2] || '', ch: c, qty: 0 };
+          o.qty += q * qtyMultiplier(mm.v[4]);
+        });
+        const summ = Object.entries(cnt).sort().map(([k, n]) => `${k.split('|')[0].slice(5)} ${k.split('|')[1]} ${fmtNum(n)}행`).join(', ');
+        html += `<div class="status-line" style="flex-wrap:wrap;"><span class="pill pill-ok">✓ 합본</span><span>${esc(file.name)} — 행마다 채널 열로 구분: ${esc(summ) || '데이터 없음'}</span></div>`;
+        st.innerHTML = html;
+        continue;
+      }
+    }
+    combinedOnly = false;
     const ch = channelOfFile(file.name);
-    if (!ch) { html += `<div class="status-line"><span class="pill pill-warn">건너뜀</span><span>${esc(file.name)} — 파일명에 "내점·포장·배달"이 없어 채널을 알 수 없습니다.</span></div>`; st.innerHTML = html; continue; }
+    if (!ch || ch === 'AMBIG') { html += `<div class="status-line"><span class="pill pill-warn">건너뜀</span><span>${esc(file.name)} — 파일명에 ${ch ? '"내점·포장·배달" 중 둘 이상이 들어 있어' : '"내점·포장·배달"이 없어'} 채널을 알 수 없습니다. 파일명에 채널을 하나만 적어주세요.</span></div>`; st.innerHTML = html; continue; }
     st.innerHTML = html + `<div class="status-line"><span class="pill pill-neutral">처리 중</span><span>${esc(file.name)} (${ch})</span></div>`;
     try {
       const json = await readWorkbook(file);
@@ -5973,7 +6063,18 @@ async function handleChannelFiles(files) {
     } catch (e) { console.error(e); html += `<div class="status-line"><span class="pill pill-bad">✗ ${esc(file.name)}</span><span>${esc(e.message)}</span></div>`; }
     st.innerHTML = html;
   }
-  if (!outRows.length) return;
+  if (!outRows.length) {
+    // 합본만 올린 경우: 새 합본은 만들지 않고 저장 버튼만 보여준다
+    const ds = Object.keys(chanAggByDate).filter(d => Object.keys(chanAggByDate[d]).length).sort();
+    if (ds.length) {
+      const chsOf = d => [...new Set(Object.values(chanAggByDate[d]).map(o => o.ch))].join('·');
+      const lack = ds.filter(d => chsOf(d).split('·').length < 3);
+      html += `<div class="status-line" style="flex-wrap:wrap; margin-top:6px;"><button class="btn btn-primary btn-sm" onclick="saveChannelQty(this)">💾 채널별 수량 저장 (${ds.length}일)</button><span>${ds.map(d => `${d.slice(5)}(${esc(chsOf(d))})`).join(', ')}</span></div>`
+        + (lack.length ? `<div class="note" style="color:#b45309;">⚠ 채널이 3개가 아닌 날짜: ${lack.map(d => `${d.slice(5)}(${esc(chsOf(d))})`).join(', ')}</div>` : '');
+      st.innerHTML = html;
+    }
+    return;
+  }
   const h1 = header1.slice(0, width); while (h1.length < width) h1.push('');
   // 2행은 날짜만 남기고 "합계" 글자는 지운다
   const h2 = (header2 || []).slice(0, width).map(v => String(v ?? '').trim() === '합계' ? '' : v); while (h2.length < width) h2.push('');
@@ -5987,7 +6088,10 @@ async function handleChannelFiles(files) {
   const missTop = [...missAll.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
   const aggDates = Object.keys(chanAggByDate).filter(d => Object.keys(chanAggByDate[d]).length).sort();
   const aggChs = d => [...new Set(Object.values(chanAggByDate[d]).map(o => o.ch))].join('·');
-  html += aggDates.length ? `<div class="status-line" style="flex-wrap:wrap; margin-top:6px;"><button class="btn btn-primary btn-sm" onclick="saveChannelQty(this)">💾 채널별 수량 저장 (${aggDates.length}일)</button><span>${aggDates.map(d => `${d.slice(5)}(${esc(aggChs(d))})`).join(', ')} — 저장하면 ⑤ 탭 "채널별 매장×일자 분류 수량"으로 뽑을 수 있습니다. 같은 날짜는 덮어씁니다(올린 채널만 바뀜).</span></div>` : '';
+  // 날짜별로 내점·포장·배달이 다 들어왔는지 표시 — 한 채널만 있는 날은 경고(채널 구분 없는 파일을 한 채널 이름으로 올린 경우 등)
+  const lacking = aggDates.filter(d => aggChs(d).split('·').length < 3);
+  html += aggDates.length ? `<div class="status-line" style="flex-wrap:wrap; margin-top:6px;"><button class="btn btn-primary btn-sm" onclick="saveChannelQty(this)">💾 채널별 수량 저장 (${aggDates.length}일)</button><span>${aggDates.map(d => `${d.slice(5)}(${esc(aggChs(d))})`).join(', ')} — 저장하면 ⑤ 탭 "채널별 매장×일자 분류 수량"으로 뽑을 수 있습니다. 같은 날짜는 올린 채널만 교체됩니다.</span></div>`
+    + (lacking.length ? `<div class="note" style="color:#b45309;">⚠ 채널이 3개가 아닌 날짜: ${lacking.map(d => `${d.slice(5)}(${esc(aggChs(d))})`).join(', ')} — 빠진 채널 파일도 함께 올렸는지 확인해주세요(이미 저장된 다른 채널은 유지됩니다).</div>` : '') : '';
   html += `<div class="status-line" style="flex-wrap:wrap; margin-top:4px;"><span class="pill pill-ok">📥 ${esc(name)}</span><span>합본 ${fmtNum(outRows.length)}행(소계·합계 행 제외) · A·B열 = 매출일자·요일, T열 = 채널(${esc(chs)}), U~Z열 = 기준표 분류${missAll.size ? ` · 기준표에 없는 코드 ${missAll.size}개: ${esc(missTop.map(([k, n]) => `${k}(${n})`).join(', '))}` : ''}</span></div>`;
   st.innerHTML = html;
 }
@@ -6039,31 +6143,39 @@ async function downloadChannelExtract() {
   const start = document.getElementById('chanExStart').value, end = document.getElementById('chanExEnd').value;
   if (!Object.keys(storeInfoMap).length) { st.innerHTML = '<span class="pill pill-warn">가맹점현황을 먼저 올려주세요(행 = 가맹점현황 매장).</span>'; return; }
   const all = await loadChannelDates();
-  const dates = all.filter(d => (!start || d >= start) && (!end || d <= end)).sort();
-  if (!dates.length) { st.innerHTML = '<span class="pill pill-warn">해당 기간에 저장된 채널별 수량이 없습니다(② 탭에서 채널 파일 처리 후 "채널별 수량 저장").</span>'; return; }
+  const savedIn = all.filter(d => (!start || d >= start) && (!end || d <= end)).sort();
+  // 공유해주신 엑셀처럼 기간의 날짜를 빠짐없이 열로 만든다(저장 안 된 날은 0)
+  const dates = []; if (savedIn.length) { const f0 = start || savedIn[0], t0 = end || savedIn[savedIn.length - 1]; for (let d = f0; d <= t0; d = addDaysStr(d, 1)) dates.push(d); }
+  if (!savedIn.length) { st.innerHTML = '<span class="pill pill-warn">해당 기간에 저장된 채널별 수량이 없습니다(② 탭에서 채널 파일 처리 후 "채널별 수량 저장").</span>'; return; }
   st.innerHTML = `<span class="pill pill-neutral">불러오는 중... ${dates.length}일</span>`;
   try {
     const byDate = {};
-    for (const d of dates) { const o = await loadChannelQty(d); byDate[d] = (o?.rows || []).map(([storeCode, cat, detail1, ch, qty]) => ({ storeCode, cat, detail1, ch, qty })); }
+    const nameMap = {};
+    for (const d of savedIn) { const o = await loadChannelQty(d); Object.assign(nameMap, o?.names || {}); byDate[d] = (o?.rows || []).map(([storeCode, cat, detail1, ch, qty]) => ({ storeCode, cat, detail1, ch, qty })); }
+    const onlyActive = document.getElementById('chanExActive')?.checked !== false;
+    const rangeInfo = await storeInfoForRange(dates[0], dates[dates.length - 1]);
+    const extraCodes = [...new Set(Object.values(byDate).flatMap(l => l.filter(e => !rangeInfo.map[e.storeCode] && e.qty).map(e => e.storeCode)))].sort();
+    const chanExtra = onlyActive ? null : extraCodes.map(code => ({ code, name: nameMap[code] || '' }));
     const yymm = dates[0].slice(2, 4) + dates[0].slice(5, 7);
     const S = [
       ['버거 수량', '내점', e => e.cat === '버거' && e.ch === '내점'], ['버거 수량', '포장', e => e.cat === '버거' && e.ch === '포장'], ['버거 수량', '배달', e => e.cat === '버거' && e.ch === '배달'],
       ['치킨 수량', '내점', e => e.cat === '치킨' && e.ch === '내점'], ['치킨 수량', '포장', e => e.cat === '치킨' && e.ch === '포장'], ['치킨 수량', '배달', e => e.cat === '치킨' && e.ch === '배달'],
       ['비프 수량', '내점', e => e.cat === '비프' && e.ch === '내점'], ['비프 수량', '포장', e => e.cat === '비프' && e.ch === '포장'], ['비프 수량', '배달', e => e.cat === '비프' && e.ch === '배달'],
       ['피자 수량', '내점', e => e.cat === '피자' && e.ch === '내점'],
-      ['피자 수량', '싱글', e => e.cat === '피자' && e.detail1 === '조각피자', ''],
-      ['피자 수량', '홀피자', e => e.cat === '피자' && e.detail1 !== '조각피자', ''],
       ['피자 수량', '포장', e => e.cat === '피자' && e.ch === '포장'], ['피자 수량', '배달', e => e.cat === '피자' && e.ch === '배달'],
     ];
     const wb = XLSX.utils.book_new();
-    S.forEach(([nm, tag, fn, label]) => {
-      const ws = buildPivotSheet(dates, byDate, fn);
-      const a1 = label === undefined ? tag : label; // 싱글·홀피자는 채널 합계라 A1 비움
-      if (a1) ws['A1'] = { t: 's', v: a1 };
+    S.forEach(([nm, tag, fn]) => {
+      const ws = buildPivotSheet(dates, byDate, fn, chanExtra, rangeInfo);
+      ws['A1'] = { t: 's', v: tag }; // 1행 A열 = 채널
       XLSX.utils.book_append_sheet(wb, ws, `${nm}_${yymm}(${tag})`.slice(0, 31));
     });
     XLSX.writeFile(wb, `매장별_채널별_분류수량_${dates[0]}_${dates[dates.length - 1]}.xlsx`);
-    st.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${dates.length}일(${dates[0]} ~ ${dates[dates.length - 1]}) · ${S.length}개 시트</span>`;
+    const missing = dates.filter(d => !savedIn.includes(d));
+    st.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${dates[0]} ~ ${dates[dates.length - 1]} · ${S.length}개 시트 · 가맹점현황 ${esc(rangeInfo.months.join('·'))} 기준 · ${onlyActive ? `가맹점현황 매장만(현황에 없는 매장 ${extraCodes.length}곳 제외)` : `가맹점현황에 없는 매장 ${extraCodes.length}곳 포함(표 아래, 팀 = "가맹점현황 없음")`}${missing.length ? ` · 저장 안 된 날 ${missing.length}일은 0(${missing.slice(0, 5).map(d => d.slice(5)).join(', ')}${missing.length > 5 ? ' 외' : ''})` : ''}</span>`;
+    // 저장된 날짜 중 채널이 일부만 있는 날 알려주기
+    const partial = savedIn.filter(d => new Set((byDate[d] || []).map(e => e.ch)).size < 3);
+    if (partial.length) st.innerHTML += `<div class="note" style="color:#b45309;">⚠ 채널이 일부만 저장된 날: ${partial.map(d => `${d.slice(5)}(${[...new Set(byDate[d].map(e => e.ch))].join('·') || '없음'})`).join(', ')} — ② 탭에서 그 날짜의 빠진 채널 파일을 올려 저장하세요.</div>`;
   } catch (e) { console.error(e); st.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(e.message)}</span>`; }
 }
 
