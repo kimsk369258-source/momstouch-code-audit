@@ -550,6 +550,16 @@
       <div id="extractStatus" style="margin-top:8px;"></div>
     </div>
       <div class="card">
+      <h2>채널별(내점·포장·배달) 매장×일자 분류 수량 추출</h2>
+      <div class="card-sub">② 일별 대조의 "채널별 매출분석 파일"을 처리하고 "채널별 수량 저장"한 날짜로 만듭니다. 위 "매장별 분류 판매건수"와 같은 양식(행 = 매장, 열 = 날짜, 판매수량 × 보정값)이며 시트는 버거·치킨·비프 × 내점/포장/배달, 피자 × 내점/싱글/홀피자/포장/배달입니다(싱글·홀피자는 채널 합계).</div>
+      <div class="note" id="chanSavedInfo" style="margin-top:6px;"></div>
+      <div class="toolbar" style="gap:8px; margin-top:8px; flex-wrap:wrap;">
+        <input type="date" id="chanExStart" class="search-input" style="flex:none;"> ~ <input type="date" id="chanExEnd" class="search-input" style="flex:none;">
+        <button class="btn btn-primary btn-sm" onclick="downloadChannelExtract()">📥 채널별 엑셀 추출</button>
+      </div>
+      <div class="status-line" id="chanExStatus" style="margin-top:8px;"></div>
+    </div>
+    <div class="card">
       <h2>일자별 가맹점 실제 판매(소진) 추출 — 발주품목 기준</h2>
       <div class="card-sub">판매 소진 원장에서 매장 × 날짜별 발주품목 판매량을 뽑습니다(판매수량 × 보정값, 뼈치킨은 한마리·반반 2봉 / 반마리·기타 1봉 규칙). 품목마다 시트 1장(행 = 매장, 열 = 날짜) + 전국 일자별 합계 시트가 만들어집니다. 휴무(그날 판매 기록 없음)는 빈칸, 영업했지만 판매 0이면 0으로 구분합니다.</div>
       <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:10px;">
@@ -4617,6 +4627,7 @@ async function loadOrdersIndex() {
   await loadProdLimits(); // 확정 요일 설정을 먼저 읽어야 회차 목록의 확정일이 맞다
   populateProdCycles();
   renderSoldExItems();
+  renderChannelSavedInfo();
   initMissingFinder();
   populateStockStoreSelect();
 }
@@ -5910,8 +5921,11 @@ function channelOfFile(name) { return /내점/.test(name) ? '내점' : /포장/.
 // 여러 파일(내점·포장·배달)을 한 합본으로 합친다: A~Q 원본 그대로, R = 채널(파일명 기준), S~X = 기준표 분류.
 // 소계·합계 행(상품코드 없음)은 합본에서 빼서, 합본을 바로 피벗해도 매출이 중복되지 않게 한다.
 // 20만 행이 넘을 수 있어(엑셀 변환 한계) CSV로 내려받는다 — 엑셀에서 그대로 열린다.
+// 채널별 매장×분류 수량 — 처리한 날짜별로 메모리에 모아 두었다가 "저장"하면 서버에 날짜당 문서 1개로 보관
+let chanAggByDate = {};
 async function handleChannelFiles(files) {
   const st = document.getElementById('chanStatus');
+  chanAggByDate = {};
   if (!masterRowsForExport().length) { st.innerHTML = '<span class="pill pill-warn">기준표가 없습니다. ① 탭에서 먼저 올려주세요.</span>'; return; }
   const lookup = buildChannelLookup();
   let html = ''; let header1 = null, header2 = null, width = 0; const outRows = []; const missAll = new Map(); const dates = new Set();
@@ -5934,8 +5948,22 @@ async function handleChannelFiles(files) {
       const saleDow = saleDate ? DOW_KO[dowOf(saleDate)] : '';
       fileDates.forEach(d => dates.add(d));
       let n = 0, hit = 0;
+      const qIdx = hdr.findIndex(h => h.replace(/\s/g, '') === '판매수량'); const Q = qIdx >= 0 ? qIdx : 13;
+      const SC = hdr.findIndex(h => h.replace(/\s/g, '') === '매장코드'), SN = hdr.findIndex(h => h.replace(/\s/g, '') === '매장명');
+      const agg = chanAggByDate[saleDate] = chanAggByDate[saleDate] || {};
       json.slice(2).forEach(r => {
         const code = r[G]; if (!code || !normCode(code)) return; // 소계·합계 행 제외
+        { // 매장 × 분류 × 세부구분1 × 채널 수량(판매수량 × 보정값) — "채널별 수량 저장"용
+          const mm = lookup(code, r[H]);
+          if (saleDate && mm && mm.v[1] && mm.v[1] !== '제외') {
+            const store = String(r[SC >= 0 ? SC : 8] ?? '').trim(), q = toNum(r[Q]);
+            if (store && q) {
+              const k = [store, mm.v[1], mm.v[2] || '', ch].join('\u0001');
+              const o = agg[k] = agg[k] || { storeCode: store, storeName: String(r[SN >= 0 ? SN : 9] ?? '').trim(), cat: mm.v[1], detail1: mm.v[2] || '', ch, qty: 0 };
+              o.qty += q * qtyMultiplier(mm.v[4]);
+            }
+          }
+        }
         const row = r.slice(0, width); while (row.length < width) row.push('');
         const m = lookup(code, r[H]); n++;
         if (m) { hit++; outRows.push([saleDate, saleDow, ...row, ch, ...m.v.map((x, j) => j === 4 && x !== '' && isFinite(Number(x)) ? Number(x) : x)]); }
@@ -5957,8 +5985,86 @@ async function handleChannelFiles(files) {
   const name = `매출분석_채널합본_${dl.length ? (dl[0] === dl[dl.length - 1] ? dl[0] : dl[0] + '_' + dl[dl.length - 1]) : formatDate(new Date())}_${chs}.csv`;
   triggerDownload(blob, name);
   const missTop = [...missAll.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const aggDates = Object.keys(chanAggByDate).filter(d => Object.keys(chanAggByDate[d]).length).sort();
+  const aggChs = d => [...new Set(Object.values(chanAggByDate[d]).map(o => o.ch))].join('·');
+  html += aggDates.length ? `<div class="status-line" style="flex-wrap:wrap; margin-top:6px;"><button class="btn btn-primary btn-sm" onclick="saveChannelQty(this)">💾 채널별 수량 저장 (${aggDates.length}일)</button><span>${aggDates.map(d => `${d.slice(5)}(${esc(aggChs(d))})`).join(', ')} — 저장하면 ⑤ 탭 "채널별 매장×일자 분류 수량"으로 뽑을 수 있습니다. 같은 날짜는 덮어씁니다(올린 채널만 바뀜).</span></div>` : '';
   html += `<div class="status-line" style="flex-wrap:wrap; margin-top:4px;"><span class="pill pill-ok">📥 ${esc(name)}</span><span>합본 ${fmtNum(outRows.length)}행(소계·합계 행 제외) · A·B열 = 매출일자·요일, T열 = 채널(${esc(chs)}), U~Z열 = 기준표 분류${missAll.size ? ` · 기준표에 없는 코드 ${missAll.size}개: ${esc(missTop.map(([k, n]) => `${k}(${n})`).join(', '))}` : ''}</span></div>`;
   st.innerHTML = html;
+}
+
+// ── 채널별 수량 저장/불러오기: meta/chanqty_{날짜}(조각 저장) = { v, date, names, rows:[[매장,분류,세부구분1,채널,수량]] }
+async function loadChannelQty(date) {
+  const raw = await storageGetLarge('chanqty_' + date); if (!raw) return null;
+  try { const o = JSON.parse(raw); return o.rows ? o : null; } catch (e) { return null; }
+}
+async function loadChannelDates() {
+  try { const raw = await storageGet('chanqty_dates'); return raw ? JSON.parse(raw) : []; } catch (e) { return []; }
+}
+async function saveChannelQty(btn) {
+  const dates = Object.keys(chanAggByDate).filter(d => Object.keys(chanAggByDate[d]).length).sort();
+  if (!dates.length) return;
+  btn.disabled = true; const t0 = btn.textContent;
+  try {
+    const saved = new Set(await loadChannelDates());
+    let i = 0;
+    for (const d of dates) {
+      btn.textContent = `저장 중... ${++i}/${dates.length}`;
+      // 같은 날짜에 이미 저장된 다른 채널은 유지하고, 이번에 올린 채널만 교체
+      const prev = await loadChannelQty(d);
+      const newChs = new Set(Object.values(chanAggByDate[d]).map(o => o.ch));
+      const names = { ...(prev?.names || {}) };
+      const rows = (prev?.rows || []).filter(r => !newChs.has(r[3]));
+      Object.values(chanAggByDate[d]).forEach(o => { if (o.storeName) names[o.storeCode] = o.storeName; rows.push([o.storeCode, o.cat, o.detail1, o.ch, Math.round(o.qty * 1000) / 1000]); });
+      const ok = await withTimeout(storageSetLarge('chanqty_' + d, JSON.stringify({ v: 1, date: d, names, rows })), 120000, '채널별 수량 저장');
+      if (!ok) throw new Error(`${d} 저장 실패`);
+      saved.add(d);
+    }
+    await storageSet('chanqty_dates', JSON.stringify([...saved].sort()));
+    btn.textContent = `✓ ${dates.length}일 저장됨`;
+    renderChannelSavedInfo();
+  } catch (e) { console.error(e); btn.textContent = t0; alert('채널별 수량 저장 실패: ' + e.message); }
+  finally { btn.disabled = false; }
+}
+async function renderChannelSavedInfo() {
+  const el = document.getElementById('chanSavedInfo'); if (!el) return;
+  const ds = await loadChannelDates();
+  el.innerHTML = ds.length ? `저장된 채널별 수량: ${ds[0]} ~ ${ds[ds.length - 1]} (${ds.length}일)` : '저장된 채널별 수량이 아직 없습니다.';
+  const f = document.getElementById('chanExStart'), t = document.getElementById('chanExEnd');
+  if (f && !f.value && ds.length) { const last = ds[ds.length - 1]; f.value = last.slice(0, 8) + '01'; t.value = last; }
+}
+// ⑤ 채널별 매장×일자 분류 수량 엑셀 — 기존 "매장별 분류 판매건수"와 같은 양식(행 = 매장, 열 = 날짜, 합계·판매점포수·평균 줄),
+// 시트 = 분류 × 채널. 1행 A열에 채널을 적는다(첨부 엑셀 형식과 동일).
+async function downloadChannelExtract() {
+  const st = document.getElementById('chanExStatus');
+  const start = document.getElementById('chanExStart').value, end = document.getElementById('chanExEnd').value;
+  if (!Object.keys(storeInfoMap).length) { st.innerHTML = '<span class="pill pill-warn">가맹점현황을 먼저 올려주세요(행 = 가맹점현황 매장).</span>'; return; }
+  const all = await loadChannelDates();
+  const dates = all.filter(d => (!start || d >= start) && (!end || d <= end)).sort();
+  if (!dates.length) { st.innerHTML = '<span class="pill pill-warn">해당 기간에 저장된 채널별 수량이 없습니다(② 탭에서 채널 파일 처리 후 "채널별 수량 저장").</span>'; return; }
+  st.innerHTML = `<span class="pill pill-neutral">불러오는 중... ${dates.length}일</span>`;
+  try {
+    const byDate = {};
+    for (const d of dates) { const o = await loadChannelQty(d); byDate[d] = (o?.rows || []).map(([storeCode, cat, detail1, ch, qty]) => ({ storeCode, cat, detail1, ch, qty })); }
+    const yymm = dates[0].slice(2, 4) + dates[0].slice(5, 7);
+    const S = [
+      ['버거 수량', '내점', e => e.cat === '버거' && e.ch === '내점'], ['버거 수량', '포장', e => e.cat === '버거' && e.ch === '포장'], ['버거 수량', '배달', e => e.cat === '버거' && e.ch === '배달'],
+      ['치킨 수량', '내점', e => e.cat === '치킨' && e.ch === '내점'], ['치킨 수량', '포장', e => e.cat === '치킨' && e.ch === '포장'], ['치킨 수량', '배달', e => e.cat === '치킨' && e.ch === '배달'],
+      ['비프 수량', '내점', e => e.cat === '비프' && e.ch === '내점'], ['비프 수량', '포장', e => e.cat === '비프' && e.ch === '포장'], ['비프 수량', '배달', e => e.cat === '비프' && e.ch === '배달'],
+      ['피자 수량', '내점', e => e.cat === '피자' && e.ch === '내점'],
+      ['피자 수량', '싱글', e => e.cat === '피자' && e.detail1 === '조각피자', ''],
+      ['피자 수량', '홀피자', e => e.cat === '피자' && e.detail1 !== '조각피자', ''],
+      ['피자 수량', '포장', e => e.cat === '피자' && e.ch === '포장'], ['피자 수량', '배달', e => e.cat === '피자' && e.ch === '배달'],
+    ];
+    const wb = XLSX.utils.book_new();
+    S.forEach(([nm, tag, fn, label]) => {
+      const ws = buildPivotSheet(dates, byDate, fn);
+      const a1 = label === undefined ? tag : label; // 싱글·홀피자는 채널 합계라 A1 비움
+      if (a1) ws['A1'] = { t: 's', v: a1 };
+      XLSX.utils.book_append_sheet(wb, ws, `${nm}_${yymm}(${tag})`.slice(0, 31));
+    });
+    XLSX.writeFile(wb, `매장별_채널별_분류수량_${dates[0]}_${dates[dates.length - 1]}.xlsx`);
+    st.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${dates.length}일(${dates[0]} ~ ${dates[dates.length - 1]}) · ${S.length}개 시트</span>`;
+  } catch (e) { console.error(e); st.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(e.message)}</span>`; }
 }
 
 // ==========================================================================
@@ -6911,7 +7017,7 @@ Object.assign(window, {
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
   deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, checkSoldDetail, backfillSoldLedger,
-  filterStockStores, pickFirstStockStore, setReclsRange, toggleMonthGroup, monthToggleAll, setHistMonth, setPromoMonth, findMissingMenus, renderProdAccuracy, downloadProdAccuracy, downloadDailySold, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, measureAllPastPromos, togglePromoFormType, measureLaunch, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
+  filterStockStores, pickFirstStockStore, saveChannelQty, downloadChannelExtract, setReclsRange, toggleMonthGroup, monthToggleAll, setHistMonth, setPromoMonth, findMissingMenus, renderProdAccuracy, downloadProdAccuracy, downloadDailySold, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, measureAllPastPromos, togglePromoFormType, measureLaunch, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
   addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
