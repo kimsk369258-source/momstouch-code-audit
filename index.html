@@ -521,8 +521,8 @@
       </div>
       <div class="drop-zone" id="storeInfoDropZone" style="margin-top:12px;">
         <div class="dz-icon">🏬</div>
-        <div class="dz-text">가맹점_현황.xlsb (또는 .xlsx) 파일을 여기로 드래그하거나 클릭</div>
-        <div class="dz-hint">.xlsx / .xls / .xlsb · E코드 · 매장명 · 팀 컬럼 필요</div>
+        <div class="dz-text">매장운영현황 엑셀(맘스터치매장정보rawdata 시트)을 여기로 드래그하거나 클릭</div>
+        <div class="dz-hint">E점포코드 · 피자점포코드 · 매장명 · 가맹그룹 · 팀 · 담당 AC 사용 (예전 가맹점현황 양식도 가능) · 첫 번째 시트를 읽습니다</div>
       </div>
       <input type="file" id="storeInfoFileInput" accept=".xlsx,.xls,.xlsb">
       <div id="storeInfoStatus" class="status-line" style="margin-top:10px;"></div>
@@ -3947,13 +3947,36 @@ function renderStoreInfoStatus() {
 // 있는 행)을 찾아서, 그 아래 데이터 행을 위치가 아니라 컬럼명으로 읽는다(D코드/E코드
 // 둘 다 있어서 이름만으론 완전히 안전하진 않지만, 실제로는 "코드"라는 이름이 아니라
 // "E코드"/"D코드"로 구분되어 있어 문제없다).
+// 직영 매장 판정(추출 표 맨 아래로 보냄)
+function isDirectStore(info) { return !!info && (/직영/.test(info.group || '') || /직영/.test(info.team || '')); }
+// 가맹점현황 순서 + 직영은 맨 아래
+function storeOrderWithDirectLast(order, map) {
+  const a = [], b = []; order.forEach(c => (isDirectStore(map[c]) ? b : a).push(c)); return [...a, ...b];
+}
 function buildStoreInfoMapFromRows(json) {
+  // ── 새 양식: "매장운영현황" 맘스터치매장정보rawdata 시트(3행 머리글: E점포코드·피자점포코드·매장명·가맹그룹·팀·담당 AC)
+  for (let i = 0; i < Math.min(json.length, 15); i++) {
+    const r = (json[i] || []).map(v => String(v ?? '').replace(/\s/g, ''));
+    const cE = r.indexOf('E점포코드');
+    if (cE < 0) continue;
+    const col = (name, fallback) => { const k = r.indexOf(name); return k >= 0 ? k : fallback; };
+    const cP = col('피자점포코드', 4), cN = col('매장명', 7), cG = col('가맹그룹', 9), cT = col('팀', 10), cA = col('담당AC', 11);
+    const map = {}, order = [];
+    for (let j = i + 1; j < json.length; j++) {
+      const row = json[j] || [];
+      const code = String(row[cE] ?? '').trim();
+      if (!/^[A-Z]\d{4,}$/.test(code)) continue; // 4행 보조 머리글·빈 줄 건너뜀
+      if (!(code in map)) order.push(code);
+      map[code] = { name: String(row[cN] ?? '').trim(), team: String(row[cT] ?? '').trim(), pizza: String(row[cP] ?? '').trim(), group: String(row[cG] ?? '').trim(), ac: String(row[cA] ?? '').trim() };
+    }
+    if (order.length) return { map, order: storeOrderWithDirectLast(order, map) };
+  }
   let headerRowIdx = -1, header = null;
   for (let i = 0; i < Math.min(json.length, 15); i++) {
     const r = (json[i] || []).map(v => String(v ?? '').trim());
     if (r.includes('E코드')) { headerRowIdx = i; header = r; break; }
   }
-  if (headerRowIdx < 0) throw new Error('"E코드" 헤더를 찾을 수 없습니다. 가맹점현황 파일 형식을 확인해주세요.');
+  if (headerRowIdx < 0) throw new Error('"E점포코드"(매장운영현황) 또는 "E코드"(예전 가맹점현황) 머리글을 찾을 수 없습니다. 파일 형식을 확인해주세요.');
   const cCode = header.indexOf('E코드'), cName = header.indexOf('매장명'), cTeam = header.indexOf('팀');
   if (cCode < 0) throw new Error('"E코드" 컬럼을 찾을 수 없습니다.');
 
@@ -4045,13 +4068,14 @@ async function loadCategoryQtyForRange(startDate, endDate, keys) {
 // extra: 가맹점현황에 없지만 데이터가 있는 매장 [{code, name}] — 넘기면 가맹점현황 매장 아래에 붙인다(팀 칸 = "가맹점현황 없음")
 function buildPivotSheet(dates, byDate, matchFn, extra, info) {
   const IM = info?.map || storeInfoMap, IO = info?.order || storeInfoOrder;
-  const codes = IO.filter(c => IM[c]);
-  const header = ['D코드', null, 'E코드', null, '매장명', '팀', null, ...dates.map(k => isMonthKey(k) ? k : toExcelSerialDate(k))];
+  const codes = storeOrderWithDirectLast(IO.filter(c => IM[c]), IM); // 직영은 맨 아래
+  // A E코드 · B 피자코드 · C 매장명 · D 가맹그룹 · E 팀 · F 담당 AC · G 빈칸 · H~ 날짜 (매장운영현황 D·E·H·J·K·L열)
+  const header = ['E코드', '피자코드', '매장명', '가맹그룹', '팀', '담당 AC', null, ...dates.map(k => isMonthKey(k) ? k : toExcelSerialDate(k))];
   const rows = [new Array(header.length).fill(null), header]; // 1행: 빈 줄, 2행: 헤더
   const extraInfo = {}; (extra || []).forEach(x => { extraInfo[x.code] = { name: x.name || '', team: '가맹점현황 없음' }; });
   [...codes, ...(extra || []).map(x => x.code)].forEach(code => {
     const sInfo = IM[code] || extraInfo[code];
-    const row = [null, null, code, null, sInfo.name, sInfo.team, null];
+    const row = [code, sInfo.pizza || null, sInfo.name, sInfo.group || null, sInfo.team, sInfo.ac || null, null];
     dates.forEach(dk => {
       const entries = byDate[dk] || [];
       let sum = 0;
@@ -4063,9 +4087,9 @@ function buildPivotSheet(dates, byDate, matchFn, extra, info) {
 
   const dataStartRow = 3; // 엑셀 1-based 행 번호 — 1행은 빈 줄, 2행은 헤더, 3행부터 매장 데이터
   const dataEndRow = dataStartRow + codes.length + (extra || []).length - 1;
-  const sumRow = new Array(header.length).fill(null); sumRow[4] = '판매수량';
-  const countRow = new Array(header.length).fill(null); countRow[4] = '판매점포수';
-  const avgRow = new Array(header.length).fill(null); avgRow[4] = '평균수량';
+  const sumRow = new Array(header.length).fill(null); sumRow[2] = '판매수량';
+  const countRow = new Array(header.length).fill(null); countRow[2] = '판매점포수';
+  const avgRow = new Array(header.length).fill(null); avgRow[2] = '평균수량';
   rows.push(sumRow, countRow, avgRow);
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
@@ -5838,7 +5862,10 @@ async function downloadDailySold() {
     const missing = dates.filter(d => !salesDays.has(d));
     const pack = packInfoMap();
     const conv = item => unit === 'pack' ? (pack[item]?.unitsPerPack || 1) : 1;
-    const codes = Object.keys(S).filter(c => !onlyActive || isActiveStore(c)).sort();
+    const rInfo = await storeInfoForRange(start, end);
+    const inInfo = storeOrderWithDirectLast(rInfo.order.filter(c => S[c]), rInfo.map);
+    const extraC = Object.keys(S).filter(c => !rInfo.map[c]).sort();
+    const codes = onlyActive ? inInfo : [...inInfo, ...extraC];
     const wb = XLSX.utils.book_new();
     // 전국 일자별 합계 + 영업 매장 수
     const opCount = {}, totals = {};
@@ -5852,7 +5879,7 @@ async function downloadDailySold() {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sumAoa), '전국 일자별 합계');
     // 품목별 매장 × 날짜
     items.forEach(it => {
-      const head = ['매장코드', '매장명', '팀', ...dates.map(d => `${d.slice(5)}(${DOW_KO[dowOf(d)]})${salesDays.has(d) ? '' : ' 데이터없음'}`), '기간 합계', '영업일수', '영업일 평균'];
+      const head = ['E코드', '피자코드', '매장명', '가맹그룹', '팀', '담당 AC', ...dates.map(d => `${d.slice(5)}(${DOW_KO[dowOf(d)]})${salesDays.has(d) ? '' : ' 데이터없음'}`), '기간 합계', '영업일수', '영업일 평균'];
       const aoa = [head];
       codes.forEach(c => {
         const ser = S[c].byItem[it]; if (!ser) return;
@@ -5863,7 +5890,8 @@ async function downloadDailySold() {
           const v = Math.round(((ser[d] || 0) / conv(it)) * 10) / 10; sum += v; n++; return v;
         });
         if (!n) return;
-        aoa.push([c, S[c].storeName || storeInfoMap[c]?.name || '', storeInfoMap[c]?.team || '', ...vals, Math.round(sum * 10) / 10, n, Math.round(sum / n * 10) / 10]);
+        const si = rInfo.map[c] || {};
+        aoa.push([c, si.pizza || '', si.name || S[c].storeName || '', si.group || '', si.team || (rInfo.map[c] ? '' : '가맹점현황 없음'), si.ac || '', ...vals, Math.round(sum * 10) / 10, n, Math.round(sum / n * 10) / 10]);
       });
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), it.slice(0, 31));
     });
