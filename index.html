@@ -208,6 +208,7 @@
     <button class="tab-btn" data-tab="orders">④ 발주/재고</button>
     <button class="tab-btn" data-tab="extract">⑤ 데이터 추출</button>
     <button class="tab-btn" data-tab="promo">⑥ 프로모션</button>
+    <button class="tab-btn" data-tab="trend">⑦ 트렌드 브리핑</button>
   </div>
 
   <!-- ===================== TAB 1: 기준코드 관리 ===================== -->
@@ -446,6 +447,7 @@
         <select id="prodCycle" class="search-input" style="flex:none; min-width:300px;"></select>
         <button class="btn btn-primary btn-sm" onclick="renderProduction()">예측</button>
         <button class="btn btn-ghost btn-sm" onclick="downloadProduction()">업체 공유용 엑셀</button>
+        <button class="btn btn-ghost btn-sm" onclick="closureImpactCheck()" title="휴무 패턴 매장(매주·격주)의 실제 입고가 전국 예측 오차에 얼마나 영향을 주는지 점검합니다">휴무 패턴 영향 점검</button>
         <button class="btn btn-ghost btn-sm" onclick="toggleProdLimits()">설정(확정 요일·품목·갭)</button>
       </div>
       <div id="prodLimitsBox" style="display:none; margin-top:8px;"></div>
@@ -459,6 +461,8 @@
       </div>
       <div class="status-line" id="accStatus" style="margin:6px 0;"></div>
       <div id="accWrap"></div>
+      <div class="status-line" id="prodClosureStatus" style="margin-top:8px;"></div>
+      <div id="prodClosureWrap"></div>
       <div class="note">※ 타깃 = 기본 예측 + 프로모션 임팩트(입력). 기본 예측 = [사용일마다 같은 요일 최근 4회 계육 판매(소진)를 4:3:2:1로 가중평균해 합산(포장 단위)] × POS 트렌드(최근 7일 POS 매출 ÷ 최근 4주 가중평균, 0.85~1.15) × 판매→발주 환산(최근 완료 회차 12개의 전국 입고 ÷ 전국 판매, 설정에서 끌 수 있음).<br>※ 최소 = 타깃 − 갭/2, 최대 = 타깃 + 갭/2 (갭은 품목별 고정 수량, 설정에서 변경). "과거 예측 오차 vs 갭"은 같은 요일 과거 회차를 그 시점 데이터로 다시 예측했을 때 오차가 갭/2 안에 들어온 횟수로, 갭이 실제 변동을 감당하는지 보는 참고치입니다. "참고: 같은 요일 발주 평균"은 최근 실제 발주 가중평균으로, 예측에는 쓰지 않고 비교용으로만 보여줍니다.</div>
     </div>
     <div class="card" id="recCard" style="display:none;"><!-- 비노출: 되살리려면 style="display:none;" 삭제 -->
@@ -618,6 +622,32 @@
       <div id="promoTimeline" style="margin:10px 0;"></div>
       <div id="promoList"><div class="empty">불러오는 중...</div></div>
       <div id="promoEffectWrap"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-trend">
+    <div class="card">
+      <h2>트렌드 브리핑</h2>
+      <div class="card-sub">일자별 POS 매출·분류(버거·치킨·비프·피자)·주요 계육 판매와 프로모션 일정을 겹쳐서 <strong>"지금 상황"</strong>을 정리하고, 고민해 볼 포인트를 뽑습니다. 기준일 포함 최근 35일을 보고(프로모션 점검은 시작 전 4주까지 63일) <strong>최근 7일 ↔ 전주 ↔ 직전 4주</strong>를 비교합니다(요일 구성이 같은 7일 단위). 자료는 날짜별 "일 요약"을 읽으므로 대조를 저장할 때 자동으로 만들어지고, 이전 날짜는 "일 요약 채우기"로 저장된 합본에서 채웁니다.</div>
+      <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:8px;">
+        <label style="font-size:13px;">기준일 <input type="date" id="trendDate" class="search-input" style="flex:none;"></label>
+        <button class="btn btn-primary btn-sm" onclick="makeTrendBriefing()">브리핑 만들기</button>
+        <button class="btn btn-ghost btn-sm" onclick="copyTrendBriefing()">텍스트 복사</button>
+        <button class="btn btn-ghost btn-sm" onclick="backfillDaySums()" title="저장된 합본에서 날짜별 일 요약을 만듭니다(쓰기 날짜당 1회)">일 요약 채우기</button>
+      </div>
+      <div class="status-line" id="trendStatus" style="margin:8px 0;"></div>
+    </div>
+    <div id="trendWrap"></div>
+    <div class="card">
+      <h2>매장 휴무 패턴 · 자체POS 구분</h2>
+      <div class="card-sub">최근 8주 판매 소진 원장으로 매장별 휴무 패턴(매주 X요일, 격주, 불규칙, 장기 미판매)을 찾습니다. <strong>가맹점현황에는 있지만 POS 판매가 입력되지 않는 매장(자체POS)</strong>은 입고 기록으로 구분해서 휴무 분석에서 뺍니다. 처음 한 번은 판매·입고 원장 몇 개월분을 읽어 시간이 걸립니다(이후 재사용).</div>
+      <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:8px;">
+        <button class="btn btn-primary btn-sm" onclick="analyzeClosures()">휴무 패턴 분석</button>
+        <button class="btn btn-ghost btn-sm" onclick="downloadClosures()">엑셀 다운로드</button>
+        <span class="note">기준일은 위 "기준일"을 따릅니다.</span>
+      </div>
+      <div class="status-line" id="closureStatus" style="margin:8px 0;"></div>
+      <div id="closureWrap"></div>
     </div>
   </section>
 
@@ -938,6 +968,7 @@ function unwrapDoc(data) {
 // ==========================================================================
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
+    if (btn.dataset.tab === 'trend') setTimeout(() => { try { initTrendTab(); } catch (e) { /* 아직 준비 전 */ } }, 0);
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
@@ -1903,6 +1934,85 @@ function classifyForRowInner(minorCode, majorName, midName, productName, minorNa
 // 재분류 때 판매 소진량(판매수량 × 보정값)을 다시 모은다 — 원장(sold_m) 재작성용.
 // 기준표 보정값을 고친 뒤 "전체 재분류"를 하면 합본의 보정값 열·매장별 분류 수량과 함께
 // 재고 계산용 판매 소진량도 새 보정값으로 다시 계산된다(예전엔 소진량만 옛 값으로 남았다).
+// ── 일 요약(daysum): 날짜당 문서 1개 — ⑦ 트렌드 브리핑이 이 문서만 읽는다(읽기·쓰기 부담 최소화) ──────────
+// { v:1, date, rev(매출 합계), stores(판매 발생 매장 수), bySales:{매출분류:매출}, byCat:{기준표분류:판매수량(판매×보정값)}, items:{발주품목:소진(개·조각)} }
+// 저장·재분류할 때 함께 만들고, 이전 날짜는 ⑦ 탭 "일 요약 채우기"로 저장된 합본에서 만든다.
+let currentDaySumByDate = {};
+const daySumCache = {}; // date -> 요약 | null
+function buildDaySum(date, items, catEntries, consEntries) {
+  let rev = 0; const bySales = {}, byCat = {}, itemsU = {}, stores = new Set();
+  items.forEach(it => { const v = Number(it.revenue) || 0; rev += v; const sc = it.salesCat || '(없음)'; bySales[sc] = (bySales[sc] || 0) + v; });
+  catEntries.forEach(e => { stores.add(e.storeCode); byCat[e.cat] = (byCat[e.cat] || 0) + e.qty; });
+  consEntries.forEach(e => { stores.add(e.storeCode); itemsU[e.orderItem] = (itemsU[e.orderItem] || 0) + e.qty; });
+  const r0 = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Math.round(v)]));
+  const r1 = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Math.round(v * 10) / 10]));
+  return { v: 1, date, rev: Math.round(rev), stores: stores.size, bySales: r0(bySales), byCat: r1(byCat), items: r1(itemsU) };
+}
+async function saveDaySum(sum) {
+  const ok = await storageSet('daysum_' + sum.date, JSON.stringify(sum));
+  if (ok) daySumCache[sum.date] = sum;
+  return ok;
+}
+async function loadDaySums(dates) {
+  const need = dates.filter(d => !(d in daySumCache));
+  for (let i = 0; i < need.length; i += 10) {
+    await Promise.all(need.slice(i, i + 10).map(async d => {
+      try { const raw = await storageGet('daysum_' + d); daySumCache[d] = raw ? JSON.parse(raw) : null; } catch (e) { daySumCache[d] = null; }
+    }));
+  }
+  return dates.map(d => daySumCache[d] || null);
+}
+// 저장된 합본(Storage)을 한 줄씩 읽어 일 요약을 만든다 — Firestore 읽기 없음, 쓰기 1회
+async function daySumFromStoredExport(date) {
+  const url = await getDownloadURL(exportStorageRef(date));
+  let cols, catIdx, d1Idx, fIdx, scIdx, bad = false;
+  let rev = 0; const bySales = {}, byCat = {}, itemsU = {}, stores = new Set();
+  await streamCsvRows(url, header => {
+    cols = resolveRawCols(header);
+    catIdx = header.indexOf('분류'); scIdx = header.indexOf('매출분류'); fIdx = header.indexOf('보정값');
+    d1Idx = header.indexOf('세부구분1') >= 0 ? header.indexOf('세부구분1') : header.indexOf('세부구분');
+    if (cols.storeCode < 0 || cols.qty < 0 || catIdx < 0) bad = true;
+  }, r => {
+    if (bad) return;
+    if (isTestStore(r[cols.storeCode], cols.storeName >= 0 ? r[cols.storeName] : '')) return;
+    const revenue = cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0);
+    rev += revenue;
+    const sc = (scIdx >= 0 ? String(r[scIdx] ?? '').trim() : '') || '(없음)';
+    bySales[sc] = (bySales[sc] || 0) + revenue;
+    const cat = String(r[catIdx] ?? '').trim(), store = String(r[cols.storeCode] ?? '').trim(), qty = toNum(r[cols.qty]);
+    if (!store || !cat || cat === '제외' || !qty) return;
+    stores.add(store);
+    const factor = fIdx >= 0 ? r[fIdx] : '';
+    byCat[cat] = (byCat[cat] || 0) + qty * qtyMultiplier(factor);
+    const item = d1Idx >= 0 ? String(r[d1Idx] ?? '').trim() : '';
+    if (item) itemsU[item] = (itemsU[item] || 0) + qty * consumptionPerSale(item, factor, cols.productName >= 0 ? r[cols.productName] : '', cols.productCode >= 0 ? r[cols.productCode] : '');
+  });
+  if (bad) throw new Error('합본 형식 인식 실패');
+  const r0 = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Math.round(v)]));
+  const r1 = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Math.round(v * 10) / 10]));
+  return { v: 1, date, rev: Math.round(rev), stores: stores.size, bySales: r0(bySales), byCat: r1(byCat), items: r1(itemsU) };
+}
+async function backfillDaySums(maxDays = 70) {
+  const st = document.getElementById('trendStatus');
+  if (heavyJob) { st.innerHTML = `<span class="pill pill-warn">다른 작업(${heavyJob}) 진행 중 — 끝난 뒤 다시 눌러주세요.</span>`; return; }
+  const dates = dailyIndex.map(d => d.date).filter(d => !isMonthKey(d)).sort().slice(-maxDays);
+  st.innerHTML = '<span class="pill pill-neutral">저장된 요약 확인 중...</span>';
+  await loadDaySums(dates);
+  const todo = dates.filter(d => !daySumCache[d]).reverse(); // 최근 날짜부터
+  if (!todo.length) { st.innerHTML = `<span class="pill pill-ok">✓ 최근 ${dates.length}일 요약이 모두 있습니다.</span>`; return; }
+  if (!confirm(`일 요약이 없는 ${todo.length}개 날짜를 저장된 합본에서 만듭니다(최근 날짜부터, 날짜당 수 초~수십 초). 쓰기는 날짜당 1회입니다. 진행할까요?`)) return;
+  heavyJob = '일 요약 만들기';
+  let n = 0; const failed = [];
+  try {
+    for (const d of todo) {
+      st.innerHTML = `<span class="pill pill-neutral">일 요약 만드는 중 ${++n}/${todo.length}</span><span>${d} · 중간에 멈춰도 만든 날짜는 남습니다(다시 누르면 이어서)</span>`;
+      try { await saveDaySum(await daySumFromStoredExport(d)); }
+      catch (e) { console.error('daysum backfill failed', d, e); failed.push(d); }
+      await sleep(300);
+    }
+  } finally { heavyJob = null; }
+  st.innerHTML = `<span class="pill ${failed.length ? 'pill-warn' : 'pill-ok'}">${failed.length ? '⚠ 일부 완료' : '✓ 완료'}</span><span>${todo.length - failed.length}개 날짜 생성${failed.length ? ` · 실패 ${failed.length}건(합본 파일 없음): ${failed.slice(0, 5).join(', ')}` : ''}</span>`;
+}
 function addConsumptionRow(map, storeCode, storeName, qtySold, orderItems) {
   orderItems.forEach(oi => {
     const key = storeCode + '|' + oi.name;
@@ -2176,6 +2286,8 @@ async function processRawDailyFiles(fileList) {
   currentMergedRowsByDate = rowsByDate;
   currentConsumptionByDate = consumptionByDate;
   currentCategoryQtyByDate = categoryQtyByDate;
+  currentDaySumByDate = {};
+  Object.keys(byDate).forEach(dk => { if (!isMonthKey(dk)) currentDaySumByDate[dk] = buildDaySum(dk, byDate[dk], Object.values(categoryQtyByDate[dk] || {}), Object.values(consumptionByDate[dk] || {})); });
   // 연도·날짜는 파일 안의 매출일자(년월)로 정한다. 파일명(예: 일별상품매출현황(매장별)_20261001_20261001_…)의
   // 조회기간과 다르면 잘못된 파일일 수 있으니 알려준다(이름을 바꾼 파일·합본 파일은 확인 생략).
   if (fileDateWarnings.length) setTimeout(() => alert('파일명 기간과 파일 안 매출일자가 다릅니다 — 올바른 파일인지 확인해주세요.\n\n' + fileDateWarnings.join('\n')), 0);
@@ -3320,6 +3432,7 @@ async function saveDayReportInner(date, report, btnEl) {
       jobs.push(step('판매 소진 원장', () => ledgerWriteRows(LEDGER_SOLD, rows)));
     }
     if (currentCategoryQtyByDate[date]) jobs.push(step('분류 수량', () => saveCatQtyForDate(date, Object.values(currentCategoryQtyByDate[date]))));
+    if (currentDaySumByDate[date]) jobs.push(step('일 요약', () => saveDaySum(currentDaySumByDate[date])));
     if (btnEl) btnEl.textContent = `저장 중... (${jobs.length}개 작업 동시 진행)`;
     await Promise.all(jobs);
     const totalSec = Math.round((Date.now() - t0) / 100) / 10;
@@ -3459,6 +3572,7 @@ async function reclassifyOneDateSilently(date) {
   if (!ok) throw new Error('저장 실패');
   await saveCatQtyForDate(date, Object.values(categoryQtyMap));
   await saveConsumptionLedger(date, consumptionMap);
+  try { await saveDaySum(buildDaySum(date, items, Object.values(categoryQtyMap), Object.values(consumptionMap))); } catch (e) { console.warn('daysum save failed', date, e); }
   return { oldCount: oldReport ? oldReport.anomalyCount : null, newCount: newReport.anomalies.length };
 }
 
@@ -3741,6 +3855,7 @@ async function loadCatQtyCompact(date) {
 
 // 매장별로 나뉘어 저장된 catqty 문서를 특정 날짜 기준으로 전부 지운다.
 async function deleteCatQtyForDate(date) {
+  try { await storageSet('daysum_' + date, ''); delete daySumCache[date]; } catch (e) { /* 무시 */ }
   try { await storageSetLarge('catqtyd_' + date, ''); } catch (e) { /* 무시 */ }
   let storeCodes = [];
   try {
@@ -5531,9 +5646,10 @@ function openPromoForm(id) {
     <input type="hidden" id="pfId" value="${esc(p.id || '')}">
     <div class="toolbar" style="gap:8px; flex-wrap:wrap;">
       <select id="pfType" class="search-input" style="flex:none;" onchange="togglePromoFormType()"><option value="promo"${p.type === 'promo' ? ' selected' : ''}>프로모션</option><option value="holiday"${p.type === 'holiday' ? ' selected' : ''}>공휴일·명절</option><option value="launch"${p.type === 'launch' ? ' selected' : ''}>신제품 출시</option></select>
+      <select id="pfKind" class="search-input" style="flex:none;" onchange="togglePromoFormType()"><option value="delivery"${promoKindOf(p) === 'delivery' || promoKindOf(p) === 'holiday' || promoKindOf(p) === 'launch' ? ' selected' : ''}>배달앱 할인</option><option value="ip"${promoKindOf(p) === 'ip' ? ' selected' : ''}>IP 제휴</option><option value="other"${promoKindOf(p) === 'other' ? ' selected' : ''}>기타</option></select>
       <input id="pfName" class="search-input" style="flex:1; min-width:220px;" placeholder="이름 (예: 26.10 쿠팡이츠 데일리딜)" value="${esc(p.name || '')}">
-      <select id="pfChannel" class="search-input" style="flex:none;">${PROMO_CHANNELS.map(c => `<option${p.channel === c ? ' selected' : ''}>${c}</option>`).join('')}</select>
-      <input id="pfStart" type="date" class="search-input" style="flex:none;" value="${esc(p.start || '')}"> ~
+      <select id="pfChannel" class="search-input" style="flex:none;" onchange="updateDeliverySuggest()">${PROMO_CHANNELS.map(c => `<option${p.channel === c ? ' selected' : ''}>${c}</option>`).join('')}</select>
+      <input id="pfStart" type="date" class="search-input" style="flex:none;" onchange="updateDeliverySuggest()" value="${esc(p.start || '')}"> ~
       <input id="pfEnd" type="date" class="search-input" style="flex:none;" value="${esc(p.end || '')}">
     </div>
     <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:6px;">
@@ -5542,6 +5658,17 @@ function openPromoForm(id) {
       <input id="pfMinOrder" class="search-input" style="flex:none; width:120px;" placeholder="최소주문금액" value="${esc(p.minOrder ?? '')}">
       <input id="pfLift" class="search-input" style="flex:none; width:140px;" placeholder="예상 증가율(%) 선택" value="${esc(p.expectedLift ?? '')}">
       <input id="pfNote" class="search-input" style="flex:1; min-width:200px;" placeholder="비고" value="${esc(p.note || '')}">
+    </div>
+    <div id="pfDeliveryBox" style="margin-top:8px; padding:8px 10px; border:1px dashed #60a5fa; border-radius:8px; background:#eff6ff;">
+      <div style="font-size:13px; font-weight:600; margin-bottom:4px;">배달 채널 증가율(%) — 숫자 1개</div>
+      <div class="toolbar" style="gap:8px; flex-wrap:wrap;"><input id="pfDeliveryLift" class="search-input" style="flex:none; width:110px; text-align:right;" placeholder="예: 12" value="${esc(p.deliveryLift ?? '')}"><span class="note">배달 채널 판매가 <strong>최근 4주 기준선보다 추가로</strong> 몇 % 늘어날지(이미 같은 강도로 진행 중인 행사는 0, 새로 붙거나 강해지면 그 차이만큼)</span></div>
+      <div id="pfDeliverySuggest" style="margin-top:4px;"></div>
+      <div class="note">생산 예측에는 <strong>기준 판매 × 품목별 배달 비중 × 증가율</strong>로 반영됩니다. 배달 비중은 <strong>기준선이 된 같은 요일 최근 4주</strong>의 채널 비중(채널 파일의 판매수량×보정값 기준)을 쓰므로, 기준선에 이미 들어 있는 배달 프로모션 효과는 비중에 그대로 반영되고 입력한 증가율(추가분)에만 곱해집니다. 채널 자료가 없으면 생산 설정의 기본 배달 비중(50%)을 씁니다.</div>
+    </div>
+    <div id="pfIpBox" style="margin-top:8px; padding:8px 10px; border:1px dashed #f9a8d4; border-radius:8px; background:#fdf2f8;">
+      <div style="font-size:13px; font-weight:600; margin-bottom:4px;">IP 상품코드 — 세트 코드만 입력(구성품은 같은 코드로 자동 집계)</div>
+      <div class="toolbar" style="gap:8px; flex-wrap:wrap; align-items:flex-start;"><textarea id="pfIpCodes" style="flex:1; min-width:240px; height:52px;" placeholder="예: 5024, 5025, 5026">${esc((p.ipCodes || []).join(', '))}</textarea><input id="pfIpDaily" class="search-input" style="flex:none; width:170px;" placeholder="일 예상 세트 수(선택)" value="${esc(p.ipDailySets ?? '')}"></div>
+      <div class="note">입력한 코드로 합본에서 세트 판매량과 구성 계육을 직접 집계합니다(⑥ 목록의 "IP 분석"). "일 예상 세트 수"는 판매가 시작되기 전 예측에만 쓰이고, 판매가 시작되면 실제 판매(최근 3일 평균)로 바뀝니다.</div>
     </div>
     <div id="pfLaunchBox" style="margin-top:8px; padding:8px 10px; border:1px dashed #f9a8d4; border-radius:8px; background:#fdf2f8;">
       <div style="font-size:13px; font-weight:600; margin-bottom:4px;">신제품 주요 계육 (상품코드 입력 없이 계육만 선택)</div>
@@ -5553,11 +5680,10 @@ function openPromoForm(id) {
       </div>
       <div class="note">출시일만 넣으면 됩니다. 종료일은 비워두면 "진행 중"으로 보고 오늘까지(판매 데이터 있는 날까지) 분석하며, 판매를 마치면 그때 종료일을 넣으세요. 키워드를 넣으면 신제품 판매량을 따로 집계해 카니발(기존 메뉴 잠식)·인크리멘탈(순증)을 나눠 봅니다. 키워드가 없으면 계육 전체 증감만 봅니다.</div>
     </div>
-    <div id="pfImpactBox" style="margin-top:8px; padding:8px 10px; border:1px dashed #93c5fd; border-radius:8px; background:#eff6ff;">
-      <div style="font-size:13px; font-weight:600; margin-bottom:4px;">계육 임팩트 — 회차당 추가 포장 수(생산 수량 예측에 그대로 더함, 줄어드는 행사·공휴일은 마이너스)</div>
+    <details id="pfImpactBox" style="margin-top:8px; padding:8px 10px; border:1px dashed #93c5fd; border-radius:8px; background:#f8fafc;"><summary style="cursor:pointer; font-size:13px; font-weight:600;">고급: 품목별 직접 입력(기존 방식) — 공휴일·기타 행사용, 회차당 추가 포장 수</summary>
       <div style="display:flex; flex-wrap:wrap; gap:6px 12px;">${impactItems().map(it => `<label style="font-size:13px;">${esc(it)} <input class="search-input pf-impact" data-item="${esc(it)}" style="width:90px; text-align:right;" placeholder="0" value="${p.impact?.[it] ?? ''}"></label>`).join('')}</div>
       <div class="note">예: 쿠팡이츠 행사로 화·목 회차마다 싸이패티 2,000bag 더 나갈 것 같으면 2000. 회차 일부만 행사에 걸치면 걸친 날 비율만큼만 더합니다. 비워두면 0.</div>
-    </div>
+    </details>
     <div class="table-wrap" style="margin-top:8px;"><table id="pfCoupons"><thead><tr><th>할인구분</th><th>총할인</th><th>본사</th><th>가맹점</th><th>채널부담</th><th>형태</th><th>적용요일/날짜</th><th>일배포량·시간</th><th></th></tr></thead>
       <tbody>${(p.coupons || []).map(couponRow).join('')}</tbody></table></div>
     <div class="toolbar" style="gap:8px; margin-top:6px;">
@@ -5572,6 +5698,11 @@ function impactItems() { return [...(prodLimits?.order || PROD_DEFAULT_ITEMS)]; 
 function togglePromoFormType() {
   const t = document.getElementById('pfType')?.value;
   const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
+  const kind = document.getElementById('pfKind')?.value;
+  show('pfKind', t === 'promo');
+  show('pfDeliveryBox', t === 'promo' && kind === 'delivery');
+  show('pfIpBox', t === 'promo' && kind === 'ip');
+  if (t === 'promo' && kind === 'delivery') updateDeliverySuggest();
   show('pfLaunchBox', t === 'launch');
   show('pfImpactBox', t !== 'launch');
   ['pfChannel', 'pfOrderType', 'pfTarget', 'pfMinOrder', 'pfLift', 'pfAddCoupon'].forEach(id => show(id, t === 'promo'));
@@ -5586,6 +5717,10 @@ async function submitPromoForm() {
     id: g('pfId') || ('p' + Date.now()), type: g('pfType'), name: g('pfName'), channel: g('pfType') === 'holiday' ? '공휴일' : g('pfType') === 'launch' ? '신제품' : g('pfChannel'),
     items: g('pfType') === 'launch' ? [...new Set([...[...document.querySelectorAll('.pf-item:checked')].map(x => x.value), ...g('pfItemsExtra').split(',').map(x => x.trim()).filter(Boolean)])] : undefined,
     keywords: g('pfType') === 'launch' ? g('pfKeywords') : undefined,
+    kind: g('pfType') === 'promo' ? g('pfKind') : undefined,
+    deliveryLift: g('pfType') === 'promo' && g('pfKind') === 'delivery' ? num(g('pfDeliveryLift')) : undefined,
+    ipCodes: g('pfType') === 'promo' && g('pfKind') === 'ip' ? ipParseInput() : undefined,
+    ipDailySets: g('pfType') === 'promo' && g('pfKind') === 'ip' ? num(g('pfIpDaily')) : undefined,
     excludeKeywords: g('pfType') === 'launch' ? g('pfExKeywords') : undefined,
     impact: g('pfType') === 'launch' ? undefined : Object.fromEntries([...document.querySelectorAll('.pf-impact')].map(el => [el.dataset.item, Number(String(el.value).replace(/[^0-9.\-]/g, ''))]).filter(([, v]) => v && isFinite(v))),
     start: g('pfStart'), end: g('pfEnd'), orderType: g('pfOrderType'), target: g('pfTarget') || '전체',
@@ -5599,6 +5734,7 @@ async function submitPromoForm() {
   if (p.type !== 'launch' && !p.end) { alert('종료일을 입력해주세요.'); return; }
   if (p.end && p.end < p.start) { alert('종료일이 시작일보다 빠릅니다.'); return; }
   if (p.type === 'launch') { p.coupons = []; if (!p.items.length) { alert('신제품의 주요 계육을 하나 이상 선택해주세요.'); return; } }
+  if (p.type === 'promo' && p.kind === 'ip' && !p.ipCodes.length && !confirm('IP 상품코드가 비어 있습니다. 코드를 넣어야 IP 판매를 집계할 수 있습니다. 그래도 저장할까요?')) return;
   const old = promos.find(x => x.id === p.id); if (old && old.measured) p.measured = old.measured;
   promos = promos.filter(x => x.id !== p.id).concat(p);
   if (!(await savePromos())) { alert('저장 실패'); return; }
@@ -5658,17 +5794,19 @@ function renderPromoList() {
   tl += list.map(p => `<div style="position:relative; height:20px; margin:2px 0; background:#f9fafb; border-radius:4px;"><div title="${esc(p.name)} ${p.start}~${p.end || '진행 중'}" style="position:absolute; left:${pos(p.start)}%; width:${Math.max(0.6, pos(addDaysStr(promoEnd(p), 1)) - pos(p.start))}%; top:2px; bottom:2px; background:${PROMO_COLORS[p.channel] || '#64748b'}; border-radius:3px;"></div><span style="position:absolute; left:${Math.min(80, pos(addDaysStr(promoEnd(p), 1)))}%; padding-left:6px; font-size:11px; line-height:20px; white-space:nowrap;">${esc(p.name)}</span></div>`).join('');
   document.getElementById('promoTimeline').innerHTML = list.length ? tl : '';
   const lift = p => p.type === 'launch' ? (p.measured ? Object.entries(p.measured.items || {}).map(([it, v]) => `${esc(it)} 순증 <strong style="color:${v.incr >= 0 ? '#b91c1c' : '#2563eb'}">${v.incr >= 0 ? '+' : ''}${Math.round(v.incr * 100)}%</strong>${v.cannib != null ? ` · 잠식 ${Math.round(v.cannib * 100)}%` : ''}`).join(', ') : '-') : p.measured ? Object.entries(p.measured.items || {}).map(([it, v]) => { const u = usableLift(p, v.lift); return `${esc(it)} <strong style="color:${v.lift >= 0 ? '#b91c1c' : '#2563eb'}">${v.lift >= 0 ? '+' : ''}${Math.round(v.lift * 100)}%</strong>${u.note ? ` <span class="pill pill-warn" title="${esc(u.note)}">예측엔 ${Math.round(u.v * 100)}%</span>` : ''}`; }).join(', ') : '-';
-  let html = '<div class="table-wrap"><table><thead><tr><th>구분·채널</th><th>이름</th><th>기간</th><th>내용</th><th class="num">예상 증가율</th><th>측정 효과</th><th>예측에 쓰는 효과</th><th></th></tr></thead><tbody>';
+  let html = '<div class="table-wrap"><table><thead><tr><th>구분·채널</th><th>이름</th><th>기간</th><th>내용</th><th class="num">예상 증가율</th><th>측정 효과</th><th>임팩트 입력 vs 관측</th><th>예측에 쓰는 효과</th><th></th></tr></thead><tbody>';
   const tableList = (promoMonthSel === 'all' ? list : list.filter(p => monthsOf(p).includes(promoMonthSel))).slice().sort((x, y) => y.start.localeCompare(x.start));
   tableList.forEach(p => {
     const nd = (new Date(promoEnd(p) + 'T00:00:00Z') - new Date(p.start + 'T00:00:00Z')) / 864e5 + 1;
     html += `<tr><td><span class="pill" style="background:${PROMO_COLORS[p.channel] || '#64748b'}; color:#fff;">${esc(p.channel)}</span></td><td><strong>${esc(p.name)}</strong>${p.note ? `<div class="note">${esc(p.note)}</div>` : ''}</td>
       <td>${p.start.slice(5)}(${DOW_KO[dowOf(p.start)]}) ~ ${p.end ? `${p.end.slice(5)}(${DOW_KO[dowOf(p.end)]}) · ${nd}일` : `<span class="pill pill-neutral">진행 중</span> · 출시 ${nd}일째`}</td><td style="font-size:12px;">${esc(promoSummary(p))}${p.orderType ? ` · ${esc(p.orderType)}` : ''}${p.target && p.target !== '전체' ? ` · 대상 ${esc(p.target)}` : ''}</td>
       <td class="num">${p.expectedLift != null ? p.expectedLift + '%' : '-'}</td><td style="font-size:12px;">${lift(p)}</td>
+      <td style="font-size:12px;" data-obs="${p.id}">${['delivery', 'ip'].includes(promoKindOf(p)) ? (promoObs[p.id] || '<span class="note">불러오는 중...</span>') : '-'}</td>
       <td style="font-size:12px;">${p.impact && Object.keys(p.impact).length ? `<div><strong>입력 임팩트(회차당):</strong> ${Object.entries(p.impact).map(([k, v]) => `${esc(k)} ${v > 0 ? '+' : ''}${fmtNum(v)}`).join(', ')}</div>` : ''}${p.type === 'launch' ? '-' : [...registeredOrderItems()].map(it => { const L = liftFor(p, it); return L.lift == null ? '' : `${esc(it)} ${L.lift >= 0 ? '+' : ''}${Math.round(L.lift * 100)}%<span class="note">(${L.src === 'measured' ? '측정' : L.src === 'expected' ? '예상' : '유사 ' + L.sm.n + '건'})</span>`; }).filter(Boolean).join(', ') || '<span class="note">자료 없음(0%)</span>'}</td>
-      <td style="white-space:nowrap;"><button class="btn btn-ghost btn-sm" onclick="${p.type === 'launch' ? 'measureLaunch' : 'measurePromo'}('${p.id}')">${p.type === 'launch' ? '카니발·증분 분석' : '효과 측정'}</button> <button class="btn btn-ghost btn-sm" onclick="openPromoForm('${p.id}')">수정</button> <button class="btn btn-danger btn-sm" onclick="deletePromo('${p.id}')">삭제</button></td></tr>`;
+      <td style="white-space:nowrap;"><button class="btn btn-ghost btn-sm" onclick="${p.type === 'launch' ? 'measureLaunch' : promoKindOf(p) === 'ip' ? 'measureIp' : 'measurePromo'}('${p.id}')">${p.type === 'launch' ? '카니발·증분 분석' : promoKindOf(p) === 'ip' ? 'IP 분석' : '효과 측정'}</button> <button class="btn btn-ghost btn-sm" onclick="openPromoForm('${p.id}')">수정</button> <button class="btn btn-danger btn-sm" onclick="deletePromo('${p.id}')">삭제</button></td></tr>`;
   });
   document.getElementById('promoList').innerHTML = tableList.length ? html + '</tbody></table></div>' : '<div class="empty">등록된 프로모션이 없습니다.</div>';
+  loadPromoObservations();
 }
 
 // 효과 측정: 전체 매장 합계 기준. 기준선 = 행사 시작 전 5주 안의 같은 요일 중
@@ -6241,6 +6379,7 @@ async function saveChannelQty(btn) {
       saved.add(d);
     }
     await storageSet('chanqty_dates', JSON.stringify([...saved].sort()));
+    dates.forEach(d => { delete chanStatsCache[d]; }); // 방금 저장한 날짜는 "자료 없음"으로 캐시돼 있을 수 있으니 비워서 다시 읽게 한다
     btn.textContent = `✓ ${dates.length}일 저장됨`;
     renderChannelSavedInfo();
   } catch (e) { console.error(e); btn.textContent = t0; alert('채널별 수량 저장 실패: ' + e.message); }
@@ -6438,6 +6577,7 @@ async function toggleProdLimits() {
     <button class="btn btn-ghost btn-sm" onclick="document.querySelector('#plGapTable tbody').insertAdjacentHTML('beforeend', '<tr><td><input class=&quot;search-input pl-name&quot; style=&quot;width:160px;&quot;></td><td><input class=&quot;search-input pl-gap&quot; style=&quot;width:110px;&quot;></td><td class=&quot;num pl-half&quot;></td><td></td></tr>')">+ 품목</button>
     <div style="margin:8px 0;">판매 → 발주 환산: <select id="plCalib" class="search-input" style="flex:none;"><option value="auto"${L.calib !== 'none' ? ' selected' : ''}>자동(최근 완료 회차의 입고 ÷ 판매 비율 적용)</option><option value="none"${L.calib === 'none' ? ' selected' : ''}>없음(판매 소진량 그대로)</option></select>
       <span class="note">POS에 안 잡히는 사용(폐기·자체POS 매장 등)이 있으면 판매만으로는 실제 발주보다 적게 나옵니다. "자동"은 그 차이를 최근 4주 실적 비율로 메웁니다.</span></div>
+    <div style="margin:8px 0;">기본 배달 비중 <input id="plDelShare" class="search-input" style="flex:none; width:70px; text-align:right;" value="${Math.round((L.deliveryShareDefault ?? 0.5) * 100)}"> % <span class="note">채널 자료(내점·포장·배달)가 없을 때만 씁니다. 자료가 있으면 기준선이 된 같은 요일 최근 4주의 품목별 배달 비중을 자동으로 씁니다.</span></div>
     <button class="btn btn-primary btn-sm" style="margin-top:6px;" onclick="saveProdLimits()">저장</button>`;
 }
 async function saveProdLimits() {
@@ -6449,7 +6589,8 @@ async function saveProdLimits() {
     const g = Number(String(tr.querySelector('.pl-gap').value).replace(/[^0-9.]/g, ''));
     if (g > 0) gaps[n] = g;
   });
-  prodLimits = { order, confirmDow, gaps, calib: document.getElementById('plCalib')?.value === 'none' ? 'none' : 'auto' };
+  const ds = Number(String(document.getElementById('plDelShare')?.value || '').replace(/[^0-9.]/g, ''));
+  prodLimits = { order, confirmDow, gaps, calib: document.getElementById('plCalib')?.value === 'none' ? 'none' : 'auto', deliveryShareDefault: ds > 0 && ds <= 100 ? ds / 100 : 0.5 };
   if (await storageSet('production_limits', JSON.stringify(prodLimits))) { document.getElementById('prodLimitsBox').style.display = 'none'; populateProdCycles(); renderProduction(); }
   else alert('저장 실패');
 }
@@ -6598,7 +6739,8 @@ function prodPosTrend(cutoff, ctx) {
 // ③ 판매 → 발주 환산: 확정 전에 사용일이 모두 끝난(추가발주 전산 포함) 최근 회차 최대 12개의 입고 ÷ 판매
 function prodCalibration(item, cutoff, ctx, mode) {
   if (mode === 'none') return { k: 1, n: 0, raw: null, note: '환산 안 함(판매 그대로)' };
-  const rv = ctx.recvBy[item] || {}, cons = ctx.consBy[item] || {};
+  // 입고에는 IP 몫이 들어 있으므로 환산은 "IP 포함 총 소진"(consAll)으로 계산한다(기준선용 consBy는 IP를 뺀 값)
+  const rv = ctx.recvBy[item] || {}, cons = ctx.consAll?.[item] || ctx.consBy[item] || {};
   let sumR = 0, sumC = 0, n = 0;
   for (let d = cutoff, i = 0; i < 100 && n < 12; d = addDaysStr(d, -1), i++) {
     if (![2, 4, 6].includes(dowOf(d)) || !(rv[d] > 0)) continue;
@@ -6627,8 +6769,40 @@ function forecastProd(item, T, ctx, calibMode) {
   const perDay = cycleDays(T).map(d => { const w = prodSameDow(series, d, cutoff, ctx.salesDays); return { d, v: w ? w.v : null, used: w ? w.used : [] }; });
   if (perDay.some(x => x.v == null)) return null; // 같은 요일 판매 실적이 없으면 예측하지 않는다
   const base = perDay.reduce((a, x) => a + x.v, 0);
-  const trend = prodPosTrend(cutoff, ctx), cal = prodCalibration(item, cutoff, ctx, calibMode), promo = manualPromoAdd(T, item);
+  const trend = prodPosTrend(cutoff, ctx), cal = prodCalibration(item, cutoff, ctx, calibMode), legacy = manualPromoAdd(T, item);
   const baseTarget = Math.max(0, base * trend.f * cal.k);
+  const k = cal.k, tf = trend.f, upp = ctx.pack?.[item]?.unitsPerPack || 1;
+  // ① 배달앱 할인: 그날 진행 중인 배달 프로모션의 "배달 채널 증가율" × 품목의 배달 비중 × (기준 판매 × 트렌드 × 환산)
+  let delAdd = 0; const notes = [...legacy.notes];
+  const delPromos = promos.filter(q => promoKindOf(q) === 'delivery' && Number(q.deliveryLift));
+  if (delPromos.length) {
+    // 배달 비중 = 기준선이 된 "같은 요일 최근 4주"(가중 4:3:2:1)의 채널 비중. 기준선에 이미 들어 있는 배달 프로모션 효과가 비중에도 그대로 들어 있으므로
+    // 입력한 증가율(= 기준선 대비 추가분)에 곱하면 이중으로 더하지도, 덜 더하지도 않는다. 같은 요일 채널 자료가 2일 미만이면 최근 28일 비중, 그것도 없으면 기본값.
+    const fallback = ctx.deliveryShare?.[item], dflt = prodLimits?.deliveryShareDefault ?? 0.5;
+    const shareOf = x => {
+      let num = 0, den = 0, n = 0;
+      x.used.forEach((u, i) => { const b = ctx.chanStats?.[u]?.byItem?.[item]; if (!b) return; const t = b.내점 + b.포장 + b.배달; if (!(t > 0)) return; num += PROD_W[i] * b.배달; den += PROD_W[i] * t; n++; });
+      return n >= 2 && den > 0 ? { s: num / den, src: 'base' } : fallback != null ? { s: fallback, src: 'recent' } : { s: dflt, src: 'default' };
+    };
+    let sSum = 0, sN = 0; const srcs = new Set();
+    perDay.forEach(x => {
+      const act = delPromos.filter(q => x.d >= q.start && x.d <= promoEnd(q)); if (!act.length) return;
+      const sh = shareOf(x); sSum += sh.s; sN++; srcs.add(sh.src);
+      delAdd += x.v * tf * k * sh.s * act.reduce((a, q) => a + Number(q.deliveryLift) / 100, 0);
+    });
+    const shTxt = `${Math.round((sN ? sSum / sN : dflt) * 100)}%${srcs.has('default') ? '(기본값)' : srcs.has('recent') ? '(최근 28일)' : '(기준 4주 같은 요일)'}`;
+    delPromos.forEach(q => { const n = perDay.filter(x => x.d >= q.start && x.d <= promoEnd(q)).length; if (n) notes.push(`${q.name} 배달 +${q.deliveryLift}% × 배달비중 ${shTxt} (${n}/${perDay.length}일)`); });
+  }
+  // ② IP 제휴: 기준선에서는 IP 판매분을 뺐으므로(loadProdContext) 그만큼을 다시 더한다 — 최근 3일 판매 평균, 없으면 "일 예상 세트 × 세트당 계육"
+  let ipAdd = 0;
+  (ctx.ipPromos || []).forEach(({ p, sum }) => {
+    const act = perDay.filter(x => x.d >= p.start && x.d <= promoEnd(p)); if (!act.length) return;
+    let exp = ipRecentBags(sum, item, cutoff, upp), src = '최근 3일 판매 평균';
+    if (exp == null) { const comp = ctx.ipComposition?.[item]; if (Number(p.ipDailySets) > 0 && comp != null) { exp = Number(p.ipDailySets) * comp; src = `예상 일 ${p.ipDailySets}세트 × 세트당 ${comp.toFixed(3)}bag`; } }
+    if (!(exp > 0)) return;
+    const add = exp * act.length * k; ipAdd += add; notes.push(`${p.name} IP ${add >= 0 ? '+' : ''}${Math.round(add).toLocaleString()}(${src}, ${act.length}/${perDay.length}일)`);
+  });
+  const promo = { add: legacy.add + delAdd + ipAdd, notes, legacyAdd: legacy.add, delAdd, ipAdd };
   return { cd0, cutoff, perDay, base, trend, cal, promo, promoAdd: promo.add, baseTarget, target: Math.max(0, baseTarget + promo.add),
     ref: prodRecvRef(item, T, cutoff, ctx), fewObs: perDay.some(x => x.used.length < 3) };
 }
@@ -6660,7 +6834,24 @@ async function loadProdContext(fromDate, toDate) {
     Object.entries(days).forEach(([d, q]) => { (consBy[it] = consBy[it] || {})[d] = ((consBy[it] || {})[d] || 0) + q / upp; });
   }));
   const rev = {}; dailyIndex.forEach(d => { if (/^\d{4}-\d{2}-\d{2}$/.test(d.date)) rev[d.date] = Number(d.totalRevenue) || 0; });
-  return { recvBy, rawBy, consBy, rev, salesDays: salesDaySetNow(), pack };
+  // IP 제휴(상품코드 집계가 있는 것): IP 세트 소진을 기준선에서 빼서 "IP 없는 수준"을 만들고, 예측 때 IP 몫을 따로 더한다(이중 계산 방지)
+  const ipPromos = [], packsNum = Object.fromEntries(Object.entries(pack).map(([k, v]) => [k, v?.unitsPerPack || 1]));
+  const consAll = {}; Object.keys(consBy).forEach(it => { consAll[it] = { ...consBy[it] }; }); // IP 포함 원본(환산 계산용)
+  for (const q of promos) {
+    if (promoKindOf(q) !== 'ip' || !ipCodeList(q).length || promoEnd(q) < fromDate || q.start > toDate) continue;
+    const sum = (await loadIpSum(q)) || { v: 1, key: ipCodeList(q).join(','), days: {} };
+    ipPromos.push({ p: q, sum });
+    // POS 트렌드도 IP 세트 매출을 뺀 값으로(기준선이 "IP 없는 수준"이므로 IP 때문에 오른 매출을 다시 곱하지 않게)
+    Object.entries(sum.days).forEach(([d, v]) => { if (rev[d] != null) rev[d] = Math.max(0, rev[d] - (v.rev || 0)); });
+    Object.entries(sum.days).forEach(([d, v]) => Object.entries(v.items || {}).forEach(([it, units]) => {
+      const bags = units / (pack[it]?.unitsPerPack || 1);
+      if (consBy[it] && consBy[it][d] != null) consBy[it][d] = Math.max(0, consBy[it][d] - bags);
+    }));
+  }
+  const cds = []; for (let d = addDaysStr(toDate, -63); d <= toDate; d = addDaysStr(d, 1)) cds.push(d); // 기준선 4주(같은 요일) + 최근 28일 비중용
+  const chanStats = await loadChannelStats(cds).catch(() => ({}));
+  const recentStats = {}; Object.keys(chanStats).filter(d => d >= addDaysStr(toDate, -28)).forEach(d => { recentStats[d] = chanStats[d]; });
+  return { recvBy, rawBy, consBy, consAll, rev, salesDays: salesDaySetNow(), pack, ipPromos, ipComposition: ipCompositionAll(ipPromos, packsNum), chanStats, deliveryShare: deliveryShareFrom(recentStats), S, R };
 }
 
 let prodRows = [], prodMeta = null;
@@ -6888,6 +7079,788 @@ function downloadProduction() {
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '생산수량');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(detail), '계산근거');
   XLSX.writeFile(wb, `생산수량_${T}입고.xlsx`);
+}
+
+// ==========================================================================
+// ==========================================================================
+// 프로모션 유형별 임팩트
+//   · 배달앱 할인  : "배달 채널 증가율(%)" 1개를 입력 → 생산 예측에 [기준 판매 × 배달 비중 × 증가율]로 반영
+//   · IP 제휴      : 세트 상품코드(예: 5024, 5025, 5026)를 입력 → 그 코드의 판매(세트 수·구성 계육)를 합본에서 직접 집계
+//   · 입력값 vs 사후 관측(채널: 내점·포장을 대조군), 비슷한 과거 프로모션 값을 입력 기본값으로 제안
+// ==========================================================================
+function promoKindOf(p) {
+  if (p.type === 'holiday') return 'holiday';
+  if (p.type === 'launch') return 'launch';
+  if (p.kind === 'delivery' || p.kind === 'ip' || p.kind === 'other') return p.kind;
+  const name = p.name || ''; // 예전에 등록한 프로모션은 이름·채널로 추정
+  if (/IP|제휴|콜라보|collab/i.test(name) || (/\[[^\]]+\]/.test(name) && !TB_DELIVERY.includes(p.channel))) return 'ip';
+  return TB_DELIVERY.includes(p.channel) ? 'delivery' : 'other';
+}
+const maxCouponTotal = p => Math.max(0, ...(p.coupons || []).map(c => Number(c.total) || 0));
+const meanOf = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
+
+// ── 채널 일 통계 (saved: chanqty_{date}) ─────────────────────────────────────
+const chanStatsCache = {};
+async function loadChannelStats(dates) {
+  const need = dates.filter(d => !(d in chanStatsCache));
+  const saved = need.length ? new Set(await loadChannelDates()) : new Set();
+  for (const d of need) {
+    if (!saved.has(d)) { chanStatsCache[d] = null; continue; }
+    const o = await loadChannelQty(d);
+    if (!o) { chanStatsCache[d] = null; continue; }
+    const tot = { 내점: 0, 포장: 0, 배달: 0 }, byItem = {};
+    (o.rows || []).forEach(r => {
+      const cat = r[1], d1 = r[2], ch = r[3], q = Number(r[4]) || 0;
+      if (TB_CATS.includes(cat) && tot[ch] != null) tot[ch] += q;
+      if (d1 && ['내점', '포장', '배달'].includes(ch)) { const b = byItem[d1] = byItem[d1] || { 내점: 0, 포장: 0, 배달: 0 }; b[ch] += q; }
+    });
+    chanStatsCache[d] = { tot, byItem };
+  }
+  const out = {}; dates.forEach(d => { if (chanStatsCache[d]) out[d] = chanStatsCache[d]; }); return out;
+}
+// 품목별 배달 비중 = 배달 수량 ÷ 전체 수량(자료가 3일 이상일 때만)
+function deliveryShareFrom(stats) {
+  const days = Object.keys(stats); if (days.length < 3) return {};
+  const t = {}; days.forEach(d => Object.entries(stats[d].byItem || {}).forEach(([it, v]) => { const o = t[it] = t[it] || { all: 0, del: 0 }; o.all += v.내점 + v.포장 + v.배달; o.del += v.배달; }));
+  return Object.fromEntries(Object.entries(t).filter(([, o]) => o.all > 0).map(([it, o]) => [it, o.del / o.all]));
+}
+// 배달 채널 증가율 측정: 프로모션 기간 vs 시작 전 같은 요일(최대 4주). 순증 = (배달 변화) ÷ (내점·포장 변화) − 1 → 시장 전체 흐름을 뺀 값
+function measureDeliveryLift(p, stats, promosList) {
+  const end = promoEnd(p);
+  const days = Object.keys(stats).filter(d => d >= p.start && d <= end).sort();
+  // 프로모션 하루하루를 "시작 전 같은 요일 최근 4주"와 짝지어 비교한다. 4주 안에서 다른 프로모션·공휴일이 없는 날을 우선 쓰고,
+  // 깨끗한 날이 2개 미만이면 어쩔 수 없이 섞인 날도 쓰되 청정도를 낮게 표시한다(요일 구성 차이·직전 프로모션 오염을 줄이기 위함).
+  const rd = [], rc = [], used = new Set(); let cleanUsed = 0, totUsed = 0;
+  days.forEach(d => {
+    const cand = []; for (let j = 1; j <= 4; j++) { const x = addDaysStr(d, -7 * j); if (x < p.start && stats[x]) cand.push(x); }
+    if (!cand.length) return;
+    const clean = cand.filter(x => tbIsCleanDay(tbFlagsOn(x, promosList)));
+    const use = clean.length >= 2 ? clean : cand;
+    const dB = meanOf(use.map(x => stats[x].tot.배달)), cB = meanOf(use.map(x => stats[x].tot.내점 + stats[x].tot.포장));
+    const cur = stats[d].tot.내점 + stats[d].tot.포장;
+    if (!(dB > 0) || !(cB > 0) || !(cur > 0)) return;
+    rd.push(stats[d].tot.배달 / dB); rc.push(cur / cB);
+    use.forEach(x => { used.add(x); totUsed++; if (clean.includes(x)) cleanUsed++; });
+  });
+  if (rd.length < 2 || used.size < 3) return { ok: false, nP: days.length, nB: used.size };
+  const gR = meanOf(rd), cR = meanOf(rc);
+  return { ok: true, nP: rd.length, nB: used.size, gross: gR - 1, ctrl: cR - 1, net: gR / cR - 1, cleanFrac: totUsed ? cleanUsed / totUsed : 0 };
+}
+// 비슷한 과거 프로모션의 측정값으로 입력 기본값을 제안: 같은 채널 ×3, 쿠폰 금액이 가까울수록, 기준선이 깨끗할수록 가중
+function suggestDeliveryLift(p, stats, promosList) {
+  const cands = promosList.filter(q => q.id !== p.id && promoKindOf(q) === 'delivery' && promoEnd(q) < (p.start || '9999')).map(q => ({ q, m: measureDeliveryLift(q, stats, promosList) })).filter(x => x.m.ok);
+  if (!cands.length) return null;
+  const tp = maxCouponTotal(p);
+  const rows = cands.map(({ q, m }) => ({ q, m, w: (q.channel === p.channel ? 3 : 1) / (1 + Math.abs(maxCouponTotal(q) - tp) / 2000) * (m.cleanFrac >= 0.5 ? 1 : 0.5) }));
+  const W = rows.reduce((a, r) => a + r.w, 0);
+  const lift = clampN(rows.reduce((a, r) => a + r.w * r.m.net, 0) / W, -0.2, 1);
+  return { lift, n: rows.length, basis: rows.sort((a, b) => b.w - a.w).slice(0, 3).map(r => `${r.q.name} ${tbSign(r.m.net)}${r.m.cleanFrac < 0.5 ? '*' : ''}`) };
+}
+
+// ── IP 제휴: 상품코드 기반 집계 ───────────────────────────────────────────────
+// 세트는 "사이드모상품" 행(상품코드 = 세트 코드)과 구성품 "사이드상품" 행(같은 상품코드 + 사이드상품코드)으로 기록된다.
+// 세트 코드만 입력하면 구성품(싸이버거·빅싸이순살 등)의 계육 소진까지 같이 집계된다.
+const ipCache = {}; // promoId -> { key, days:{date:{sets,rev,stores,items:{발주품목:소진(개·조각)}}} }
+const ipCodeList = p => [...new Set((p.ipCodes || []).map(c => normCode(c)).filter(Boolean))].sort();
+function ipParseCodes(text) { return [...new Set(String(text || '').split(/[^0-9A-Za-z]+/).map(c => normCode(c)).filter(Boolean))].sort(); }
+function ipFold(acc, r) { // r: {pc, gubun, qty, revenue, store, cat, detail1, factor, name, code}
+  if (!acc.codes.has(r.pc)) return;
+  if (r.gubun === '사이드상품') {
+    if (r.cat && r.cat !== '제외' && r.detail1 && r.qty) acc.items[r.detail1] = (acc.items[r.detail1] || 0) + r.qty * consumptionPerSale(r.detail1, r.factor, r.name, r.code);
+  } else { acc.sets += r.qty; acc.rev += r.revenue; if (r.qty && r.store) acc.stores.add(r.store); }
+}
+function ipFinish(acc) { const r1 = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Math.round(v * 10) / 10])); return { sets: Math.round(acc.sets), rev: Math.round(acc.rev), stores: acc.stores.size, items: r1(acc.items) }; }
+async function loadIpSum(p) {
+  const key = ipCodeList(p).join(',');
+  if (ipCache[p.id] && ipCache[p.id].key === key) return ipCache[p.id];
+  try { const raw = await storageGet('ipsum_' + p.id); if (raw) { const o = JSON.parse(raw); if (o.key === key) { ipCache[p.id] = o; return o; } } } catch (e) { /* 없음 */ }
+  return null;
+}
+async function ipDayFromStoredExport(date, codes) {
+  const url = await getDownloadURL(exportStorageRef(date));
+  const acc = { codes, sets: 0, rev: 0, stores: new Set(), items: {} };
+  let cols, catIdx, d1Idx, fIdx, bad = false;
+  await streamCsvRows(url, header => {
+    cols = resolveRawCols(header); catIdx = header.indexOf('분류'); fIdx = header.indexOf('보정값');
+    d1Idx = header.indexOf('세부구분1') >= 0 ? header.indexOf('세부구분1') : header.indexOf('세부구분');
+    if (cols.productCode < 0 || cols.qty < 0) bad = true;
+  }, r => {
+    if (bad) return;
+    const pc = normCode(r[cols.productCode]); if (!acc.codes.has(pc)) return; // 빠르게 걸러냄
+    if (isTestStore(cols.storeCode >= 0 ? r[cols.storeCode] : '', cols.storeName >= 0 ? r[cols.storeName] : '')) return;
+    ipFold(acc, { pc, gubun: cols.gubun >= 0 ? String(r[cols.gubun] ?? '').trim() : '', qty: toNum(r[cols.qty]),
+      revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
+      store: cols.storeCode >= 0 ? String(r[cols.storeCode] ?? '').trim() : '', cat: catIdx >= 0 ? String(r[catIdx] ?? '').trim() : '',
+      detail1: d1Idx >= 0 ? String(r[d1Idx] ?? '').trim() : '', factor: fIdx >= 0 ? r[fIdx] : '', name: cols.productName >= 0 ? r[cols.productName] : '', code: pc });
+  });
+  if (bad) throw new Error('합본 형식 인식 실패');
+  return ipFinish(acc);
+}
+// 아직 집계 안 한 날짜(프로모션 시작일 ~ 마지막 저장일)만 합본에서 읽어 채운다(결과는 ipsum_{프로모션 id}에 저장)
+async function ensureIpSum(p, onProgress, fetchDay = ipDayFromStoredExport) {
+  const codes = ipCodeList(p); if (!codes.length) throw new Error('IP 상품코드가 없습니다.');
+  const key = codes.join(',');
+  let sum = await loadIpSum(p); if (!sum) sum = { v: 1, key, days: {} };
+  const saved = dailyIndex.map(d => d.date).filter(d => !isMonthKey(d)).sort();
+  const last = saved[saved.length - 1], end = promoEnd(p) < last ? promoEnd(p) : last;
+  const todo = saved.filter(d => d >= p.start && d <= end && !(d in sum.days));
+  const set = new Set(codes); let n = 0;
+  for (const d of todo) {
+    if (onProgress) onProgress(++n, todo.length, d);
+    sum.days[d] = await fetchDay(d, set);
+    if (n % 5 === 0) await storageSet('ipsum_' + p.id, JSON.stringify(sum));
+    await sleep(100);
+  }
+  if (todo.length) await storageSet('ipsum_' + p.id, JSON.stringify(sum));
+  ipCache[p.id] = sum; return { sum, added: todo.length };
+}
+// 집계 결과 분석: 일평균 세트 수·계육(bag), 세트당 계육, 기준 대비 순증/잠식(시작 전 같은 요일 평균과 비교)
+function ipAnalyze(p, sum, D, packs, items) {
+  const days = Object.keys(sum.days).sort().filter(d => sum.days[d].sets > 0);
+  if (!days.length) return null;
+  const totSets = days.reduce((a, d) => a + sum.days[d].sets, 0);
+  const bagsOf = (d, it) => (sum.days[d].items?.[it] || 0) / (packs[it] || 1);
+  const perDay = {}, perSet = {}, recent = {}, net = {}, cannib = {}; const last3 = days.slice(-3);
+  items.forEach(it => {
+    const tot = days.reduce((a, d) => a + bagsOf(d, it), 0);
+    perDay[it] = tot / days.length; perSet[it] = totSets ? tot / totSets : 0; recent[it] = meanOf(last3.map(d => bagsOf(d, it)));
+    // 순증: 프로모션 기간 총 소진 평균 − 시작 전 같은 요일 평균(소진은 일 요약 기준)
+    const Dp = days.filter(d => D[d]?.has), baseSet = new Set(); Dp.forEach(d => { for (let j = 1; j <= 4; j++) { const x = addDaysStr(d, -7 * j); if (x < p.start && D[x]?.has) baseSet.add(x); } });
+    const B = [...baseSet];
+    if (Dp.length >= 2 && B.length >= 3) {
+      const tb = d => (D[d].items?.[it] || 0) / (packs[it] || 1);
+      net[it] = meanOf(Dp.map(tb)) - meanOf(B.map(tb));
+      cannib[it] = perDay[it] > 0 ? Math.max(0, Math.min(1, 1 - net[it] / perDay[it])) : null;
+    } else { net[it] = null; cannib[it] = null; }
+  });
+  const baseDirty = (() => { const s = new Set(); days.forEach(d => { for (let j = 1; j <= 4; j++) { const x = addDaysStr(d, -7 * j); if (x < p.start && D[x]?.has) s.add(x); } }); const B = [...s]; return B.length ? 1 - B.filter(x => tbIsCleanDay(tbFlagsOn(x, promos))).length / B.length : null; })();
+  return { days, nDays: days.length, setsPerDay: totSets / days.length, revPerDay: days.reduce((a, d) => a + sum.days[d].rev, 0) / days.length,
+    storesPerDay: meanOf(days.map(d => sum.days[d].stores)), perDay, perSet, recent, net, cannib, baseDirty };
+}
+// 전체 IP 프로모션의 세트당 계육(bag): 입력한 "일 예상 세트 수"를 계육으로 바꿀 때 쓴다
+function ipCompositionAll(ipPromos, packs) {
+  const tot = {}; let sets = 0;
+  ipPromos.forEach(({ sum }) => Object.values(sum.days || {}).forEach(v => { sets += v.sets || 0; Object.entries(v.items || {}).forEach(([it, u]) => { tot[it] = (tot[it] || 0) + u / (packs[it] || 1); }); }));
+  return sets > 0 ? Object.fromEntries(Object.entries(tot).map(([it, b]) => [it, b / sets])) : {};
+}
+function ipRecentBags(sum, item, cutoff, upp) {
+  const ds = Object.keys(sum.days || {}).filter(d => d <= cutoff && sum.days[d].sets > 0).sort().slice(-3);
+  return ds.length ? meanOf(ds.map(d => (sum.days[d].items?.[item] || 0) / upp)) : null;
+}
+
+// ==========================================================================
+// ⑦ 트렌드 브리핑 — 일자 매출(POS)·분류·계육 판매와 프로모션 일정을 겹쳐서 "지금 상황"을 정리하고 고민할 포인트를 뽑는다.
+//   자료: 날짜별 일 요약(daysum) + 프로모션 목록 + (있으면) 채널별 수량. 기준일 포함 최근 35일을 본다.
+//   비교: 최근 7일 ↔ 전주 7일(요일 구성 동일) ↔ 직전 4주(28일) 평균
+// ==========================================================================
+const TB_CATS = ['버거', '치킨', '비프', '피자'];
+const TB_DELIVERY = ['쿠팡이츠', '배달의민족', '요기요', '땡겨요'];
+const TB_KIND_COLOR = { '배달앱': '#2563eb', 'IP·신제품': '#be185d', '공휴일': '#a16207', '기타': '#475569' };
+const tbPct = (a, b) => (a != null && b) ? a / b - 1 : null;
+const tbSign = v => v == null ? '-' : `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
+const tbArrow = v => v == null ? '<span class="note">-</span>' : `<strong style="color:${v >= 0 ? '#b91c1c' : '#2563eb'}">${v >= 0 ? '▲' : '▼'} ${Math.abs(v * 100).toFixed(1)}%</strong>`;
+const tbEok = v => v == null ? '-' : (v / 1e8).toFixed(2) + '억';
+const tbMan = v => v == null ? '-' : Math.round(v / 1e4).toLocaleString() + '만';
+const tbNum = (v, d = 0) => v == null ? '-' : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
+const tbMd = d => d.slice(5).replace('-', '/');
+
+// 프로모션 종류: 공휴일 / IP·신제품(콜라보·출시) / 배달앱 / 기타. IP는 유형이 "신제품 출시"이거나 이름에 IP·제휴·콜라보가 있거나,
+// 배달앱 채널이 아닌데 [작품명] 같은 대괄호 태그가 있는 경우로 본다.
+function tbPromoKind(p) {
+  const k = promoKindOf(p);
+  return k === 'holiday' ? '공휴일' : (k === 'ip' || k === 'launch') ? 'IP·신제품' : k === 'delivery' ? '배달앱' : '기타';
+}
+function tbFlagsOn(d, list) {
+  const f = { '배달앱': [], 'IP·신제품': [], '공휴일': [], '기타': [] };
+  list.forEach(p => { if (d >= p.start && d <= promoEnd(p)) f[tbPromoKind(p)].push(p.name); });
+  return f;
+}
+const tbIsPromoDay = f => f['배달앱'].length + f['IP·신제품'].length + f['기타'].length > 0;
+const tbIsCleanDay = f => !tbIsPromoDay(f) && !f['공휴일'].length;
+
+// ── 모델: 윈도우 집계, 요일 구조, 프로모션일 vs 평상시, 프로모션 점검, 채널 ──────────────────────
+function tbBuildModel(E, D, dates, opts) {
+  const { promosList, packs, items, chan } = opts;
+  const dayList = (a, b) => dates.filter(d => d >= addDaysStr(E, a) && d <= addDaysStr(E, b));
+  const W0 = dayList(-6, 0), W1 = dayList(-13, -7), W4 = dayList(-34, -7);
+  const agg = list => {
+    const ok = list.filter(d => D[d].has), n = ok.length, sum = f => ok.reduce((a, d) => a + (f(D[d]) || 0), 0);
+    const rev = sum(x => x.rev), stores = sum(x => x.stores);
+    const cat = {}; [...TB_CATS, '조각피자'].forEach(c => { cat[c] = sum(x => x.byCat?.[c]); });
+    const it = {}; items.forEach(i => { it[i] = sum(x => x.items?.[i]) / (packs[i] || 1); });
+    const sales = {}; ok.forEach(d => Object.entries(D[d].bySales || {}).forEach(([k, v]) => { sales[k] = (sales[k] || 0) + v; }));
+    const per = (o, div) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, div ? v / div : null]));
+    return { n, listN: list.length, rev, stores, revPerDay: n ? rev / n : null, storesPerDay: n ? stores / n : null, revPerStore: stores ? rev / stores : null,
+      catDay: per(cat, n), catStore: per(cat, stores), itemDay: per(it, n), sales };
+  };
+  const A0 = agg(W0), A1 = agg(W1), A4 = agg(W4);
+  const split = list => ({ end: agg(list.filter(d => [0, 6].includes(dowOf(d)))), mid: agg(list.filter(d => ![0, 6].includes(dowOf(d)))) });
+  const S0 = split(W0), S1 = split(W1);
+
+  // 일자별 시리즈
+  const series = dates.map(d => {
+    const x = D[d], flags = tbFlagsOn(d, promosList);
+    return { d, dow: dowOf(d), has: x.has, flags, revPerStore: x.has && x.stores ? x.rev / x.stores : null, rev: x.rev, stores: x.stores,
+      catStore: Object.fromEntries(TB_CATS.map(c => [c, x.has && x.stores ? (x.byCat?.[c] || 0) / x.stores : null])),
+      itemStore: Object.fromEntries(items.map(i => [i, x.has && x.stores ? ((x.items?.[i] || 0) / (packs[i] || 1)) / x.stores : null])) };
+  });
+
+  // 평상시 vs 프로모션일: 요일 효과를 뺀 지수(요일 평균 대비)로 비교
+  const have = series.filter(s => s.has && s.revPerStore != null);
+  const dowMean = {}; for (let w = 0; w < 7; w++) { const v = have.filter(s => s.dow === w).map(s => s.revPerStore); dowMean[w] = v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; }
+  const clean = have.filter(s => tbIsCleanDay(s.flags)), promoD = have.filter(s => tbIsPromoDay(s.flags));
+  const cleanDows = new Set(clean.map(s => s.dow));
+  const idxMean = (arr, f) => { const v = arr.map(s => { const m = dowMean[s.dow]; const val = f(s); return m && val != null ? val / m : null; }).filter(v => v != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+  const baseCmp = { nClean: clean.length, nPromo: promoD.length, cleanDows: [...cleanDows].sort(), uplift: null, cats: {}, items: {} };
+  if (clean.length >= 6 && promoD.length >= 6 && cleanDows.size >= 4) {
+    // 요일별 평균으로 나눈 지수를 쓰므로 분류·계육도 같은 방식으로 "요일 효과"를 뺀다
+    const dowMeanOf = f => { const o = {}; for (let w = 0; w < 7; w++) { const v = have.filter(s => s.dow === w).map(f).filter(v => v != null); o[w] = v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; } return o; };
+    const upl = f => { const dm = dowMeanOf(f); const ix = arr => { const v = arr.map(s => { const val = f(s); return dm[s.dow] && val != null ? val / dm[s.dow] : null; }).filter(v => v != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; }; const a = ix(promoD), b = ix(clean); return (a && b) ? a / b - 1 : null; };
+    baseCmp.uplift = upl(s => s.revPerStore);
+    TB_CATS.forEach(c => { baseCmp.cats[c] = upl(s => s.catStore[c]); });
+    items.forEach(i => { baseCmp.items[i] = upl(s => s.itemStore[i]); });
+  }
+  const promoShare = list => { const ok = list.filter(d => series.find(s => s.d === d)); const n = ok.length; const c = ok.filter(d => tbIsPromoDay(series.find(s => s.d === d).flags)).length; return n ? c / n : null; };
+
+  // 프로모션 현황: 최근 35일~앞으로 10일에 걸친 것
+  const rangeFrom = addDaysStr(E, -34), rangeTo = addDaysStr(E, 10);
+  const promoRows = promosList.filter(p => promoEnd(p) >= rangeFrom && p.start <= rangeTo).map(p => {
+    const end = promoEnd(p), kind = tbPromoKind(p);
+    let status;
+    if (p.start > E) status = `예정 D−${Math.round((new Date(p.start) - new Date(E)) / 864e5)}`;
+    else if (end >= E) status = `진행 중 ${Math.round((new Date(E) - new Date(p.start)) / 864e5) + 1}일차`;
+    else status = `종료 ${Math.round((new Date(E) - new Date(end)) / 864e5)}일 전`;
+    return { p, kind, status, end, hasImpact: !!(p.impact && Object.values(p.impact).some(v => Number(v))) };
+  }).sort((a, b) => a.p.start.localeCompare(b.p.start));
+
+  // 종료 후 흐름: 최근 14일 안에 끝난 3일 이상 프로모션 — 종료 직전 7일 vs 종료 후(최대 7일) 매장당 매출
+  const afterEnd = [];
+  promoRows.forEach(r => {
+    const p = r.p, end = r.end; if (r.kind === '공휴일' || end >= E || end < addDaysStr(E, -14)) return;
+    if ((new Date(end) - new Date(p.start)) / 864e5 + 1 < 3) return;
+    const pre = series.filter(s => s.has && s.d <= end && s.d > addDaysStr(end, -7) && s.revPerStore != null);
+    const post = series.filter(s => s.has && s.d > end && s.d <= addDaysStr(end, 7) && s.revPerStore != null);
+    const avg = a => a.reduce((x, s) => x + s.revPerStore, 0) / a.length;
+    if (pre.length >= 4 && post.length >= 2) {
+      // 요일 구성 차이를 줄이려고 요일 평균 지수로 비교
+      const ix = a => a.reduce((x, s) => x + (dowMean[s.dow] ? s.revPerStore / dowMean[s.dow] : 0), 0) / a.length;
+      afterEnd.push({ name: p.name, kind: r.kind, end, nPre: pre.length, nPost: post.length, delta: ix(post) / ix(pre) - 1, raw: avg(post) / avg(pre) - 1 });
+    } else afterEnd.push({ name: p.name, kind: r.kind, end, nPre: pre.length, nPost: post.length, delta: null });
+  });
+
+  // 입력한 임팩트 vs 관측: 프로모션 기간 계육 소진(bag/일) − 시작 전 같은 요일 평균, 회차(평균 7/3일)로 환산해 비교
+  const feedback = [];
+  promosList.forEach(p => {
+    if (!p.impact || p.type === 'launch') return;
+    const start = p.start, end = promoEnd(p), Dp = dates.filter(d => d >= start && d <= end && d <= E && D[d].has);
+    if (Dp.length < 2) return;
+    const baseSet = new Set(); Dp.forEach(d => { for (let j = 1; j <= 4; j++) { const x = addDaysStr(d, -7 * j); if (x < start && D[x]?.has) baseSet.add(x); } });
+    const B = [...baseSet]; if (B.length < 3) return;
+    const cleanFrac = B.filter(x => tbIsCleanDay(tbFlagsOn(x, promosList))).length / B.length;
+    Object.entries(p.impact).forEach(([it, v]) => {
+      const input = Number(v); if (!input) return;
+      const upp = packs[it] || 1, bags = d => (D[d].items?.[it] || 0) / upp;
+      const mp = Dp.reduce((a, d) => a + bags(d), 0) / Dp.length, mb = B.reduce((a, d) => a + bags(d), 0) / B.length;
+      feedback.push({ promo: p.name, kind: tbPromoKind(p), item: it, input, observed: (mp - mb) * 7 / 3, nP: Dp.length, nB: B.length, cleanFrac });
+    });
+  });
+
+  // 프로모션별 기간 성과: 기간 중 매장당 매출 지수(요일 효과 제거) vs 시작 전 7일 — 다른 프로모션이 겹치거나 기준 7일에 행사가 있으면 "참고용"
+  const idxOf = d => { const x = D[d]; if (!x?.has || !x.stores) return null; const mm = dowMean[dowOf(d)]; return mm ? (x.rev / x.stores) / mm : null; };
+  const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+  const otherOn = (d, p) => promosList.filter(q => q !== p && q.type !== 'holiday' && d >= q.start && d <= promoEnd(q)).length;
+  const promoPerf = [];
+  promoRows.forEach(r => {
+    if (r.kind === '공휴일') return;
+    const p = r.p, last = r.end < E ? r.end : E; if (p.start > E) return;
+    const days = []; for (let d = p.start; d <= last; d = addDaysStr(d, 1)) days.push(d);
+    const pv = days.map(idxOf).filter(v => v != null); if (pv.length < 2) return;
+    const pre = []; for (let i = 1; i <= 7; i++) pre.push(addDaysStr(p.start, -i));
+    const bv = pre.map(idxOf).filter(v => v != null);
+    promoPerf.push({ name: p.name, kind: r.kind, from: p.start, to: last, nP: pv.length, nB: bv.length, delta: bv.length >= 4 ? mean(pv) / mean(bv) - 1 : null,
+      overlapAvg: mean(days.map(d => otherOn(d, p))), preDirty: pre.filter(d => otherOn(d, p) > 0).length / pre.length });
+  });
+
+  // 배달·IP 프로모션 임팩트: 입력 vs 관측, 제안
+  const impactFb = [];
+  promosList.forEach(p => {
+    const kind = promoKindOf(p); if (p.start > E || promoEnd(p) < dates[0]) return;
+    if (kind === 'delivery') {
+      const m = measureDeliveryLift(p, opts.chanStats || {}, promosList), inp = Number(p.deliveryLift) || null;
+      if (inp || m.ok) impactFb.push({ kind, name: p.name, input: inp, m });
+    } else if (kind === 'ip' && ipCodeList(p).length && opts.ipSums?.[p.id]) {
+      const a = ipAnalyze(p, opts.ipSums[p.id], D, packs, items); if (a) impactFb.push({ kind, name: p.name, input: Number(p.ipDailySets) || null, a });
+    }
+  });
+  const suggestions = promosList.filter(p => promoKindOf(p) === 'delivery' && p.start > E && !Number(p.deliveryLift)).map(p => ({ name: p.name, s: suggestDeliveryLift(p, opts.chanStats || {}, promosList) }));
+
+  // 채널(내점·포장·배달): 저장된 날짜만
+  let channel = null;
+  if (chan && Object.keys(chan).length) {
+    const sumCh = list => { const days = list.filter(d => chan[d]); const t = { 내점: 0, 포장: 0, 배달: 0 }; days.forEach(d => Object.entries(chan[d]).forEach(([ch, v]) => { t[ch] = (t[ch] || 0) + v; })); const all = t.내점 + t.포장 + t.배달; return { n: days.length, t, all, share: all ? { 내점: t.내점 / all, 포장: t.포장 / all, 배달: t.배달 / all } : null }; };
+    channel = { c0: sumCh(W0), c1: sumCh(W1), n: Object.keys(chan).length };
+  }
+  return { E, dates, W0, W1, W4, A0, A1, A4, S0, S1, series, baseCmp, promoRows, afterEnd, feedback, promoPerf, impactFb, suggestions, channel, dowMean,
+    share0: promoShare(W0), share1: promoShare(W1), share4: promoShare(W4), items };
+}
+
+// ── 고민 포인트 생성 ─────────────────────────────────────────────────────────
+function tbPoints(m) {
+  const pts = [], { A0, A1, A4, S0, S1 } = m;
+  const push = (tag, level, title, body, ask) => pts.push({ tag, level, title, body, ask });
+  if (A0.n < 4) { push('데이터', 'warn', '최근 7일 자료가 부족합니다', `최근 7일 중 일 요약이 있는 날은 ${A0.n}일뿐입니다. 아래 수치는 참고용입니다.`, '"일 요약 채우기"로 빠진 날짜를 채운 뒤 다시 확인하세요.'); }
+  if (A0.n === 0) return pts;
+  // 1) 현황
+  const dRev = tbPct(A0.revPerDay, A1.revPerDay), dRev4 = tbPct(A0.revPerDay, A4.revPerDay), dPS = tbPct(A0.revPerStore, A1.revPerStore), dPS4 = tbPct(A0.revPerStore, A4.revPerStore);
+  let ask1 = '';
+  if (dPS != null && dPS4 != null) {
+    if (dPS < -0.02 && dPS4 < -0.02) ask1 = '전주·4주 모두 낮습니다 — 2주 이상 이어지는 흐름이라면 원인이 외부(날씨·연휴·경쟁)인지 내부(상품·가격·행사 종료)인지 구분해야 합니다.';
+    else if (dPS > 0.02 && dPS4 > 0.02) ask1 = '전주·4주 모두 높습니다 — 행사 효과인지, 직전 부진의 회복인지에 따라 지속 가능성이 달라집니다.';
+    else if (Math.sign(dPS) !== Math.sign(dPS4) && Math.abs(dPS) > 0.02 && Math.abs(dPS4) > 0.02) ask1 = '전주 대비와 4주 대비의 방향이 다릅니다 — 단기 변동인지 추세 전환인지 가려야 합니다.';
+  }
+  push('현황', 'info', '최근 7일 한눈에', `POS 매출 일평균 ${tbEok(A0.revPerDay)} (전주 ${tbSign(dRev)}, 직전 4주 ${tbSign(dRev4)}) · 영업 매장당 일매출 ${tbMan(A0.revPerStore)} (전주 ${tbSign(dPS)}, 직전 4주 ${tbSign(dPS4)}).`, ask1);
+  // 2) 매장 수 vs 매장당
+  if (A1.storesPerDay) {
+    const dSt = tbPct(A0.storesPerDay, A1.storesPerDay);
+    if (Math.abs(dSt) >= 0.01) push('구조', 'watch', '영업 매장 수 변화', `판매가 발생한 매장이 일평균 ${tbNum(A1.storesPerDay)}곳 → ${tbNum(A0.storesPerDay)}곳(${tbSign(dSt)}). 총매출 변동 ${tbSign(dRev)} 중 일부는 매장 수(휴무·폐점·신규)의 영향입니다.`, '요일별 휴무 패턴(월요일 격주 휴무 등)이 있는지, 신규·폐점이 있었는지 확인하세요. 매장당 지표를 기준으로 보는 편이 안전합니다.');
+    else push('구조', 'info', '영업 매장 수는 거의 같음', `일평균 ${tbNum(A0.storesPerDay)}곳(전주 ${tbSign(dSt)}) — 총매출 변화는 매장 수가 아니라 매장당 수요 변화로 읽을 수 있습니다.`, '');
+  }
+  // 3) 요일 구조
+  const wEnd = tbPct(S0.end.revPerStore, S1.end.revPerStore), wMid = tbPct(S0.mid.revPerStore, S1.mid.revPerStore);
+  if (wEnd != null && wMid != null && S0.end.n >= 2 && S0.mid.n >= 3) {
+    const gap = wEnd - wMid;
+    if (Math.abs(gap) >= 0.05) push('구조', 'watch', gap < 0 ? '주말이 하락을 주도' : '주말이 상승을 주도', `매장당 매출 전주 대비 주말(토·일) ${tbSign(wEnd)}, 주중 ${tbSign(wMid)} — 차이 ${(gap * 100).toFixed(1)}%p.`, gap < 0 ? '주말 트래픽(날씨·연휴·행사)이 약해진 것인지, 주말 전용 메뉴·프로모션의 영향인지 확인하세요.' : '주말 상승이 프로모션(주말 쿠폰·선착순) 영향인지, 일시적 수요인지 확인하세요.');
+  }
+  // 4) 분류 믹스
+  const catRows = TB_CATS.map(c => ({ c, d1: tbPct(A0.catStore[c], A1.catStore[c]), d4: tbPct(A0.catStore[c], A4.catStore[c]), v: A0.catStore[c] })).filter(r => r.d1 != null);
+  if (catRows.length) {
+    const sorted = catRows.slice().sort((a, b) => Math.abs(b.d1) - Math.abs(a.d1)), top = sorted[0];
+    const ups = catRows.filter(r => r.d1 > 0.03), downs = catRows.filter(r => r.d1 < -0.03);
+    const tot0 = TB_CATS.reduce((a, c) => a + (A0.catStore[c] || 0), 0), tot1 = TB_CATS.reduce((a, c) => a + (A1.catStore[c] || 0), 0);
+    const mix = catRows.map(r => `${r.c} ${tbSign(r.d1)}`).join(' · ');
+    let ask = '';
+    if (ups.length && downs.length) ask = `${downs.map(r => r.c).join('·')}은 줄고 ${ups.map(r => r.c).join('·')}은 늘었습니다 — 메뉴 간 이동(대체)인지, 프로모션 대상 상품의 쏠림인지 확인하세요.`;
+    else if (downs.length >= 3) ask = '분류 대부분이 함께 줄었습니다 — 상품 믹스보다 전체 방문·주문 수요가 약해진 신호입니다.';
+    else if (ups.length >= 3) ask = '분류 대부분이 함께 늘었습니다 — 전체 수요 증가(행사·연휴)로 보이며, 어느 채널(배달·내점)에서 늘었는지 보면 좋습니다.';
+    push('믹스', Math.abs(top.d1) >= 0.08 ? 'watch' : 'info', `분류별 판매 흐름(매장당 수량, 전주 대비)`, `${mix}. 네 분류 합계는 ${tbSign(tbPct(tot0, tot1))}.`, ask);
+  }
+  // 5) 프로모션 현황
+  const act = m.promoRows.filter(r => r.status.startsWith('진행'));
+  const upc = m.promoRows.filter(r => r.status.startsWith('예정'));
+  const kinds = k => act.filter(r => r.kind === k).map(r => r.p.name);
+  const ps0 = m.share0, ps1 = m.share1, ps4 = m.share4;
+  push('프로모션', 'info', '지금 진행 중인 프로모션', act.length ? `${act.length}건 — 배달앱 ${kinds('배달앱').length}건${kinds('배달앱').length ? `(${kinds('배달앱').slice(0, 3).join(', ')}${kinds('배달앱').length > 3 ? ' 외' : ''})` : ''}, IP·신제품 ${kinds('IP·신제품').length}건${kinds('IP·신제품').length ? `(${kinds('IP·신제품').slice(0, 3).join(', ')})` : ''}, 공휴일 ${kinds('공휴일').length}건. 프로모션이 걸린 날 비중: 최근 7일 ${ps0 == null ? '-' : Math.round(ps0 * 100) + '%'} · 전주 ${ps1 == null ? '-' : Math.round(ps1 * 100) + '%'} · 직전 4주 ${ps4 == null ? '-' : Math.round(ps4 * 100) + '%'}.` : `진행 중인 프로모션이 없습니다(등록 기준). 프로모션이 걸린 날 비중: 전주 ${ps1 == null ? '-' : Math.round(ps1 * 100) + '%'}, 직전 4주 ${ps4 == null ? '-' : Math.round(ps4 * 100) + '%'}.`, act.some(r => !r.hasImpact && r.kind !== '공휴일') ? `임팩트 입력이 없는 진행 중 프로모션: ${act.filter(r => !r.hasImpact && r.kind !== '공휴일').map(r => r.p.name).slice(0, 3).join(', ')} — 생산 예측(⑥ 입력)에 반영할지 판단이 필요합니다.` : '');
+  // 6) 평상시 기준선
+  const bc = m.baseCmp;
+  if (bc.uplift != null) {
+    const itTop = Object.entries(bc.items).filter(([, v]) => v != null).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 3).map(([k, v]) => `${k} ${tbSign(v)}`).join(', ');
+    push('프로모션', 'info', '평상시 vs 프로모션일(요일 효과 제거)', `최근 5주 중 평상시 ${bc.nClean}일 · 프로모션일 ${bc.nPromo}일. 프로모션일이 평상시보다 매장당 매출 ${tbSign(bc.uplift)}, ${TB_CATS.map(c => `${c} ${tbSign(bc.cats[c])}`).join(' · ')}${itTop ? `, 계육은 변화가 큰 순으로 ${itTop}` : ''}.`, '이 기간에 전체 추세(상승·하락)가 있었다면 그 영향이 섞여 있어 참고용입니다. 프로모션 종류(배달앱·IP)도 섞여 있어 어느 쪽 효과인지는 분리되지 않습니다 — 채널별 자료가 쌓이면 배달앱 효과를 따로 볼 수 있습니다.');
+  }
+  else push('프로모션', 'warn', '"평상시" 기준선을 만들 수 없는 상태', `최근 5주 중 프로모션·공휴일이 없는 날은 ${bc.nClean}일(요일 ${bc.cleanDows.length}종)뿐이고 프로모션이 걸린 날은 ${bc.nPromo}일입니다. 평상시와 프로모션일을 비교할 표본이 부족합니다.`, '행사가 사실상 상시라서 "행사 없는 날 대비 증가율"로는 효과를 잴 수 없습니다. 임팩트는 (1) IP는 해당 상품 판매량을 직접 집계, (2) 배달앱은 내점·포장을 대조군으로 두는 방식이 필요합니다.');
+  // 7) 종료 후 / 예정
+  const endGroups = {}; m.afterEnd.forEach(a => { (endGroups[a.end] = endGroups[a.end] || []).push(a); });
+  Object.entries(endGroups).sort().forEach(([end, arr]) => {
+    const a = arr[0], names = arr.map(x => x.name).join(', ');
+    // 종료 후에도 이어진(또는 새로 시작한) 다른 프로모션: 해석이 달라진다(공백이면 단순 종료 효과, 이어졌으면 행사 피로·기저 효과 의심)
+    const names0 = new Set(arr.map(x => x.name));
+    const cont = m.promoRows.filter(r => r.kind !== '공휴일' && !names0.has(r.p.name) && r.p.start <= addDaysStr(end, 7) && r.end > end).map(r => r.p.name);
+    const contTxt = cont.length ? `종료 후에도 이어진 행사: ${cont.slice(0, 3).join(', ')}${cont.length > 3 ? ' 외' : ''}.` : '종료 후 7일 동안 이어진 다른 행사는 없습니다(공백).';
+    if (a.delta == null) push('기저', 'info', `종료 후 흐름: ${names}`, `${tbMd(end)} 종료 — 종료 후 자료 ${a.nPost}일(종료 전 ${a.nPre}일)로 비교하기엔 아직 부족합니다. ${contTxt}`, '');
+    else push('기저', Math.abs(a.delta) >= 0.05 ? 'watch' : 'info', `종료 후 흐름: ${names}`, `${tbMd(end)} 종료 후 ${a.nPost}일의 매장당 매출(요일 효과 제거)이 종료 직전 ${a.nPre}일보다 ${tbSign(a.delta)}. ${contTxt}`,
+      a.delta < -0.05 ? (cont.length ? '다른 행사가 이어졌는데도 하락했다면 행사 피로·기저 효과 가능성이 큽니다 — 이어진 행사의 강도(할인액·노출)가 이전보다 약했는지 확인하세요.' : '행사 공백 후의 하락이라 종료 효과로 볼 수 있습니다 — 행사 없이도 유지되는 수준(평상시 수요)이 어디인지가 핵심입니다.') : '');
+  });
+  if (m.promoPerf.length) {
+    const sorted = m.promoPerf.filter(x => x.delta != null).sort((a, b) => b.delta - a.delta);
+    const mark = x => (x.overlapAvg > 0.5 || x.preDirty > 0.5) ? '*' : '';
+    if (sorted.length) push('프로모션', 'info', '프로모션별 기간 성과(시작 전 7일 대비, 요일 효과 제거)', `${sorted.slice(0, 5).map(x => `${x.name} ${tbSign(x.delta)}${mark(x)}`).join(' · ')}. (* = 다른 프로모션이 겹치거나 시작 전 7일에 행사가 있어 참고용)`, sorted.every(x => mark(x)) ? '모든 프로모션이 겹침·기준 오염 상태라 개별 효과를 분리해서 읽기 어렵습니다 — 같은 기간 내점·포장 대비(채널) 또는 IP 상품 판매량 같은 직접 지표가 필요합니다.' : '');
+  }
+  if (m.impactFb.length || m.suggestions.length) {
+    const parts = m.impactFb.map(r => r.kind === 'delivery'
+      ? `${r.name}(배달): 입력 ${r.input != null ? '+' + r.input + '%' : '없음'} · 관측 ${r.m.ok ? tbSign(r.m.net) + (r.m.cleanFrac < 0.5 ? '*' : '') : '불가(채널 자료 부족)'}`
+      : `${r.name}(IP): 일평균 ${tbNum(r.a.setsPerDay)}세트${r.input ? ` (입력 ${r.input})` : ''}`);
+    const gaps = m.impactFb.filter(r => r.kind === 'delivery' && r.input != null && r.m.ok && Math.abs(r.m.net - r.input / 100) >= 0.1);
+    const sug = m.suggestions.filter(x => x.s).map(x => `${x.name} 제안 +${(x.s.lift * 100).toFixed(0)}%`);
+    push('입력 점검', gaps.length ? 'watch' : 'info', '배달·IP 프로모션 임팩트: 입력 vs 관측', `${parts.join(' / ') || '입력·관측 가능한 프로모션 없음'}${sug.length ? ` · 입력이 비어 있는 예정 배달 프로모션의 과거 기반 제안: ${sug.join(', ')}` : ''}. (* = 기준 기간에 다른 프로모션이 섞여 참고용)`,
+      gaps.length ? `입력과 관측이 10%p 이상 다른 프로모션: ${gaps.map(r => r.name).join(', ')} — 입력 기준(기준선 대비 추가분)을 다시 확인하거나 다음 입력에 관측값을 참고하세요.` : '');
+  }
+  if (upc.length) push('프로모션', 'info', '예정된 프로모션', upc.map(r => `${r.p.name}(${r.kind}, ${tbMd(r.p.start)}~${tbMd(r.end)}, ${r.status})`).slice(0, 4).join(' / '), upc.some(r => !r.hasImpact && r.kind !== '공휴일') ? '임팩트가 비어 있는 예정 프로모션이 있습니다 — 확정일(화←금, 목←월, 토←수) 전에 입력 여부를 정해야 합니다.' : '');
+  // 8) 계육 7종
+  const itemRows = m.items.map(it => ({ it, d1: tbPct(A0.itemDay[it], A1.itemDay[it]), d4: tbPct(A0.itemDay[it], A4.itemDay[it]), v: A0.itemDay[it] })).filter(r => r.d1 != null && r.v > 0);
+  if (itemRows.length) {
+    const sorted = itemRows.slice().sort((a, b) => b.d1 - a.d1), up = sorted[0], dn = sorted[sorted.length - 1];
+    const lagging = itemRows.filter(r => r.d1 < -0.05 && r.d4 < -0.05);
+    const upTxt = up.d1 >= 0 ? `가장 큰 상승 ${up.it} ${tbSign(up.d1)}` : `가장 덜 줄어든 품목 ${up.it} ${tbSign(up.d1)}`;
+    const dnTxt = dn.d1 < 0 ? `가장 큰 감소 ${dn.it} ${tbSign(dn.d1)}` : `가장 적게 늘어난 품목 ${dn.it} ${tbSign(dn.d1)}`;
+    push('계육', lagging.length ? 'watch' : 'info', '주요 계육 소진 흐름', `전주 대비 ${upTxt}, ${dnTxt}.${lagging.length ? ` 전주·4주 모두 5% 넘게 낮은 품목 ${lagging.length}개: ${lagging.slice(0, 4).map(r => `${r.it}(${tbSign(r.d1)}/${tbSign(r.d4)})`).join(', ')}${lagging.length > 4 ? ' 외' : ''}.` : ''}`, lagging.length ? '지속 하락 품목은 생산 확정 수량(예측)이 과대가 되기 쉽습니다 — 같은 분류 안에서 다른 품목으로 옮겨간 것인지(메뉴 이동), 분류 전체가 약해진 것인지 확인하세요.' : '');
+  }
+  // 9) 입력 임팩트 vs 관측
+  if (m.feedback.length) {
+    const big = m.feedback.filter(f => f.input && Math.abs(f.observed - f.input) / Math.abs(f.input) >= 0.5);
+    const dirty = m.feedback.filter(f => f.cleanFrac < 0.5).length;
+    push('입력 점검', big.length ? 'watch' : 'info', '입력한 프로모션 임팩트 vs 관측', `입력한 ${m.feedback.length}건 중 ${big.length}건이 관측값과 50% 이상 차이납니다. ${dirty ? `비교 기준(시작 전 같은 요일)에 다른 프로모션이 많이 섞인 건이 ${dirty}건이라 그 건들은 참고용입니다` : '비교 기준(시작 전 같은 요일)에 다른 프로모션이 거의 없어 관측값을 비교적 믿을 수 있습니다'}(아래 표).`, big.length ? '입력값이 감(感)에 가까운지, 기준선 오염으로 관측값이 틀어진 것인지 구분해야 합니다. 같은 종류 프로모션끼리 입력값을 표준화(예: 매장당 증가율)하면 점검이 쉬워집니다.' : '');
+  }
+  // 10) 채널
+  if (m.channel) {
+    const { c0, c1 } = m.channel;
+    if (c0.n >= 3 && c1.n >= 3 && c0.share && c1.share) push('채널', 'info', '채널별 흐름(버거·치킨·비프·피자 수량)', `배달 비중 ${Math.round(c1.share.배달 * 100)}% → ${Math.round(c0.share.배달 * 100)}%, 포장 ${Math.round(c1.share.포장 * 100)}% → ${Math.round(c0.share.포장 * 100)}%, 내점 ${Math.round(c1.share.내점 * 100)}% → ${Math.round(c0.share.내점 * 100)}% (전주→최근 7일). 배달 수량 ${tbSign(tbPct(c0.t.배달 / c0.n, c1.t.배달 / c1.n))}, 내점 ${tbSign(tbPct(c0.t.내점 / c0.n, c1.t.내점 / c1.n))}.`, '배달앱 프로모션 구간에 배달만 오르고 내점·포장이 그대로라면 프로모션 효과, 함께 움직이면 시장 전체 흐름일 가능성이 큽니다(내점·포장이 대조군).');
+    else push('채널', 'info', '채널 자료 누적 현황', `채널별(내점·포장·배달) 수량이 저장된 날은 ${m.channel.n}일입니다(최근 7일 ${c0.n}일, 전주 ${c1.n}일). 두 주 모두 3일 이상 쌓이면 채널 비교를 보여드립니다.`, '② 일별 대조의 채널 파일을 매일 올려 두면 배달앱 프로모션 효과를 내점·포장 대조군으로 분리해 볼 수 있습니다.');
+  } else push('채널', 'info', '채널 자료 없음', '채널별(내점·포장·배달) 수량이 저장된 날이 없습니다.', '② 일별 대조의 채널 파일을 올려 저장하면 배달앱 프로모션 효과를 내점·포장 대조군으로 분리해 볼 수 있습니다.');
+  // 11) 데이터 점검
+  const miss = m.dates.filter(d => !m.series.find(s => s.d === d).has);
+  const savedMiss = miss.filter(d => dailyIndex.some(x => x.date === d));
+  const notSaved = miss.filter(d => d <= m.E && !dailyIndex.some(x => x.date === d));
+  if (savedMiss.length || notSaved.length) push('데이터', savedMiss.length ? 'warn' : 'watch', '자료 점검', `최근 35일 중 일 요약이 없는 날 ${miss.length}일${savedMiss.length ? ` — 대조는 저장됐지만 요약이 없는 날 ${savedMiss.length}일(${savedMiss.slice(0, 4).map(tbMd).join(', ')}${savedMiss.length > 4 ? ' 외' : ''})` : ''}${notSaved.length ? ` / 대조 저장 자체가 없는 날 ${notSaved.length}일(${notSaved.slice(0, 4).map(tbMd).join(', ')}${notSaved.length > 4 ? ' 외' : ''})` : ''}.`, savedMiss.length ? '"일 요약 채우기"를 누르면 저장된 합본에서 만들어집니다.' : '② 일별 대조에서 빠진 날짜를 저장하면 반영됩니다.');
+  return pts;
+}
+
+// ── 차트(SVG): 일별 값 + 7일 이동평균, 프로모션·주말 띠 ──────────────────────────────────────
+function tbSvgChart({ dates, flags, lines, title, unit }) {
+  const W = 760, H = 190, pl = 46, pr = 10, pt = 20, pb = 22, n = dates.length;
+  const x = i => pl + (W - pl - pr) * (n <= 1 ? 0 : i / (n - 1));
+  const all = lines.flatMap(l => [...l.ma, ...(l.daily || [])]).filter(v => v != null);
+  if (!all.length) return '<div class="note">표시할 데이터가 없습니다.</div>';
+  let lo = Math.min(...all), hi = Math.max(...all); if (lo === hi) { lo -= 1; hi += 1; }
+  const pad = (hi - lo) * 0.12; lo -= pad; hi += pad;
+  const y = v => pt + (H - pt - pb) * (1 - (v - lo) / (hi - lo));
+  const bw = (W - pl - pr) / Math.max(1, n - 1);
+  let g = `<rect x="0" y="0" width="${W}" height="${H}" fill="transparent"/>`;
+  dates.forEach((d, i) => { if ([0, 6].includes(dowOf(d))) g += `<rect x="${(x(i) - bw / 2).toFixed(1)}" y="${pt}" width="${bw.toFixed(1)}" height="${H - pt - pb}" fill="#f3f4f6"/>`; });
+  ['배달앱', 'IP·신제품', '기타', '공휴일'].forEach((k, row) => dates.forEach((d, i) => { if (flags[i]?.[k]?.length) g += `<rect x="${(x(i) - bw / 2).toFixed(1)}" y="${2 + row * 4}" width="${bw.toFixed(1)}" height="3" fill="${TB_KIND_COLOR[k]}"/>`; }));
+  for (let t = 0; t <= 3; t++) { const v = lo + (hi - lo) * t / 3; g += `<line x1="${pl}" x2="${W - pr}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="#e5e7eb"/><text x="${pl - 4}" y="${(y(v) + 3).toFixed(1)}" font-size="10" text-anchor="end" fill="#6b7280">${tbNum(v, unit === '지수' ? 0 : (hi - lo < 10 ? 1 : 0))}</text>`; }
+  dates.forEach((d, i) => { if (dowOf(d) === 1 || i === 0 || i === n - 1) g += `<text x="${x(i).toFixed(1)}" y="${H - 6}" font-size="10" text-anchor="middle" fill="#6b7280">${tbMd(d)}</text>`; });
+  const path = vals => { let dstr = '', pen = false; vals.forEach((v, i) => { if (v == null) { pen = false; return; } dstr += `${pen ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)} `; pen = true; }); return dstr; };
+  lines.forEach(l => { if (l.daily) g += `<path d="${path(l.daily)}" fill="none" stroke="${l.color}" stroke-width="1" opacity=".35"/>`; g += `<path d="${path(l.ma)}" fill="none" stroke="${l.color}" stroke-width="2.2"/>`; });
+  const legend = lines.map(l => `<span style="margin-right:10px;"><span style="display:inline-block;width:10px;height:3px;background:${l.color};vertical-align:middle;"></span> ${esc(l.name)}</span>`).join('');
+  return `<div style="font-size:13px; font-weight:600; margin:10px 0 2px;">${esc(title)}</div><div class="note" style="margin-bottom:2px;">${legend} · 얇은 선 = 일별, 굵은 선 = 7일 이동평균 · 회색 = 토·일 · 위쪽 색 띠 = 프로모션(<span style="color:${TB_KIND_COLOR['배달앱']}">배달앱</span> <span style="color:${TB_KIND_COLOR['IP·신제품']}">IP·신제품</span> <span style="color:${TB_KIND_COLOR['기타']}">기타</span> <span style="color:${TB_KIND_COLOR['공휴일']}">공휴일</span>)</div><svg viewBox="0 0 ${W} ${H}" style="width:100%; max-width:${W}px;">${g}</svg>`;
+}
+const tbMA = vals => vals.map((_, i) => { const w = vals.slice(Math.max(0, i - 6), i + 1).filter(v => v != null); return w.length >= 4 ? w.reduce((a, b) => a + b, 0) / w.length : null; });
+
+// ── 화면 ─────────────────────────────────────────────────────────────────────
+let tbLastText = '';
+function initTrendTab() {
+  const el = document.getElementById('trendDate'); if (!el || el.value) return;
+  const ds = dailyIndex.map(d => d.date).filter(d => !isMonthKey(d)).sort();
+  if (ds.length) el.value = ds[ds.length - 1];
+}
+function tbText(m, pts) {
+  const lines = [`[트렌드 브리핑] 기준일 ${m.E} · 최근 7일(${tbMd(m.W0[0])}~${tbMd(m.W0[m.W0.length - 1])}) ↔ 전주 ↔ 직전 4주`, ''];
+  pts.forEach((p, i) => { lines.push(`${i + 1}. [${p.tag}] ${p.title}`); lines.push(`   ${p.body}`); if (p.ask) lines.push(`   → ${p.ask}`); lines.push(''); });
+  return lines.join('\n').trim();
+}
+async function copyTrendBriefing() {
+  const st = document.getElementById('trendStatus');
+  if (!tbLastText) { st.innerHTML = '<span class="pill pill-warn">먼저 브리핑을 만들어주세요.</span>'; return; }
+  try { await navigator.clipboard.writeText(tbLastText); }
+  catch (e) { const ta = document.createElement('textarea'); ta.value = tbLastText; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
+  st.innerHTML = '<span class="pill pill-ok">✓ 브리핑 텍스트를 복사했습니다</span>';
+}
+function tbTable(head, rows, numFrom = 1) {
+  return `<div class="table-wrap"><table><thead><tr>${head.map((h, i) => `<th${i >= numFrom ? ' class="num"' : ''}>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map((c, i) => `<td${i >= numFrom ? ' class="num"' : ''}>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
+function tbRender(m, pts) {
+  const { A0, A1, A4, E } = m;
+  const d1 = (f) => tbArrow(tbPct(f(A0), f(A1))), d4 = (f) => tbArrow(tbPct(f(A0), f(A4)));
+  const card = (label, val, f) => `<div style="flex:1 1 150px; border:1px solid #e5e7eb; border-radius:10px; padding:10px 12px; background:#fff;"><div class="note">${label}</div><div style="font-size:20px; font-weight:700; margin:2px 0;">${val}</div><div style="font-size:12px;">전주 ${d1(f)}<br>4주 ${d4(f)}</div></div>`;
+  let html = `<div class="card"><h2>${E}(${DOW_KO[dowOf(E)]}) 기준 브리핑</h2><div class="note">최근 7일 ${tbMd(m.W0[0])}~${tbMd(m.W0[m.W0.length - 1])}(자료 ${A0.n}일) ↔ 전주 ${tbMd(m.W1[0])}~${tbMd(m.W1[m.W1.length - 1])}(${A1.n}일) ↔ 직전 4주 ${tbMd(m.W4[0])}~${tbMd(m.W4[m.W4.length - 1])}(${A4.n}일)</div>`;
+  html += `<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:10px;">${card('POS 매출(일평균)', tbEok(A0.revPerDay), a => a.revPerDay)}${card('영업 매장당 일매출', tbMan(A0.revPerStore), a => a.revPerStore)}${TB_CATS.map(c => card(`${c} (매장당 일 수량)`, tbNum(A0.catStore[c], 2), a => a.catStore[c])).join('')}</div>`;
+  // 고민 포인트
+  const lvl = { warn: ['#b91c1c', '#fef2f2'], watch: ['#b45309', '#fffbeb'], info: ['#2563eb', '#eff6ff'] };
+  html += `<h3 style="margin:16px 0 6px; font-size:15px;">고민해 볼 포인트</h3>` + pts.map((p, i) => { const [c, bg] = lvl[p.level] || lvl.info; return `<div style="border-left:4px solid ${c}; background:${bg}; border-radius:6px; padding:8px 12px; margin:6px 0;"><div style="font-size:13px;"><span class="pill" style="background:${c}; color:#fff;">${esc(p.tag)}</span> <strong>${i + 1}. ${esc(p.title)}</strong></div><div style="font-size:13px; margin-top:3px;">${esc(p.body)}</div>${p.ask ? `<div style="font-size:13px; margin-top:3px; color:${c};">→ ${esc(p.ask)}</div>` : ''}</div>`; }).join('');
+  // 차트
+  const flags = m.series.map(s => s.flags);
+  html += tbSvgChart({ title: '영업 매장당 일매출(만 원)', dates: m.dates, flags, lines: [{ name: '매장당 일매출', color: '#111827', daily: m.series.map(s => s.revPerStore == null ? null : s.revPerStore / 1e4), ma: tbMA(m.series.map(s => s.revPerStore == null ? null : s.revPerStore / 1e4)) }] });
+  const palette = { 버거: '#d97706', 치킨: '#dc2626', 비프: '#7c3aed', 피자: '#059669' };
+  html += tbSvgChart({ title: '분류별 매장당 판매수량 지수(직전 4주 평균 = 100)', unit: '지수', dates: m.dates, flags, lines: TB_CATS.map(c => { const base = A4.catStore[c]; const vals = m.series.map(s => (s.catStore[c] != null && base) ? s.catStore[c] / base * 100 : null); return { name: c, color: palette[c], ma: tbMA(vals) }; }) });
+  html += '</div>';
+  // 상세 표
+  const mr = (label, f, fmt) => [label, fmt(f(A0)), fmt(f(A1)), fmt(f(A4)), d1(f), d4(f)];
+  const head = ['지표', '최근 7일', '전주', '직전 4주', '전주 대비', '4주 대비'];
+  const sumRows = [mr('POS 매출(일평균)', a => a.revPerDay, tbEok), mr('영업 매장 수(일평균)', a => a.storesPerDay, v => tbNum(v)), mr('매장당 일매출', a => a.revPerStore, tbMan),
+    ...TB_CATS.flatMap(c => [mr(`${c} 수량(일)`, a => a.catDay[c], v => tbNum(v)), mr(`${c} 매장당`, a => a.catStore[c], v => tbNum(v, 2))])];
+  let det = `<div class="card"><h2>상세 자료</h2><details open><summary style="cursor:pointer;">지표 비교</summary>${tbTable(head, sumRows)}</details>`;
+  det += `<details><summary style="cursor:pointer;">주요 계육 소진(bag/일)</summary>${tbTable(head, m.items.map(it => mr(it, a => a.itemDay[it], v => tbNum(v, 1))))}</details>`;
+  const salesKeys = [...new Set([...Object.keys(A0.sales), ...Object.keys(A1.sales)])].map(k => ({ k, s0: A0.rev ? (A0.sales[k] || 0) / A0.rev : 0, s1: A1.rev ? (A1.sales[k] || 0) / A1.rev : 0 })).sort((a, b) => b.s0 - a.s0).slice(0, 10);
+  det += `<details><summary style="cursor:pointer;">매출분류 비중(매출 기준) — "프로모션" 분류는 IP·특별 세트 매출</summary>${tbTable(['매출분류', '최근 7일', '전주', '변화(%p)'], salesKeys.map(r => [esc(r.k), (r.s0 * 100).toFixed(1) + '%', (r.s1 * 100).toFixed(1) + '%', `${r.s0 - r.s1 >= 0 ? '+' : ''}${((r.s0 - r.s1) * 100).toFixed(1)}`]))}</details>`;
+  const last14 = m.series.slice(-14).reverse();
+  det += `<details><summary style="cursor:pointer;">최근 14일 일자표</summary>${tbTable(['날짜', '총매출', '영업 매장', '매장당 매출', ...TB_CATS.map(c => `${c}(매장당)`), '프로모션'], last14.map(s => { const chips = Object.entries(s.flags).flatMap(([k, v]) => v.map(n => `<span style="color:${TB_KIND_COLOR[k]};">●</span> ${esc(n)}`)).join('<br>'); return [`${tbMd(s.d)}(${DOW_KO[s.dow]})`, s.has ? tbEok(s.rev) : '<span class="note">없음</span>', s.has ? tbNum(s.stores) : '-', s.has ? tbMan(s.revPerStore) : '-', ...TB_CATS.map(c => s.has ? tbNum(s.catStore[c], 2) : '-'), `<span style="font-size:12px;">${chips || '-'}</span>`]; }), 1)}</details>`;
+  det += `<details><summary style="cursor:pointer;">프로모션 현황(최근 35일 ~ 10일 후)</summary>${tbTable(['프로모션', '종류', '기간', '상태', '임팩트 입력'], m.promoRows.map(r => [esc(r.p.name), `<span style="color:${TB_KIND_COLOR[r.kind]};">${r.kind}</span>`, `${tbMd(r.p.start)}~${tbMd(r.end)}`, r.status, r.kind === '공휴일' ? '-' : (r.hasImpact ? '입력됨' : '<span style="color:#b45309;">없음</span>')]), 5)}</details>`;
+  if (m.promoPerf.length) det += `<details><summary style="cursor:pointer;">프로모션별 기간 성과(시작 전 7일 대비)</summary><div class="note">매장당 일매출을 요일 평균으로 나눈 지수 기준. 겹침 = 기간 중 평균 동시 진행 다른 프로모션 수, 기준 오염 = 시작 전 7일 중 다른 프로모션이 있던 날 비율.</div>${tbTable(['프로모션', '종류', '기간', '자료일(행사/기준)', '시작 전 대비', '겹침', '기준 오염'], m.promoPerf.map(x => [esc(x.name), `<span style="color:${TB_KIND_COLOR[x.kind]};">${x.kind}</span>`, `${tbMd(x.from)}~${tbMd(x.to)}`, `${x.nP}일/${x.nB}일`, x.delta == null ? '<span class="note">기준 부족</span>' : tbArrow(x.delta), tbNum(x.overlapAvg, 1), `${Math.round(x.preDirty * 100)}%`]), 3)}</details>`;
+  if (m.impactFb.length) det += `<details open><summary style="cursor:pointer;">배달·IP 프로모션: 입력 vs 관측</summary><div class="note">배달 관측 = (배달 변화) ÷ (내점·포장 변화) − 1, 시작 전 같은 요일 기준. IP = 입력한 상품코드의 세트 판매 집계.</div>${tbTable(['프로모션', '유형', '입력', '관측', '비고'], m.impactFb.map(r => r.kind === 'delivery'
+    ? [esc(r.name), '배달앱', r.input != null ? '+' + r.input + '%' : '<span class="note">없음</span>', r.m.ok ? tbArrow(r.m.net) : '<span class="note">불가</span>', r.m.ok ? `배달 ${tbSign(r.m.gross)} · 내점·포장 ${tbSign(r.m.ctrl)} · ${r.m.nP}일/기준 ${r.m.nB}일${r.m.cleanFrac < 0.5 ? ' · 기준 오염 ⚠' : ''}` : `채널 자료 부족(행사 ${r.m.nP}일/기준 ${r.m.nB}일)`]
+    : [esc(r.name), 'IP 제휴', r.input ? `일 ${r.input}세트` : '<span class="note">없음</span>', `일 ${tbNum(r.a.setsPerDay)}세트`, `집계 ${r.a.nDays}일 · 계육(bag/일) ${Object.entries(r.a.perDay).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => `${esc(k)} ${tbNum(v, 1)}`).join(', ') || '-'}`]), 2)}</details>`;
+  if (m.feedback.length) det += `<details><summary style="cursor:pointer;">입력한 임팩트 vs 관측(회차당 bag)</summary><div class="note">관측 = 프로모션 기간 일평균 − 시작 전 같은 요일 평균(소진 bag/일)을 회차 길이(평균 7/3일)로 환산. 기준선 청정도 = 비교 기준일 중 다른 프로모션·공휴일이 없던 비율(낮으면 참고용).</div>${tbTable(['프로모션', '품목', '입력', '관측', '차이', '비교일(행사/기준)', '기준선 청정도'], m.feedback.map(f => [esc(f.promo), esc(f.item), tbNum(f.input), tbNum(f.observed), `${f.observed - f.input >= 0 ? '+' : ''}${tbNum(f.observed - f.input)}`, `${f.nP}일/${f.nB}일`, `<span style="color:${f.cleanFrac < 0.5 ? '#b45309' : '#047857'};">${Math.round(f.cleanFrac * 100)}%</span>`]), 2)}</details>`;
+  det += '</div>';
+  return html + det;
+}
+async function makeTrendBriefing() {
+  const st = document.getElementById('trendStatus'), wrap = document.getElementById('trendWrap');
+  const E = document.getElementById('trendDate').value;
+  if (!E) { st.innerHTML = '<span class="pill pill-warn">기준일을 고르세요.</span>'; return; }
+  st.innerHTML = '<span class="pill pill-neutral">자료 읽는 중... (일 요약 63개 + 채널 자료, 처음 한 번만 오래 걸림)</span>';
+  try {
+    const allDates = []; for (let i = 62; i >= 0; i--) allDates.push(addDaysStr(E, -i)); // 63일: 프로모션 시작 전 4주 기준까지 필요
+    const dates = allDates.slice(-35);
+    const sums = await loadDaySums(allDates);
+    const L = await loadProdLimits(), items = [...L.order];
+    const pack = packInfoMap(), packs = {}; items.forEach(it => { packs[it] = pack[it]?.unitsPerPack || 1; });
+    const D = {}; allDates.forEach((d, i) => { const s = sums[i], idx = dailyIndex.find(x => x.date === d); D[d] = { has: !!s, rev: s ? s.rev : (idx ? Number(idx.totalRevenue) || 0 : null), stores: s ? s.stores : null, byCat: s?.byCat || null, bySales: s?.bySales || null, items: s?.items || null }; });
+    let chanStats = {}; try { chanStats = await loadChannelStats(allDates); } catch (e) { chanStats = {}; }
+    const chan = Object.keys(chanStats).length ? Object.fromEntries(Object.entries(chanStats).map(([d, v]) => [d, v.tot])) : null;
+    const ipSums = {};
+    for (const q of promos) { if (promoKindOf(q) === 'ip' && ipCodeList(q).length && promoEnd(q) >= allDates[0] && q.start <= E) { const sm = await loadIpSum(q); if (sm) ipSums[q.id] = sm; } }
+    const model = tbBuildModel(E, D, dates, { promosList: promos, packs, items, chan, chanStats, ipSums });
+    const pts = tbPoints(model);
+    tbLastText = tbText(model, pts);
+    wrap.innerHTML = tbRender(model, pts);
+    st.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>최근 7일 자료 ${model.A0.n}/7일 · 고민 포인트 ${pts.length}개</span>`;
+  } catch (err) { console.error(err); st.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`; }
+}
+
+// ── ⑥ 프로모션: 유형별 입력 · 관측 · IP 분석 화면 ──────────────────────────────────────
+let promoObs = {}; // promoId -> 관측 요약(HTML)
+function ipParseInput() { return ipParseCodes(document.getElementById('pfIpCodes')?.value); }
+async function updateDeliverySuggest() {
+  const box = document.getElementById('pfDeliverySuggest'); if (!box) return;
+  const g = id => document.getElementById(id)?.value || '';
+  if (document.getElementById('pfKind')?.value !== 'delivery') { box.innerHTML = ''; return; }
+  const tmp = { id: '__tmp', kind: 'delivery', channel: g('pfChannel'), start: g('pfStart') || '9999-12-31', end: g('pfEnd'),
+    coupons: [...document.querySelectorAll('#pfCoupons tbody tr')].map(tr => ({ total: Number(String(tr.querySelector('.pc-total')?.value || '').replace(/[^0-9.]/g, '')) || 0 })) };
+  box.innerHTML = '<span class="note">비슷한 과거 프로모션 확인 중...</span>';
+  try {
+    const days = []; for (let d = addDaysStr(formatDate(new Date()), -150); d <= formatDate(new Date()); d = addDaysStr(d, 1)) days.push(d);
+    const stats = await loadChannelStats(days);
+    const sg = suggestDeliveryLift(tmp, stats, promos);
+    box.innerHTML = sg ? `<span class="note">제안 <strong>+${(sg.lift * 100).toFixed(0)}%</strong> — 비슷한 과거 ${sg.n}건(${esc(sg.basis.join(', '))})의 내점·포장 대비 순증 가중평균. * = 기준 기간에 다른 프로모션이 섞여 참고용</span> <button class="btn btn-ghost btn-sm" type="button" onclick="document.getElementById('pfDeliveryLift').value='${(sg.lift * 100).toFixed(0)}'">제안값 적용</button>`
+      : '<span class="note">제안할 과거 자료가 없습니다 — 채널 자료(내점·포장·배달)가 쌓인 뒤 측정된 프로모션이 생기면 자동으로 제안됩니다. 지금은 직접 입력하세요.</span>';
+  } catch (e) { box.innerHTML = ''; }
+}
+// 목록의 "입력 vs 관측" 칸: 채널 자료·IP 집계를 읽어 비동기로 채운다
+async function loadPromoObservations() {
+  const list = promos.filter(p => ['delivery', 'ip'].includes(promoKindOf(p)));
+  if (!list.length) return;
+  const today = formatDate(new Date()); const days = []; for (let d = addDaysStr(today, -150); d <= today; d = addDaysStr(d, 1)) days.push(d);
+  let stats = {}; try { stats = await loadChannelStats(days); } catch (e) { /* 채널 자료 없음 */ }
+  for (const p of list) {
+    const kind = promoKindOf(p);
+    if (kind === 'delivery') {
+      const m = measureDeliveryLift(p, stats, promos), inp = Number(p.deliveryLift);
+      promoObs[p.id] = `<div>입력 ${inp ? '+' + inp + '%' : '<span class="note">없음</span>'}</div>` + (m.ok
+        ? `<div>관측 <strong style="color:${m.net >= 0 ? '#b91c1c' : '#2563eb'}">${tbSign(m.net)}</strong> <span class="note">(배달 ${tbSign(m.gross)} · 내점·포장 ${tbSign(m.ctrl)}, ${m.nP}일/기준 ${m.nB}일${m.cleanFrac < 0.5 ? ' · 기준 오염 ⚠' : ''})</span></div>`
+        : `<div class="note">관측 불가 — 채널 자료 부족(행사 ${m.nP}일/기준 ${m.nB}일, 각 2·3일 이상 필요)</div>`);
+    } else {
+      let sum = ipCache[p.id] || null; try { sum = sum || await loadIpSum(p); } catch (e) { /* 없음 */ }
+      const codes = ipCodeList(p);
+      promoObs[p.id] = `<div class="note">코드 ${codes.length ? esc(codes.join(', ')) : '<span style="color:#b45309;">미입력</span>'}</div>` + (sum && Object.keys(sum.days).length
+        ? `<div>집계 ${Object.keys(sum.days).length}일 · 일평균 ${tbNum(meanOf(Object.values(sum.days).map(v => v.sets)))}세트</div>${p.ipDailySets ? `<div class="note">입력 일 ${p.ipDailySets}세트</div>` : ''}` : '<div class="note">아직 집계 전 — "IP 분석"을 눌러주세요</div>');
+    }
+  }
+  document.querySelectorAll('[data-obs]').forEach(el => { if (promoObs[el.dataset.obs]) el.innerHTML = promoObs[el.dataset.obs]; });
+}
+// IP 분석 실행: 합본에서 그 상품코드만 집계(처음엔 날짜 수만큼 걸림, 이후는 새 날짜만)
+async function measureIp(id) {
+  const p = promos.find(x => x.id === id), wrap = document.getElementById('promoEffectWrap'); if (!p) return;
+  if (!ipCodeList(p).length) { wrap.innerHTML = '<div class="note" style="color:#b91c1c;">IP 상품코드를 먼저 입력해주세요(수정 → IP 상품코드).</div>'; return; }
+  if (heavyJob) { wrap.innerHTML = `<div class="note">다른 작업(${heavyJob}) 진행 중 — 끝난 뒤 다시 눌러주세요.</div>`; return; }
+  heavyJob = 'IP 분석';
+  try {
+    const { sum, added } = await ensureIpSum(p, (n, t, d) => { wrap.innerHTML = `<div class="empty">IP 판매 집계 중 ${n}/${t} (${d}) — 저장된 합본에서 상품코드 ${esc(ipCodeList(p).join(', '))}만 읽습니다</div>`; });
+    const L = await loadProdLimits(), items = [...L.order], pack = packInfoMap(), packs = {}; items.forEach(it => { packs[it] = pack[it]?.unitsPerPack || 1; });
+    const allDates = Object.keys(sum.days).sort(); const from = addDaysStr(allDates[0] || p.start, -35);
+    const bd = []; for (let d = from; d <= (allDates[allDates.length - 1] || p.start); d = addDaysStr(d, 1)) bd.push(d);
+    const sums = await loadDaySums(bd); const D = {}; bd.forEach((d, i) => { D[d] = { has: !!sums[i], items: sums[i]?.items || null }; });
+    const a = ipAnalyze(p, sum, D, packs, items);
+    if (!a) { wrap.innerHTML = `<div class="note">입력한 코드(${esc(ipCodeList(p).join(', '))})의 판매가 ${Object.keys(sum.days).length}일 동안 없습니다. 상품코드를 확인해주세요(세트 코드, 예: 4868).</div>`; return; }
+    const f1 = v => v == null ? '-' : (Math.round(v * 10) / 10).toLocaleString(), f3 = v => v == null ? '-' : v.toFixed(3);
+    let html = `<h3 style="margin:14px 0 6px; font-size:15px;">IP 분석 — ${esc(p.name)} (코드 ${esc(ipCodeList(p).join(', '))})</h3>`;
+    html += `<div class="note">집계 ${a.nDays}일(${tbMd(a.days[0])}~${tbMd(a.days[a.days.length - 1])}${added ? ` · 이번에 ${added}일 새로 집계` : ''}) · 일평균 <strong>${tbNum(a.setsPerDay)}세트</strong> · 매출 ${tbEok(a.revPerDay)}/일 · 판매 매장 일평균 ${tbNum(a.storesPerDay)}곳</div>`;
+    html += tbTable(['계육', '일평균 소진(bag)<br><span class="note">IP 세트 구성품</span>', '최근 3일 평균', '세트당 bag', '기준 대비 순증(bag/일)', '잠식 추정'], items.filter(it => a.perDay[it] > 0).map(it => [esc(it), f1(a.perDay[it]), f1(a.recent[it]), f3(a.perSet[it]), a.net[it] == null ? '<span class="note">기준 부족</span>' : `${a.net[it] >= 0 ? '+' : ''}${f1(a.net[it])}`, a.cannib[it] == null ? '-' : Math.round(a.cannib[it] * 100) + '%']));
+    html += `<div class="note">※ "IP 세트 구성품" = 세트 코드(${esc(ipCodeList(p).join(', '))})에 묶인 구성품 행의 계육 소진 — 정상 판매에도 같은 소진이 잡히므로 <strong>총량에 이미 포함</strong>돼 있습니다. 순증 = 프로모션 기간 총 소진 − 시작 전 같은 요일 평균, 잠식 = 1 − 순증/IP 소진(IP로 옮겨온 기존 수요 비중).${a.baseDirty != null && a.baseDirty > 0.5 ? ' <span style="color:#b45309;">⚠ 기준 기간에 다른 프로모션이 많이 섞여 순증·잠식은 참고용</span>' : ''}</div>`;
+    html += `<div class="note">생산 예측 반영: 기준선에서 IP 소진을 빼고(IP 없는 수준), 예측 회차에 <strong>최근 3일 IP 소진 평균 × 회차 내 IP 진행일 × 환산</strong>을 더합니다. 아직 판매가 없으면 입력한 "일 예상 세트 수 × 세트당 bag"을 씁니다.</div>`;
+    wrap.innerHTML = html; delete promoObs[p.id]; loadPromoObservations();
+  } catch (err) { console.error(err); wrap.innerHTML = `<div class="note" style="color:#b91c1c;">IP 분석 실패: ${esc(err.message)}</div>`; }
+  finally { heavyJob = null; }
+}
+
+// ── 매장 휴무 패턴 · 자체POS 구분 ──────────────────────────────────────────────────────
+// 자료: 판매 소진 원장(그 날 판매 기록이 있으면 영업) + 입고 원장 + 가맹점현황. 최근 8주를 본다.
+//  · 매주 X요일 휴무 : 그 요일 관측의 85% 이상 휴무, 다른 요일은 80% 이상 영업
+//  · 격주 X요일 휴무 : 영업·휴무가 번갈아(전환 80% 이상), 휴무율 35~65%
+//  · 불규칙 휴무     : 패턴 없이 3일 이상 쉰 매장
+//  · 장기 미판매     : 마지막 판매 이후 POS 자료가 있는 날이 5일 이상 지남(휴업·폐점 후보)
+//  · 자체POS         : 가맹점현황에는 있고 입고는 있는데 POS 판매 기록이 전혀 없음 → 휴무 분석에서 제외
+//  · 판매·입고 없음  : 가맹점현황에는 있으나 판매도 입고도 없음
+// 연휴처럼 같은 요일 중앙값보다 영업 비율이 15%p 넘게 낮은 날은 "전체 휴무일"로 보고 패턴 계산에서 뺀다.
+function closureAnalyze(opens, salesDays) {
+  const days = [...salesDays].sort(), codes = [...opens.keys()];
+  const first = {}, last = {};
+  codes.forEach(c => { const a = [...opens.get(c)].sort(); first[c] = a[0]; last[c] = a[a.length - 1]; });
+  const rate = {};
+  days.forEach(d => { let act = 0, op = 0; codes.forEach(c => { if (first[c] <= d && d <= last[c]) { act++; if (opens.get(c).has(d)) op++; } }); rate[d] = act ? op / act : null; });
+  const med = {}; for (let w = 0; w < 7; w++) { const v = days.filter(d => dowOf(d) === w && rate[d] != null).map(d => rate[d]).sort((a, b) => a - b); med[w] = v.length ? v[Math.floor(v.length / 2)] : null; }
+  // 전체 휴무일(연휴 등): 같은 요일 중앙값보다 15%p 넘게 낮은 날. (격주 휴무 매장이 많으면 요일마다 영업 비율이 6~12%p씩 번갈아 출렁이므로 기준을 너무 낮게 잡으면 그 요일이 통째로 제외된다)
+  const mass = new Set(days.filter(d => rate[d] != null && med[dowOf(d)] != null && rate[d] < med[dowOf(d)] - 0.15));
+  const patterns = [], longIdle = [];
+  codes.forEach(c => {
+    const o = opens.get(c), lastD = last[c];
+    const after = days.filter(d => d > lastD).length;
+    if (after >= 5) { longIdle.push({ code: c, lastOpen: lastD, days: after }); return; }
+    const act = days.filter(d => d >= first[c] && d <= lastD && !mass.has(d));
+    const weekly = [], biweekly = [], irrDows = [], flagged = new Set();
+    for (let w = 0; w < 7; w++) {
+      const obs = act.filter(d => dowOf(d) === w); if (obs.length < 6) continue;
+      const seq = obs.map(d => o.has(d) ? 1 : 0), closedRate = 1 - seq.reduce((a, b) => a + b, 0) / seq.length;
+      const others = act.filter(d => dowOf(d) !== w), otherOpen = others.length ? others.filter(d => o.has(d)).length / others.length : 1;
+      if (closedRate >= 0.85 && otherOpen >= 0.8) { weekly.push(w); flagged.add(w); continue; }
+      const trans = seq.slice(1).filter((v, i) => v !== seq[i]).length;
+      if (closedRate >= 0.35 && closedRate <= 0.65 && trans / (seq.length - 1) >= 0.8 && otherOpen >= 0.8) { biweekly.push({ w, lastDate: obs[obs.length - 1], lastOpen: seq[seq.length - 1] === 1 }); flagged.add(w); continue; }
+      if (closedRate >= 0.25) irrDows.push(w);
+    }
+    const extra = act.filter(d => !o.has(d) && !flagged.has(dowOf(d)));
+    if (weekly.length || biweekly.length) patterns.push({ code: c, type: weekly.length && biweekly.length ? '매주+격주' : weekly.length ? '매주' : '격주', weekly, biweekly, extra, lastOpen: lastD });
+    else if (extra.length >= 3) patterns.push({ code: c, type: '불규칙', weekly: [], biweekly: [], irrDows, extra, lastOpen: lastD });
+  });
+  return { patterns, longIdle, rate, med, mass: [...mass].sort(), nCodes: codes.length, days };
+}
+// 앞으로 n일 동안 요일 패턴상 쉴 것으로 보이는 매장 수(매주·격주만)
+function closureForecast(patterns, E, n = 7) {
+  const out = [];
+  for (let i = 1; i <= n; i++) {
+    const d = addDaysStr(E, i), w = dowOf(d); let cnt = 0;
+    patterns.forEach(p => {
+      if (p.weekly.includes(w)) { cnt++; return; }
+      p.biweekly.forEach(b => { if (b.w !== w) return; const diff = Math.round((new Date(d) - new Date(b.lastDate)) / 864e5 / 7); if (b.lastOpen ? diff % 2 === 1 : diff % 2 === 0) cnt++; });
+    });
+    out.push({ d, w, n: cnt });
+  }
+  return out;
+}
+let closureLast = null, closureImpactLast = null;
+async function analyzeClosures() {
+  const st = document.getElementById('closureStatus'), wrap = document.getElementById('closureWrap');
+  const E = document.getElementById('trendDate')?.value || formatDate(new Date());
+  if (heavyJob) { st.innerHTML = `<span class="pill pill-warn">다른 작업(${heavyJob}) 진행 중</span>`; return; }
+  st.innerHTML = '<span class="pill pill-neutral">판매·입고 원장 읽는 중... (처음 한 번은 오래 걸리고, 이후는 재사용됩니다)</span>';
+  try {
+    const from = addDaysStr(E, -55), months = []; for (let m = from.slice(0, 7); m <= E.slice(0, 7); m = addDaysStr(m + '-28', 5).slice(0, 7)) months.push(m);
+    const [S, R] = await Promise.all([ledgerLoadMonthsCached(LEDGER_SOLD, months), ledgerLoadMonthsCached(LEDGER_RECV, months)]);
+    if (!soldDates) await loadSoldDates();
+    const salesDays = [...salesDaySetNow()].filter(d => d >= from && d <= E).sort();
+    if (salesDays.length < 14) { st.innerHTML = `<span class="pill pill-warn">POS 판매 자료가 있는 날이 ${salesDays.length}일뿐입니다(최소 14일 필요).</span>`; return; }
+    const sdSet = new Set(salesDays), opens = new Map();
+    Object.entries(S).forEach(([code, o]) => { if (isTestStore(code, o.storeName)) return; const set = new Set(); Object.values(o.byItem).forEach(days => Object.entries(days).forEach(([d, q]) => { if (sdSet.has(d) && Number(q) > 0) set.add(d); })); if (set.size) opens.set(code, set); });
+    const recvIn = new Set(); Object.entries(R).forEach(([code, o]) => { if (Object.values(o.byItem).some(days => Object.keys(days).some(d => d >= from && d <= E))) recvIn.add(code); });
+    const info = await storeInfoForRange(from, E);
+    const infoCodes = info.order.filter(c => info.map[c] && !isTestStore(c, info.map[c].name));
+    const res = closureAnalyze(opens, salesDays);
+    const selfPos = infoCodes.filter(c => !opens.has(c) && recvIn.has(c));
+    const noAct = infoCodes.filter(c => !opens.has(c) && !recvIn.has(c));
+    const nameOf = c => info.map[c]?.name || S[c]?.storeName || '', teamOf = c => info.map[c]?.team || '';
+    const fc = closureForecast(res.patterns, E, 7);
+    closureLast = { E, res, selfPos, noAct, info, nameOf, teamOf, fc, universe: infoCodes.length, salesDays };
+    wrap.innerHTML = closureRender(closureLast);
+    st.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${tbMd(salesDays[0])}~${tbMd(E)} POS 자료 ${salesDays.length}일 · 판매 기록 매장 ${opens.size}곳 · 가맹점현황 ${infoCodes.length}곳</span>`;
+  } catch (err) { console.error(err); st.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`; }
+}
+function closureRender(c) {
+  const { res, selfPos, noAct, nameOf, teamOf, fc } = c, DW = DOW_KO;
+  const wk = {}, bw = {}; res.patterns.forEach(p => { p.weekly.forEach(w => { wk[w] = (wk[w] || 0) + 1; }); p.biweekly.forEach(b => { bw[b.w] = (bw[b.w] || 0) + 1; }); });
+  const irr = res.patterns.filter(p => p.type === '불규칙');
+  const card = (label, val, sub) => `<div style="flex:1 1 150px; border:1px solid #e5e7eb; border-radius:10px; padding:10px 12px; background:#fff;"><div class="note">${label}</div><div style="font-size:20px; font-weight:700; margin:2px 0;">${val}</div><div class="note">${sub || ''}</div></div>`;
+  const weeklyN = res.patterns.filter(p => p.weekly.length).length, biN = res.patterns.filter(p => p.biweekly.length).length;
+  let html = `<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">${card('매주 휴무', weeklyN + '곳', Object.entries(wk).map(([w, n]) => `${DW[w]} ${n}`).join(' · ') || '-')}${card('격주 휴무', biN + '곳', Object.entries(bw).map(([w, n]) => `${DW[w]} ${n}`).join(' · ') || '-')}${card('불규칙 휴무', irr.length + '곳', '패턴 없이 3일 이상 휴무')}${card('장기 미판매', res.longIdle.length + '곳', '휴업·폐점 후보')}${card('자체POS', selfPos.length + '곳', 'POS 판매 없음·입고 있음 (분석 제외)')}${card('판매·입고 없음', noAct.length + '곳', '가맹점현황에만 있음')}</div>`;
+  const dowRows = [1, 2, 3, 4, 5, 6, 0].map(w => { const ds = res.days.filter(d => dowOf(d) === w && res.rate[d] != null); const r = ds.length ? ds.reduce((a, d) => a + res.rate[d], 0) / ds.length : null; return [`${DW[w]}요일`, r == null ? '-' : (r * 100).toFixed(1) + '%', r == null ? '-' : tbNum((1 - r) * res.nCodes), tbNum(wk[w] || 0), tbNum(bw[w] || 0)]; });
+  html += `<h3 style="margin:14px 0 4px; font-size:14px;">요일별 영업 비율(판매 기록 있는 매장 기준)</h3>${tbTable(['요일', '평균 영업 비율', '평균 휴무 매장 수', '매주 휴무(패턴)', '격주 휴무(패턴)'], dowRows)}`;
+  html += `<div class="note">연휴 등 전체 휴무일로 보고 패턴 계산에서 뺀 날: ${res.mass.length ? res.mass.map(tbMd).join(', ') : '없음'}</div>`;
+  html += `<h3 style="margin:14px 0 4px; font-size:14px;">앞으로 7일 패턴상 휴무 예상 매장 수(매주·격주만)</h3>${tbTable(['날짜', '요일', '예상 휴무 매장'], fc.map(x => [tbMd(x.d), DW[x.w], tbNum(x.n)]), 2)}`;
+  const desc = p => [...p.weekly.map(w => `매주 ${DW[w]}`), ...p.biweekly.map(b => `격주 ${DW[b.w]}`), ...(p.type === '불규칙' ? [`불규칙 ${p.extra.length}일`] : [])].join(', ');
+  html += `<details open><summary style="cursor:pointer; margin-top:10px;">휴무 패턴 매장 ${res.patterns.length}곳 (상위 80곳 표시, 전체는 엑셀)</summary>${tbTable(['매장코드', '매장명', '팀', '유형', '휴무 내용', '최근 휴무일(최대 6)'], res.patterns.slice().sort((a, b) => a.type.localeCompare(b.type) || a.code.localeCompare(b.code)).slice(0, 80).map(p => [p.code, esc(nameOf(p.code)), esc(teamOf(p.code)), p.type, esc(desc(p)), p.extra.slice(-6).map(tbMd).join(', ') || '-']), 6)}</details>`;
+  html += `<details><summary style="cursor:pointer;">자체POS ${selfPos.length}곳 — 입고는 있고 POS 판매 기록이 없는 가맹점(권장 발주·판매 분석에서 제외 대상)</summary>${tbTable(['매장코드', '매장명', '팀'], selfPos.slice(0, 200).map(x => [x, esc(nameOf(x)), esc(teamOf(x))]), 3)}</details>`;
+  html += `<details><summary style="cursor:pointer;">판매·입고 모두 없음 ${noAct.length}곳 — 가맹점현황에만 있는 매장(휴업·폐점·신규 후보)</summary>${tbTable(['매장코드', '매장명', '팀'], noAct.slice(0, 200).map(x => [x, esc(nameOf(x)), esc(teamOf(x))]), 3)}</details>`;
+  html += `<details><summary style="cursor:pointer;">장기 미판매 ${res.longIdle.length}곳</summary>${tbTable(['매장코드', '매장명', '마지막 판매일', '이후 POS 자료일'], res.longIdle.slice(0, 200).map(x => [x.code, esc(nameOf(x.code)), x.lastOpen, tbNum(x.days)]), 3)}</details>`;
+  return html;
+}
+function downloadClosures() {
+  if (!closureLast) { alert('먼저 휴무 패턴 분석을 실행해주세요.'); return; }
+  const { E, res, selfPos, noAct, nameOf, teamOf, fc, info } = closureLast, DW = DOW_KO;
+  const ac = c => info.map[c]?.ac || '';
+  const desc = p => [...p.weekly.map(w => `매주 ${DW[w]}`), ...p.biweekly.map(b => `격주 ${DW[b.w]}`), ...(p.type === '불규칙' ? [`불규칙 ${p.extra.length}일`] : [])].join(', ');
+  const wb = XLSX.utils.book_new();
+  const add = (n, rows) => XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), n);
+  add('휴무 패턴 매장', [['매장코드', '매장명', '팀', '담당 AC', '유형', '휴무 내용', '최근 휴무일', '마지막 판매일'], ...res.patterns.map(p => [p.code, nameOf(p.code), teamOf(p.code), ac(p.code), p.type, desc(p), p.extra.slice(-8).join(', '), p.lastOpen])]);
+  add('자체POS', [['매장코드', '매장명', '팀', '담당 AC'], ...selfPos.map(c => [c, nameOf(c), teamOf(c), ac(c)])]);
+  add('판매·입고 없음', [['매장코드', '매장명', '팀', '담당 AC'], ...noAct.map(c => [c, nameOf(c), teamOf(c), ac(c)])]);
+  add('장기 미판매', [['매장코드', '매장명', '팀', '마지막 판매일', '이후 POS 자료일'], ...res.longIdle.map(x => [x.code, nameOf(x.code), teamOf(x.code), x.lastOpen, x.days])]);
+  add('다음 7일 예상 휴무', [['날짜', '요일', '예상 휴무 매장 수'], ...fc.map(x => [x.d, DW[x.w], x.n])]);
+  XLSX.writeFile(wb, `매장_휴무패턴_${E}.xlsx`);
+}
+
+// ── 휴무 패턴이 생산 예측 오차에 주는 영향 점검 ─────────────────────────────────────────
+// 전국 예측은 "같은 요일 최근 4주 판매"를 합산하므로, 휴무 패턴 매장도 자기 과거 평균만큼 들어 있다고 암묵적으로 가정한다
+// (매주 휴무는 과거도 같은 상태라 맞고, 격주 휴무·패턴 변경은 틀릴 수 있다). 그 가정과 실제 입고(휴무일의 소량 발주 포함)를 매장 단위로 비교해서
+//   "휴무 패턴 매장 때문에 생긴 오차 ÷ 실제 입고"를 잰다. 작으면 미반영, 크면 휴무 보정이 필요하다는 근거가 된다.
+function closureImpactCompute(ctx, items, G, done, calibMode) {
+  const meanA = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
+  const summarize = rows => {
+    const ok = rows.filter(r => r.A > 0);
+    return { n: ok.length, mapeN: meanA(ok.map(r => Math.abs(r.eN) / r.A)), biasN: meanA(ok.map(r => r.eN / r.A)), mapeG: meanA(ok.map(r => Math.abs(r.eG) / r.A)), biasG: meanA(ok.map(r => r.eG / r.A)), maxG: ok.length ? Math.max(...ok.map(r => Math.abs(r.eG) / r.A)) : null };
+  };
+  const tot = {}, perItem = {};
+  items.forEach(item => {
+    const rows = [], upp = ctx.pack?.[item]?.unitsPerPack || 1;
+    done.forEach(T => {
+      const fc = forecastProd(item, T, ctx, calibMode); if (!fc) return;
+      let naiveG = 0, actualG = 0;
+      G.forEach(code => {
+        const sv = ctx.S?.[code]?.byItem?.[item] || {}, rv = ctx.R?.[code]?.byItem?.[item] || {};
+        fc.perDay.forEach(x => { let num = 0, den = 0; x.used.forEach((u, i) => { num += PROD_W[i] * ((sv[u] || 0) / upp); den += PROD_W[i]; }); naiveG += den ? num / den : 0; });
+        Object.entries(rv).forEach(([d, q]) => { if (actualRecvDate(d) === T) actualG += q; });
+      });
+      naiveG *= fc.trend.f * fc.cal.k; // 전국 예측과 같은 트렌드·환산을 곱해야 같은 단위(입고)가 된다
+      const A = ctx.recvBy[item]?.[T] || 0, r = { T, dow: dowOf(T), A, F: fc.baseTarget, eN: A - fc.baseTarget, eG: actualG - naiveG };
+      rows.push(r);
+      const o = tot[T] = tot[T] || { T, dow: r.dow, A: 0, F: 0, eN: 0, eG: 0 }; o.A += A; o.F += fc.baseTarget; o.eN += r.eN; o.eG += r.eG;
+    });
+    perItem[item] = summarize(rows);
+  });
+  const cycles = Object.values(tot).sort((a, b) => a.T.localeCompare(b.T));
+  const byDow = {}; [2, 4, 6].forEach(w => { byDow[w] = summarize(cycles.filter(c => c.dow === w)); });
+  const overall = summarize(cycles);
+  // 판정: 패턴 매장 때문에 생긴 오차가 전체의 1% 이상이거나, 토 회차(월요일 포함)에서 1.5% 이상이면 영향 있음
+  const material = overall.n > 0 && (overall.mapeG >= 0.01 || (byDow[6].n > 0 && byDow[6].mapeG >= 0.015));
+  return { perItem, overall, byDow, cycles, material, nG: G.length };
+}
+async function closureImpactCheck() {
+  const st = document.getElementById('prodClosureStatus'), wrap = document.getElementById('prodClosureWrap');
+  if (heavyJob) { st.innerHTML = `<span class="pill pill-warn">다른 작업(${heavyJob}) 진행 중</span>`; return; }
+  st.innerHTML = '<span class="pill pill-neutral">매장별 판매·입고 원장 읽는 중... (처음 한 번은 오래 걸립니다)</span>';
+  try {
+    const L = await loadProdLimits(), calibMode = L.calib || 'auto', today = formatDate(new Date());
+    const recvDates = [...new Set(ordersIndex.filter(o => o.ledger).map(o => actualRecvDate(o.date)))].sort();
+    const done = recvDates.filter(t => [2, 4, 6].includes(dowOf(t)) && t <= today && cycleDays(t).every(d => d <= today)).slice(-12);
+    if (done.length < 6) { st.innerHTML = `<span class="pill pill-warn">비교할 완료 회차가 ${done.length}개뿐입니다(최소 6개).</span>`; return; }
+    const lastDay = cycleDays(done[done.length - 1]).slice(-1)[0];
+    const ctx = await loadProdContext(addDaysStr(done[0], -112), lastDay);
+    const from = addDaysStr(lastDay, -55), sd = [...ctx.salesDays].filter(d => d >= from && d <= lastDay).sort(), sdSet = new Set(sd), opens = new Map();
+    Object.entries(ctx.S).forEach(([code, o]) => { if (isTestStore(code, o.storeName)) return; const set = new Set(); Object.values(o.byItem).forEach(days => Object.entries(days).forEach(([d, q]) => { if (sdSet.has(d) && Number(q) > 0) set.add(d); })); if (set.size) opens.set(code, set); });
+    const res = closureAnalyze(opens, sd);
+    const G = res.patterns.filter(p => p.weekly.length || p.biweekly.length).map(p => p.code);
+    const items = L.order.filter(it => ctx.consBy[it]);
+    const out = closureImpactCompute(ctx, items, G, done, calibMode);
+    // 패턴 매장의 소진 비중(최근 28일)
+    const w28 = new Set(sd.slice(-28)); const gset = new Set(G); let gTot = 0, allTot = 0;
+    Object.entries(ctx.S).forEach(([code, o]) => Object.entries(o.byItem).forEach(([it, days]) => { if (!items.includes(it)) return; const upp = ctx.pack?.[it]?.unitsPerPack || 1; Object.entries(days).forEach(([d, q]) => { if (!w28.has(d)) return; allTot += q / upp; if (gset.has(code)) gTot += q / upp; }); }));
+    out.gShare = allTot ? gTot / allTot : null; out.nWeekly = res.patterns.filter(p => p.weekly.length).length; out.nBi = res.patterns.filter(p => p.biweekly.length).length; out.from = done[0]; out.to = done[done.length - 1];
+    closureImpactLast = out; wrap.innerHTML = closureImpactRender(out);
+    st.innerHTML = `<span class="pill ${out.material ? 'pill-warn' : 'pill-ok'}">${out.material ? '영향 있음' : '영향 작음'}</span><span>${tbMd(out.from)}~${tbMd(out.to)} 완료 ${done.length}회차 · 휴무 패턴 매장 ${out.nG}곳</span>`;
+  } catch (err) { console.error(err); st.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`; }
+}
+function closureImpactRender(o) {
+  const pc = v => v == null ? '-' : (v * 100).toFixed(1) + '%', sg = v => v == null ? '-' : `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
+  const share = o.overall.mapeN ? o.overall.mapeG / o.overall.mapeN : null;
+  let html = `<div style="border-left:4px solid ${o.material ? '#b45309' : '#047857'}; background:${o.material ? '#fffbeb' : '#ecfdf5'}; padding:8px 12px; border-radius:6px; margin:8px 0;"><strong>${o.material ? '휴무 패턴이 예측 오차에 영향을 줍니다 → 휴무 보정 반영을 권장합니다.' : '휴무 패턴의 영향이 작습니다 → 휴무 패턴 미반영으로 충분합니다.'}</strong><div style="font-size:13px; margin-top:3px;">휴무 패턴 매장(매주 ${o.nWeekly}곳 · 격주 ${o.nBi}곳, 소진 비중 ${pc(o.gShare)}) 때문에 생긴 오차는 실제 입고의 평균 <strong>${pc(o.overall.mapeG)}</strong>(최대 ${pc(o.overall.maxG)}), 전국 예측 평균 오차 ${pc(o.overall.mapeN)}의 ${share == null ? '-' : Math.round(share * 100) + '%'}입니다. 이 값은 휴무일의 소량 발주까지 포함한 <strong>실제 입고</strong>로 잰 것입니다. (기준: 전체 1% 이상 또는 토 회차 1.5% 이상이면 영향 있음)</div></div>`;
+  html += tbTable(['회차 요일', '완료 회차', '전국 예측 평균 오차', '패턴 매장 기인 오차', '패턴 매장 편향(+ 입고가 더 많음)'], [2, 4, 6].map(w => { const x = o.byDow[w]; return [`${DOW_KO[w]} 입고${w === 6 ? '(토·일·월 사용 — 월요일 휴무 포함)' : ''}`, x.n, pc(x.mapeN), pc(x.mapeG), sg(x.biasG)]; }), 1);
+  html += `<details><summary style="cursor:pointer;">품목별</summary>${tbTable(['품목', '완료 회차', '전국 예측 평균 오차', '패턴 매장 기인 오차(평균)', '편향', '최대'], Object.entries(o.perItem).map(([it, x]) => [esc(it), x.n, pc(x.mapeN), pc(x.mapeG), sg(x.biasG), pc(x.maxG)]), 1)}</details>`;
+  return html;
 }
 
 function populateRecOrderDates() {
@@ -7238,7 +8211,7 @@ Object.assign(window, {
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
   downloadMergedFile, reclassifyAndRedownload, downloadMasterFile, addProductOverride,
   deleteOrderDay, resetAllOrderHistory, loadStockData, renderStockTable, migrateConsumptionToLedger, renderCycleOverview, downloadCycleOverview, savePendingOrders, cancelPendingOrders, checkSoldDetail, backfillSoldLedger,
-  filterStockStores, pickFirstStockStore, saveExcludedStores, prodImpactChanged, prodTargetEdited, saveStoreAliases, saveChannelQty, downloadChannelExtract, setReclsRange, toggleMonthGroup, monthToggleAll, setHistMonth, setPromoMonth, findMissingMenus, renderProdAccuracy, downloadProdAccuracy, downloadDailySold, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, measureAllPastPromos, togglePromoFormType, measureLaunch, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
+  filterStockStores, pickFirstStockStore, saveExcludedStores, makeTrendBriefing, copyTrendBriefing, backfillDaySums, measureIp, updateDeliverySuggest, analyzeClosures, downloadClosures, closureImpactCheck, prodImpactChanged, prodTargetEdited, saveStoreAliases, saveChannelQty, downloadChannelExtract, setReclsRange, toggleMonthGroup, monthToggleAll, setHistMonth, setPromoMonth, findMissingMenus, renderProdAccuracy, downloadProdAccuracy, downloadDailySold, renderProduction, downloadProduction, toggleProdLimits, saveProdLimits, downloadMasterByYear, rebuildUsageFromHistory, openPromoForm, submitPromoForm, measureAllPastPromos, togglePromoFormType, measureLaunch, deletePromo, togglePromoPaste, importPromoPaste, renderPromoList, measurePromo, downloadPromos, renderRecommendation, downloadRecommendation,
   addKeywordRule, deleteKeywordRule, exportAnomaliesFile, exportCombinedFile, applyAnomalyClassificationFile, resetAllMaster, exportAllDatesCombinedFile, reclassifyAllHistory, downloadCategoryExtract,
 });
 </script>
