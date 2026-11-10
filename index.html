@@ -564,7 +564,7 @@
         <label style="font-size:12px; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="catExActive" checked> 가맹점현황 매장만</label>
         <button class="btn btn-primary btn-sm" onclick="downloadCategoryExtract()">📥 전체 분류 시트로 한번에 다운로드</button>
       </div>
-      <div class="note" style="margin-top:6px;">버거/치킨/비프/피자/피자(싱글=기준표 분류가 "조각피자"인 상품)/피자(홀피자) 총 6개 시트가 한 엑셀 파일로 만들어집니다. "피자 수량"은 조각피자를 제외한 피자(P.mix 집계 기준과 동일)라 홀피자 시트와 같습니다. 기간을 비워두면 저장된 전체 기간이 포함됩니다. 월별로 뽑으면 월합계로 올린 달은 그 값을, 월합계가 없는 달은 저장된 일별 데이터를 합산해서 채웁니다(해당 월의 시작~종료일이 기간에 걸리면 포함).</div>
+      <div class="note" style="margin-top:6px;">버거/치킨/비프/피자/피자(싱글)/피자(홀피자) 총 6개 시트가 한 엑셀 파일로 만들어집니다. "피자 수량"은 기준표 분류가 "피자"인 전체이고, 그중 세부구분1이 <strong>"싱글피자"</strong>인 것이 싱글, 나머지가 홀피자입니다(<strong>피자 수량 = 싱글 + 홀피자</strong>). 분류가 "조각피자"인 상품은 P.mix 집계처럼 세 피자 시트에 넣지 않습니다. 기간을 비워두면 저장된 전체 기간이 포함됩니다. 월별로 뽑으면 월합계로 올린 달은 그 값을, 월합계가 없는 달은 저장된 일별 데이터를 합산해서 채웁니다(해당 월의 시작~종료일이 기간에 걸리면 포함).</div>
       <div class="note">※ 이 기능을 새로 추가하기 전에 저장된 날짜는 매장×분류별 판매건수가 따로 저장되어 있지 않아 추출에 포함되지 않습니다. "③ 이력" 탭의 "🔄 전체 재분류"를 한 번 실행하면 과거 날짜도 포함됩니다.</div>
       <div id="extractStatus" style="margin-top:8px;"></div>
     </div>
@@ -4337,6 +4337,17 @@ function buildPivotSheet(dates, byDate, matchFn, extra, info) {
   return ws;
 }
 
+// ── 매장별 분류 판매건수 엑셀의 시트 정의 ──────────────────────────────────────────────
+// 피자 수량 = 기준표 분류 "피자" 전체. 그중 세부구분1이 "싱글피자"인 것이 싱글, 나머지(세부구분1 "피자")가 홀피자이므로
+// 피자 수량 = 싱글 + 홀피자 이다(홀피자에서 싱글은 빠진다). 분류 "조각피자"는 회사 P.mix 집계처럼 이 세 시트에 넣지 않는다.
+const CATEGORY_EXTRACT_SHEETS = [
+  { name: '버거 수량', match: e => e.cat === '버거' },
+  { name: '치킨 수량', match: e => e.cat === '치킨' },
+  { name: '비프 수량', match: e => e.cat === '비프' },
+  { name: '피자 수량', match: e => e.cat === '피자' },
+  { name: '피자 수량(싱글)', match: e => e.cat === '피자' && e.detail1 === '싱글피자' },
+  { name: '피자 수량(홀피자)', match: e => e.cat === '피자' && e.detail1 !== '싱글피자' },
+];
 async function downloadCategoryExtract() {
   const statusEl = document.getElementById('extractStatus');
   if (Object.keys(storeInfoMap).length === 0) { statusEl.innerHTML = `<span class="pill pill-warn">⚠ 가맹점현황을 먼저 업로드해주세요.</span>`; return; }
@@ -4376,16 +4387,7 @@ async function downloadCategoryExtract() {
     }
     if (dates.length === 0) { statusEl.innerHTML = `<span class="pill pill-warn">⚠ 해당 기간에 저장된 대조 이력이 없습니다.</span>`; return; }
 
-    // "조각피자"는 낱개(싱글)로 파는 것, 그 외 피자 세부구분1은 홀피자로 본다.
-    const sheets = [
-      { name: '버거 수량', match: e => e.cat === '버거' },
-      { name: '치킨 수량', match: e => e.cat === '치킨' },
-      { name: '비프 수량', match: e => e.cat === '비프' },
-      { name: '피자 수량', match: e => e.cat === '피자' },
-      // 조각피자는 기준표에서 분류 자체가 "조각피자"로 등록돼 있다(예전 등록 방식인 분류 "피자" + 세부구분1 "조각피자"도 함께 인정).
-      { name: '피자 수량(싱글)', match: e => e.cat === '조각피자' || (e.cat === '피자' && e.detail1 === '조각피자') },
-      { name: '피자 수량(홀피자)', match: e => e.cat === '피자' && e.detail1 !== '조각피자' },
-    ];
+    const sheets = CATEGORY_EXTRACT_SHEETS;
 
     const wb = XLSX.utils.book_new();
     // 가맹점현황에 없는 매장도 넣을지(체크 해제 시 표 아래에 "가맹점현황 없음"으로 붙임)
