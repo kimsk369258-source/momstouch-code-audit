@@ -628,7 +628,7 @@
   <section class="panel" id="panel-trend">
     <div class="card">
       <h2>트렌드 브리핑</h2>
-      <div class="card-sub">일자별 POS 매출·분류(버거·치킨·비프·피자)·주요 계육 판매와 프로모션 일정을 겹쳐서 <strong>"지금 상황"</strong>을 정리하고, 고민해 볼 포인트를 뽑습니다. 기준일 포함 최근 35일을 보고(프로모션 점검은 시작 전 4주까지 63일) <strong>최근 7일 ↔ 전주 ↔ 직전 4주</strong>를 비교합니다(요일 구성이 같은 7일 단위). 자료는 날짜별 "일 요약"을 읽으므로 대조를 저장할 때 자동으로 만들어지고, 이전 날짜는 "일 요약 채우기"로 저장된 합본에서 채웁니다.</div>
+      <div class="card-sub">일자별 POS 매출·분류(버거·치킨·비프·피자)·주요 계육 판매와 프로모션 일정을 겹쳐서 <strong>"지금 상황"</strong>을 정리하고, 고민해 볼 포인트를 뽑습니다. <strong>직영점을 제외한 가맹점 기준</strong>으로, 기준일 포함 최근 35일을 보고(프로모션 점검은 시작 전 4주까지 63일) <strong>최근 7일 ↔ 전주 ↔ 직전 4주</strong>를 비교합니다(요일 구성이 같은 7일 단위). 자료는 날짜별 "일 요약"을 읽으므로 대조를 저장할 때 자동으로 만들어지고, 이전 날짜는 "일 요약 채우기"로 저장된 합본에서 채웁니다.</div>
       <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:8px;">
         <label style="font-size:13px;">기준일 <input type="date" id="trendDate" class="search-input" style="flex:none;"></label>
         <button class="btn btn-primary btn-sm" onclick="makeTrendBriefing()">브리핑 만들기</button>
@@ -640,7 +640,7 @@
     <div id="trendWrap"></div>
     <div class="card">
       <h2>매장 휴무 패턴 · 자체POS 구분</h2>
-      <div class="card-sub">최근 8주 판매 소진 원장으로 매장별 휴무 패턴(매주 X요일, 격주, 불규칙, 장기 미판매)을 찾습니다. <strong>가맹점현황에는 있지만 POS 판매가 입력되지 않는 매장(자체POS)</strong>은 입고 기록으로 구분해서 휴무 분석에서 뺍니다. 처음 한 번은 판매·입고 원장 몇 개월분을 읽어 시간이 걸립니다(이후 재사용).</div>
+      <div class="card-sub">(직영점 제외) 최근 8주 판매 소진 원장으로 매장별 휴무 패턴(매주 X요일, 격주, 불규칙, 장기 미판매)을 찾습니다. <strong>가맹점현황에는 있지만 POS 판매가 입력되지 않는 매장(자체POS)</strong>은 입고 기록으로 구분해서 휴무 분석에서 뺍니다. 처음 한 번은 판매·입고 원장 몇 개월분을 읽어 시간이 걸립니다(이후 재사용).</div>
       <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:8px;">
         <button class="btn btn-primary btn-sm" onclick="analyzeClosures()">휴무 패턴 분석</button>
         <button class="btn btn-ghost btn-sm" onclick="downloadClosures()">엑셀 다운로드</button>
@@ -1939,14 +1939,19 @@ function classifyForRowInner(minorCode, majorName, midName, productName, minorNa
 // 저장·재분류할 때 함께 만들고, 이전 날짜는 ⑦ 탭 "일 요약 채우기"로 저장된 합본에서 만든다.
 let currentDaySumByDate = {};
 const daySumCache = {}; // date -> 요약 | null
-function buildDaySum(date, items, catEntries, consEntries) {
-  let rev = 0; const bySales = {}, byCat = {}, itemsU = {}, stores = new Set();
-  items.forEach(it => { const v = Number(it.revenue) || 0; rev += v; const sc = it.salesCat || '(없음)'; bySales[sc] = (bySales[sc] || 0) + v; });
-  catEntries.forEach(e => { stores.add(e.storeCode); byCat[e.cat] = (byCat[e.cat] || 0) + e.qty; });
-  consEntries.forEach(e => { stores.add(e.storeCode); itemsU[e.orderItem] = (itemsU[e.orderItem] || 0) + e.qty; });
-  const r0 = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Math.round(v)]));
-  const r1 = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Math.round(v * 10) / 10]));
-  return { v: 1, date, rev: Math.round(rev), stores: stores.size, bySales: r0(bySales), byCat: r1(byCat), items: r1(itemsU) };
+const dsR0 = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Math.round(v)]));
+const dsR1 = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Math.round(v * 10) / 10]));
+const dsMk = () => ({ rev: 0, bySales: {}, byCat: {}, items: {}, stores: new Set() });
+const dsFin = o => ({ rev: Math.round(o.rev), stores: o.stores.size, bySales: dsR0(o.bySales), byCat: dsR1(o.byCat), items: dsR1(o.items) });
+// 직영 집합이 있으면 v2(합계 + direct 분리분), 없으면 v1(합계만). 트렌드 브리핑은 합계 − direct로 가맹점 기준 값을 만든다.
+function dsDone(date, T, Dd) { return Dd ? { v: 2, date, ...dsFin(T), direct: dsFin(Dd) } : { v: 1, date, ...dsFin(T) }; }
+function buildDaySum(date, items, catEntries, consEntries, directSet) {
+  const dset = directSet && directSet.size ? directSet : null, T = dsMk(), Dd = dset ? dsMk() : null;
+  const each = (code, f) => { f(T); if (Dd && dset.has(code)) f(Dd); };
+  items.forEach(it => { const v = Number(it.revenue) || 0, sc = it.salesCat || '(없음)'; each(it.storeCode, o => { o.rev += v; o.bySales[sc] = (o.bySales[sc] || 0) + v; }); });
+  catEntries.forEach(e => each(e.storeCode, o => { o.stores.add(e.storeCode); o.byCat[e.cat] = (o.byCat[e.cat] || 0) + e.qty; }));
+  consEntries.forEach(e => each(e.storeCode, o => { o.stores.add(e.storeCode); o.items[e.orderItem] = (o.items[e.orderItem] || 0) + e.qty; }));
+  return dsDone(date, T, Dd);
 }
 async function saveDaySum(sum) {
   const ok = await storageSet('daysum_' + sum.date, JSON.stringify(sum));
@@ -1963,10 +1968,10 @@ async function loadDaySums(dates) {
   return dates.map(d => daySumCache[d] || null);
 }
 // 저장된 합본(Storage)을 한 줄씩 읽어 일 요약을 만든다 — Firestore 읽기 없음, 쓰기 1회
-async function daySumFromStoredExport(date) {
+async function daySumFromStoredExport(date, directSet) {
   const url = await getDownloadURL(exportStorageRef(date));
+  const dset = directSet && directSet.size ? directSet : null, T = dsMk(), Dd = dset ? dsMk() : null;
   let cols, catIdx, d1Idx, fIdx, scIdx, bad = false;
-  let rev = 0; const bySales = {}, byCat = {}, itemsU = {}, stores = new Set();
   await streamCsvRows(url, header => {
     cols = resolveRawCols(header);
     catIdx = header.indexOf('분류'); scIdx = header.indexOf('매출분류'); fIdx = header.indexOf('보정값');
@@ -1975,22 +1980,20 @@ async function daySumFromStoredExport(date) {
   }, r => {
     if (bad) return;
     if (isTestStore(r[cols.storeCode], cols.storeName >= 0 ? r[cols.storeName] : '')) return;
+    const store = String(r[cols.storeCode] ?? '').trim(), isDir = !!(Dd && dset.has(store));
+    const each = f => { f(T); if (isDir) f(Dd); };
     const revenue = cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0);
-    rev += revenue;
     const sc = (scIdx >= 0 ? String(r[scIdx] ?? '').trim() : '') || '(없음)';
-    bySales[sc] = (bySales[sc] || 0) + revenue;
-    const cat = String(r[catIdx] ?? '').trim(), store = String(r[cols.storeCode] ?? '').trim(), qty = toNum(r[cols.qty]);
+    each(o => { o.rev += revenue; o.bySales[sc] = (o.bySales[sc] || 0) + revenue; });
+    const cat = String(r[catIdx] ?? '').trim(), qty = toNum(r[cols.qty]);
     if (!store || !cat || cat === '제외' || !qty) return;
-    stores.add(store);
     const factor = fIdx >= 0 ? r[fIdx] : '';
-    byCat[cat] = (byCat[cat] || 0) + qty * qtyMultiplier(factor);
     const item = d1Idx >= 0 ? String(r[d1Idx] ?? '').trim() : '';
-    if (item) itemsU[item] = (itemsU[item] || 0) + qty * consumptionPerSale(item, factor, cols.productName >= 0 ? r[cols.productName] : '', cols.productCode >= 0 ? r[cols.productCode] : '');
+    const units = item ? qty * consumptionPerSale(item, factor, cols.productName >= 0 ? r[cols.productName] : '', cols.productCode >= 0 ? r[cols.productCode] : '') : 0;
+    each(o => { o.stores.add(store); o.byCat[cat] = (o.byCat[cat] || 0) + qty * qtyMultiplier(factor); if (item) o.items[item] = (o.items[item] || 0) + units; });
   });
   if (bad) throw new Error('합본 형식 인식 실패');
-  const r0 = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Math.round(v)]));
-  const r1 = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Math.round(v * 10) / 10]));
-  return { v: 1, date, rev: Math.round(rev), stores: stores.size, bySales: r0(bySales), byCat: r1(byCat), items: r1(itemsU) };
+  return dsDone(date, T, Dd);
 }
 async function backfillDaySums(maxDays = 70) {
   const st = document.getElementById('trendStatus');
@@ -1998,15 +2001,19 @@ async function backfillDaySums(maxDays = 70) {
   const dates = dailyIndex.map(d => d.date).filter(d => !isMonthKey(d)).sort().slice(-maxDays);
   st.innerHTML = '<span class="pill pill-neutral">저장된 요약 확인 중...</span>';
   await loadDaySums(dates);
-  const todo = dates.filter(d => !daySumCache[d]).reverse(); // 최근 날짜부터
-  if (!todo.length) { st.innerHTML = `<span class="pill pill-ok">✓ 최근 ${dates.length}일 요약이 모두 있습니다.</span>`; return; }
-  if (!confirm(`일 요약이 없는 ${todo.length}개 날짜를 저장된 합본에서 만듭니다(최근 날짜부터, 날짜당 수 초~수십 초). 쓰기는 날짜당 1회입니다. 진행할까요?`)) return;
+  const dir = await ensureDirectCodes();
+  if (!dir.size) { st.innerHTML = '<span class="pill pill-warn">직영점을 판별할 가맹점현황이 없습니다 — ⑤ 탭에서 매장운영현황을 먼저 올려주세요(직영사업그룹·직영팀 기준).</span>'; return; }
+  // 없는 날짜 + 직영 제외 형식(v2)이 아닌 예전 요약(v1)은 다시 만든다
+  const todo = dates.filter(d => !daySumCache[d] || !(daySumCache[d].v >= 2)).reverse(); // 최근 날짜부터
+  if (!todo.length) { st.innerHTML = `<span class="pill pill-ok">✓ 최근 ${dates.length}일 요약이 모두 있습니다(직영 제외 형식).</span>`; return; }
+  const old = todo.filter(d => daySumCache[d]).length;
+  if (!confirm(`${todo.length}개 날짜의 일 요약을 저장된 합본에서 만듭니다${old ? ` (이 중 ${old}일은 직영점을 제외하도록 다시 만드는 것)` : ''}. 직영 ${dir.size}곳을 따로 집계해 저장합니다(최근 날짜부터, 날짜당 수 초~수십 초, 쓰기는 날짜당 1회). 진행할까요?`)) return;
   heavyJob = '일 요약 만들기';
   let n = 0; const failed = [];
   try {
     for (const d of todo) {
       st.innerHTML = `<span class="pill pill-neutral">일 요약 만드는 중 ${++n}/${todo.length}</span><span>${d} · 중간에 멈춰도 만든 날짜는 남습니다(다시 누르면 이어서)</span>`;
-      try { await saveDaySum(await daySumFromStoredExport(d)); }
+      try { await saveDaySum(await daySumFromStoredExport(d, dir)); }
       catch (e) { console.error('daysum backfill failed', d, e); failed.push(d); }
       await sleep(300);
     }
@@ -2222,7 +2229,7 @@ async function processRawDailyFiles(fileList) {
         minorName: minorNameRaw,
         majorCode, majorName, midCode, midName,
         productCode: productCodeVal, sideProductCode: sideProductCodeVal, productName,
-        gubun: gubunVal,
+        gubun: gubunVal, storeCode: storeCodeVal,
         revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
         cat, salesCat, detail1, src, srcLabel,
       });
@@ -2287,7 +2294,8 @@ async function processRawDailyFiles(fileList) {
   currentConsumptionByDate = consumptionByDate;
   currentCategoryQtyByDate = categoryQtyByDate;
   currentDaySumByDate = {};
-  Object.keys(byDate).forEach(dk => { if (!isMonthKey(dk)) currentDaySumByDate[dk] = buildDaySum(dk, byDate[dk], Object.values(categoryQtyByDate[dk] || {}), Object.values(consumptionByDate[dk] || {})); });
+  const dirSet = await ensureDirectCodes();
+  Object.keys(byDate).forEach(dk => { if (!isMonthKey(dk)) currentDaySumByDate[dk] = buildDaySum(dk, byDate[dk], Object.values(categoryQtyByDate[dk] || {}), Object.values(consumptionByDate[dk] || {}), dirSet); });
   // 연도·날짜는 파일 안의 매출일자(년월)로 정한다. 파일명(예: 일별상품매출현황(매장별)_20261001_20261001_…)의
   // 조회기간과 다르면 잘못된 파일일 수 있으니 알려준다(이름을 바꾼 파일·합본 파일은 확인 생략).
   if (fileDateWarnings.length) setTimeout(() => alert('파일명 기간과 파일 안 매출일자가 다릅니다 — 올바른 파일인지 확인해주세요.\n\n' + fileDateWarnings.join('\n')), 0);
@@ -3572,7 +3580,7 @@ async function reclassifyOneDateSilently(date) {
   if (!ok) throw new Error('저장 실패');
   await saveCatQtyForDate(date, Object.values(categoryQtyMap));
   await saveConsumptionLedger(date, consumptionMap);
-  try { await saveDaySum(buildDaySum(date, items, Object.values(categoryQtyMap), Object.values(consumptionMap))); } catch (e) { console.warn('daysum save failed', date, e); }
+  try { await saveDaySum(buildDaySum(date, items, Object.values(categoryQtyMap), Object.values(consumptionMap), await ensureDirectCodes())); } catch (e) { console.warn('daysum save failed', date, e); }
   return { oldCount: oldReport ? oldReport.anomalyCount : null, newCount: newReport.anomalies.length };
 }
 
@@ -3679,7 +3687,7 @@ async function reclassifyAndRedownload(date, btnEl) {
         minorName: minorNameRaw,
         majorCode, majorName, midCode, midName,
         productCode: productCodeVal, sideProductCode: sideProductCodeVal, productName,
-        gubun: gubunVal,
+        gubun: gubunVal, storeCode: storeCodeVal,
         revenue: cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0),
         cat, salesCat, detail1, src, srcLabel,
       });
@@ -4146,6 +4154,17 @@ function buildAliasMap(info) {
 }
 // 직영 매장 판정(추출 표 맨 아래로 보냄)
 function isDirectStore(info) { return !!info && (/직영/.test(info.group || '') || /직영/.test(info.team || '')); }
+
+// 직영점 코드 집합: 가맹점현황(월별 보관분 포함)에서 가맹그룹 "직영사업그룹" 또는 팀 "직영팀"인 매장. ⑦ 트렌드 브리핑은 이 매장들을 뺀 가맹점 기준이다.
+let directCodesCache = null;
+async function ensureDirectCodes(force) {
+  if (directCodesCache && !force) return directCodesCache;
+  const set = new Set();
+  const add = o => (o?.order || Object.keys(o?.map || {})).forEach(c => { if (isDirectStore(o.map?.[c])) set.add(c); });
+  add({ map: storeInfoMap, order: storeInfoOrder });
+  for (const m of (storeInfoMonths || [])) { try { add(await loadStoreInfoForMonth(m.ym)); } catch (e) { /* 그 달 현황 없음 */ } }
+  directCodesCache = set; return set;
+}
 // 가맹점현황 순서 + 직영은 맨 아래
 function storeOrderWithDirectLast(order, map) {
   const a = [], b = []; order.forEach(c => (isDirectStore(map[c]) ? b : a).push(c)); return [...a, ...b];
@@ -4203,6 +4222,7 @@ setupDropZone('storeInfoDropZone', 'storeInfoFileInput', async (file) => {
     storeInfoMonthCache[ym] = { map, order };
     storeInfoMonths = [...storeInfoMonths.filter(x => x.ym !== ym), { ym, count: order.length, fileName: file.name }];
     await storageSet('meta:storeInfoMonths', JSON.stringify(storeInfoMonths));
+    directCodesCache = null; Object.keys(chanStatsCache).forEach(k => delete chanStatsCache[k]); // 직영 판별이 바뀔 수 있으니 다시 계산
     renderStoreInfoMonths();
     // 가장 최근 달이면 "현재" 현황도 갱신(권장 발주·재고·추출 기본값에 사용)
     const latest = storeInfoMonths.map(x => x.ym).sort().pop();
@@ -7101,22 +7121,25 @@ const meanOf = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
 
 // ── 채널 일 통계 (saved: chanqty_{date}) ─────────────────────────────────────
 const chanStatsCache = {};
-async function loadChannelStats(dates) {
+async function loadChannelStats(dates, excludeDirect = false) {
   const need = dates.filter(d => !(d in chanStatsCache));
   const saved = need.length ? new Set(await loadChannelDates()) : new Set();
+  const dir = need.length ? await ensureDirectCodes() : directCodesCache || new Set();
   for (const d of need) {
     if (!saved.has(d)) { chanStatsCache[d] = null; continue; }
     const o = await loadChannelQty(d);
     if (!o) { chanStatsCache[d] = null; continue; }
-    const tot = { 내점: 0, 포장: 0, 배달: 0 }, byItem = {};
+    const mk = () => ({ tot: { 내점: 0, 포장: 0, 배달: 0 }, byItem: {} }), all = mk(), nd = mk();
     (o.rows || []).forEach(r => {
-      const cat = r[1], d1 = r[2], ch = r[3], q = Number(r[4]) || 0;
-      if (TB_CATS.includes(cat) && tot[ch] != null) tot[ch] += q;
-      if (d1 && ['내점', '포장', '배달'].includes(ch)) { const b = byItem[d1] = byItem[d1] || { 내점: 0, 포장: 0, 배달: 0 }; b[ch] += q; }
+      const cat = r[1], d1 = r[2], ch = r[3], q = Number(r[4]) || 0, isDir = dir.has(r[0]);
+      [all, ...(isDir ? [] : [nd])].forEach(t => {
+        if (TB_CATS.includes(cat) && t.tot[ch] != null) t.tot[ch] += q;
+        if (d1 && ['내점', '포장', '배달'].includes(ch)) { const b = t.byItem[d1] = t.byItem[d1] || { 내점: 0, 포장: 0, 배달: 0 }; b[ch] += q; }
+      });
     });
-    chanStatsCache[d] = { tot, byItem };
+    chanStatsCache[d] = { ...all, nd };
   }
-  const out = {}; dates.forEach(d => { if (chanStatsCache[d]) out[d] = chanStatsCache[d]; }); return out;
+  const out = {}; dates.forEach(d => { const c = chanStatsCache[d]; if (c) out[d] = excludeDirect ? c.nd : { tot: c.tot, byItem: c.byItem }; }); return out;
 }
 // 품목별 배달 비중 = 배달 수량 ÷ 전체 수량(자료가 3일 이상일 때만)
 function deliveryShareFrom(stats) {
@@ -7300,7 +7323,7 @@ function tbBuildModel(E, D, dates, opts) {
   // 일자별 시리즈
   const series = dates.map(d => {
     const x = D[d], flags = tbFlagsOn(d, promosList);
-    return { d, dow: dowOf(d), has: x.has, flags, revPerStore: x.has && x.stores ? x.rev / x.stores : null, rev: x.rev, stores: x.stores,
+    return { d, dow: dowOf(d), has: x.has, legacy: !!x.legacy, flags, revPerStore: x.has && x.stores ? x.rev / x.stores : null, rev: x.rev, stores: x.stores,
       catStore: Object.fromEntries(TB_CATS.map(c => [c, x.has && x.stores ? (x.byCat?.[c] || 0) / x.stores : null])),
       itemStore: Object.fromEntries(items.map(i => [i, x.has && x.stores ? ((x.items?.[i] || 0) / (packs[i] || 1)) / x.stores : null])) };
   });
@@ -7507,9 +7530,11 @@ function tbPoints(m) {
   } else push('채널', 'info', '채널 자료 없음', '채널별(내점·포장·배달) 수량이 저장된 날이 없습니다.', '② 일별 대조의 채널 파일을 올려 저장하면 배달앱 프로모션 효과를 내점·포장 대조군으로 분리해 볼 수 있습니다.');
   // 11) 데이터 점검
   const miss = m.dates.filter(d => !m.series.find(s => s.d === d).has);
-  const savedMiss = miss.filter(d => dailyIndex.some(x => x.date === d));
-  const notSaved = miss.filter(d => d <= m.E && !dailyIndex.some(x => x.date === d));
-  if (savedMiss.length || notSaved.length) push('데이터', savedMiss.length ? 'warn' : 'watch', '자료 점검', `최근 35일 중 일 요약이 없는 날 ${miss.length}일${savedMiss.length ? ` — 대조는 저장됐지만 요약이 없는 날 ${savedMiss.length}일(${savedMiss.slice(0, 4).map(tbMd).join(', ')}${savedMiss.length > 4 ? ' 외' : ''})` : ''}${notSaved.length ? ` / 대조 저장 자체가 없는 날 ${notSaved.length}일(${notSaved.slice(0, 4).map(tbMd).join(', ')}${notSaved.length > 4 ? ' 외' : ''})` : ''}.`, savedMiss.length ? '"일 요약 채우기"를 누르면 저장된 합본에서 만들어집니다.' : '② 일별 대조에서 빠진 날짜를 저장하면 반영됩니다.');
+  const legacy = miss.filter(d => m.series.find(s => s.d === d).legacy);
+  const savedMiss = miss.filter(d => !legacy.includes(d) && dailyIndex.some(x => x.date === d));
+  const notSaved = miss.filter(d => d <= m.E && !legacy.includes(d) && !dailyIndex.some(x => x.date === d));
+  if (legacy.length) push('데이터', 'warn', '직영점 제외가 반영되지 않은 일 요약', `최근 35일 중 ${legacy.length}일(${legacy.slice(0, 4).map(tbMd).join(', ')}${legacy.length > 4 ? ' 외' : ''})의 일 요약은 직영점이 섞인 예전 형식이라 분석에서 제외했습니다.`, '"일 요약 채우기"를 누르면 직영점을 따로 집계하는 형식으로 다시 만들어집니다(가맹점현황에 직영 정보가 있어야 합니다).');
+  if (savedMiss.length || notSaved.length) push('데이터', savedMiss.length ? 'warn' : 'watch', '자료 점검', `최근 35일 중 일 요약이 없는 날 ${savedMiss.length + notSaved.length}일${savedMiss.length ? ` — 대조는 저장됐지만 요약이 없는 날 ${savedMiss.length}일(${savedMiss.slice(0, 4).map(tbMd).join(', ')}${savedMiss.length > 4 ? ' 외' : ''})` : ''}${notSaved.length ? ` / 대조 저장 자체가 없는 날 ${notSaved.length}일(${notSaved.slice(0, 4).map(tbMd).join(', ')}${notSaved.length > 4 ? ' 외' : ''})` : ''}.`, savedMiss.length ? '"일 요약 채우기"를 누르면 저장된 합본에서 만들어집니다.' : '② 일별 대조에서 빠진 날짜를 저장하면 반영됩니다.');
   return pts;
 }
 
@@ -7603,8 +7628,14 @@ async function makeTrendBriefing() {
     const sums = await loadDaySums(allDates);
     const L = await loadProdLimits(), items = [...L.order];
     const pack = packInfoMap(), packs = {}; items.forEach(it => { packs[it] = pack[it]?.unitsPerPack || 1; });
-    const D = {}; allDates.forEach((d, i) => { const s = sums[i], idx = dailyIndex.find(x => x.date === d); D[d] = { has: !!s, rev: s ? s.rev : (idx ? Number(idx.totalRevenue) || 0 : null), stores: s ? s.stores : null, byCat: s?.byCat || null, bySales: s?.bySales || null, items: s?.items || null }; });
-    let chanStats = {}; try { chanStats = await loadChannelStats(allDates); } catch (e) { chanStats = {}; }
+    // 직영점 제외: v2 일 요약은 합계 − direct. 예전 형식(v1)은 직영이 섞여 있어 분리할 수 없으므로 분석에서 빼고(has=false) 다시 만들도록 알린다.
+    const sub = (x, y) => { const o = { ...x }; Object.entries(y || {}).forEach(([k, v]) => { o[k] = Math.max(0, (x[k] || 0) - v); }); return o; };
+    const D = {}; allDates.forEach((d, i) => {
+      const s = sums[i], idx = dailyIndex.find(x => x.date === d), v2 = !!(s && s.v >= 2 && s.direct);
+      D[d] = v2 ? { has: true, legacy: false, rev: Math.max(0, s.rev - s.direct.rev), stores: Math.max(0, s.stores - s.direct.stores), byCat: sub(s.byCat, s.direct.byCat), bySales: sub(s.bySales, s.direct.bySales), items: sub(s.items, s.direct.items) }
+        : { has: false, legacy: !!s, rev: idx ? Number(idx.totalRevenue) || 0 : null, stores: null, byCat: null, bySales: null, items: null };
+    });
+    let chanStats = {}; try { chanStats = await loadChannelStats(allDates, true); } catch (e) { chanStats = {}; }
     const chan = Object.keys(chanStats).length ? Object.fromEntries(Object.entries(chanStats).map(([d, v]) => [d, v.tot])) : null;
     const ipSums = {};
     for (const q of promos) { if (promoKindOf(q) === 'ip' && ipCodeList(q).length && promoEnd(q) >= allDates[0] && q.start <= E) { const sm = await loadIpSum(q); if (sm) ipSums[q.id] = sm; } }
@@ -7612,7 +7643,7 @@ async function makeTrendBriefing() {
     const pts = tbPoints(model);
     tbLastText = tbText(model, pts);
     wrap.innerHTML = tbRender(model, pts);
-    st.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>최근 7일 자료 ${model.A0.n}/7일 · 고민 포인트 ${pts.length}개</span>`;
+    st.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>가맹점 기준(직영점 제외) · 최근 7일 자료 ${model.A0.n}/7일 · 고민 포인트 ${pts.length}개</span>`;
   } catch (err) { console.error(err); st.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`; }
 }
 
@@ -7628,7 +7659,7 @@ async function updateDeliverySuggest() {
   box.innerHTML = '<span class="note">비슷한 과거 프로모션 확인 중...</span>';
   try {
     const days = []; for (let d = addDaysStr(formatDate(new Date()), -150); d <= formatDate(new Date()); d = addDaysStr(d, 1)) days.push(d);
-    const stats = await loadChannelStats(days);
+    const stats = await loadChannelStats(days, true);
     const sg = suggestDeliveryLift(tmp, stats, promos);
     box.innerHTML = sg ? `<span class="note">제안 <strong>+${(sg.lift * 100).toFixed(0)}%</strong> — 비슷한 과거 ${sg.n}건(${esc(sg.basis.join(', '))})의 내점·포장 대비 순증 가중평균. * = 기준 기간에 다른 프로모션이 섞여 참고용</span> <button class="btn btn-ghost btn-sm" type="button" onclick="document.getElementById('pfDeliveryLift').value='${(sg.lift * 100).toFixed(0)}'">제안값 적용</button>`
       : '<span class="note">제안할 과거 자료가 없습니다 — 채널 자료(내점·포장·배달)가 쌓인 뒤 측정된 프로모션이 생기면 자동으로 제안됩니다. 지금은 직접 입력하세요.</span>';
@@ -7639,7 +7670,7 @@ async function loadPromoObservations() {
   const list = promos.filter(p => ['delivery', 'ip'].includes(promoKindOf(p)));
   if (!list.length) return;
   const today = formatDate(new Date()); const days = []; for (let d = addDaysStr(today, -150); d <= today; d = addDaysStr(d, 1)) days.push(d);
-  let stats = {}; try { stats = await loadChannelStats(days); } catch (e) { /* 채널 자료 없음 */ }
+  let stats = {}; try { stats = await loadChannelStats(days, true); } catch (e) { /* 채널 자료 없음 */ }
   for (const p of list) {
     const kind = promoKindOf(p);
     if (kind === 'delivery') {
@@ -7746,11 +7777,12 @@ async function analyzeClosures() {
     if (!soldDates) await loadSoldDates();
     const salesDays = [...salesDaySetNow()].filter(d => d >= from && d <= E).sort();
     if (salesDays.length < 14) { st.innerHTML = `<span class="pill pill-warn">POS 판매 자료가 있는 날이 ${salesDays.length}일뿐입니다(최소 14일 필요).</span>`; return; }
+    const dirCodes = await ensureDirectCodes();
     const sdSet = new Set(salesDays), opens = new Map();
-    Object.entries(S).forEach(([code, o]) => { if (isTestStore(code, o.storeName)) return; const set = new Set(); Object.values(o.byItem).forEach(days => Object.entries(days).forEach(([d, q]) => { if (sdSet.has(d) && Number(q) > 0) set.add(d); })); if (set.size) opens.set(code, set); });
+    Object.entries(S).forEach(([code, o]) => { if (isTestStore(code, o.storeName) || dirCodes.has(code)) return; const set = new Set(); Object.values(o.byItem).forEach(days => Object.entries(days).forEach(([d, q]) => { if (sdSet.has(d) && Number(q) > 0) set.add(d); })); if (set.size) opens.set(code, set); });
     const recvIn = new Set(); Object.entries(R).forEach(([code, o]) => { if (Object.values(o.byItem).some(days => Object.keys(days).some(d => d >= from && d <= E))) recvIn.add(code); });
     const info = await storeInfoForRange(from, E);
-    const infoCodes = info.order.filter(c => info.map[c] && !isTestStore(c, info.map[c].name));
+    const infoCodes = info.order.filter(c => info.map[c] && !isTestStore(c, info.map[c].name) && !dirCodes.has(c) && !isDirectStore(info.map[c])); // 직영점 제외
     const res = closureAnalyze(opens, salesDays);
     const selfPos = infoCodes.filter(c => !opens.has(c) && recvIn.has(c));
     const noAct = infoCodes.filter(c => !opens.has(c) && !recvIn.has(c));
@@ -7758,7 +7790,7 @@ async function analyzeClosures() {
     const fc = closureForecast(res.patterns, E, 7);
     closureLast = { E, res, selfPos, noAct, info, nameOf, teamOf, fc, universe: infoCodes.length, salesDays };
     wrap.innerHTML = closureRender(closureLast);
-    st.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${tbMd(salesDays[0])}~${tbMd(E)} POS 자료 ${salesDays.length}일 · 판매 기록 매장 ${opens.size}곳 · 가맹점현황 ${infoCodes.length}곳</span>`;
+    st.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${tbMd(salesDays[0])}~${tbMd(E)} POS 자료 ${salesDays.length}일 · 판매 기록 매장 ${opens.size}곳 · 가맹점현황 ${infoCodes.length}곳 · 직영점 제외</span>`;
   } catch (err) { console.error(err); st.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`; }
 }
 function closureRender(c) {
