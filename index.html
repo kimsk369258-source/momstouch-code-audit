@@ -6583,7 +6583,8 @@ async function loadProdLimits() {
   if (!prodLimits.order || !prodLimits.order.length) prodLimits.order = PROD_DEFAULT_ITEMS.slice();
   if (!prodLimits.confirmDow) prodLimits.confirmDow = { ...PROD_CONFIRM_DEFAULT };
   if (!prodLimits.gaps) prodLimits.gaps = { ...PROD_DEFAULT_GAPS };
-  if (!prodLimits.calib) prodLimits.calib = 'auto';
+  if (!prodLimits.calib) prodLimits.calib = 'type';
+  if (!prodLimits.calibV) { if (prodLimits.calib === 'auto') prodLimits.calib = 'type'; prodLimits.calibV = 2; } // 예전에 저장된 "자동(전체 통합)"은 새 기본인 회차 유형별로 한 번 옮긴다
   return prodLimits;
 }
 async function toggleProdLimits() {
@@ -6597,8 +6598,8 @@ async function toggleProdLimits() {
       ${L.order.map(n => `<tr><td><input class="search-input pl-name" style="width:160px;" value="${esc(n)}"></td><td><input class="search-input pl-gap" style="width:110px; text-align:right;" value="${L.gaps[n] ?? ''}" oninput="this.closest('tr').querySelector('.pl-half').textContent = this.value ? '±' + Math.round(Number(this.value) / 2).toLocaleString() : ''"></td><td class="num pl-half">${L.gaps[n] != null ? '±' + fmtNum(Math.round(L.gaps[n] / 2)) : ''}</td><td><button class="btn btn-ghost btn-sm" onclick="this.closest('tr').remove()">✕</button></td></tr>`).join('')}
     </tbody></table></div>
     <button class="btn btn-ghost btn-sm" onclick="document.querySelector('#plGapTable tbody').insertAdjacentHTML('beforeend', '<tr><td><input class=&quot;search-input pl-name&quot; style=&quot;width:160px;&quot;></td><td><input class=&quot;search-input pl-gap&quot; style=&quot;width:110px;&quot;></td><td class=&quot;num pl-half&quot;></td><td></td></tr>')">+ 품목</button>
-    <div style="margin:8px 0;">판매 → 발주 환산: <select id="plCalib" class="search-input" style="flex:none;"><option value="auto"${L.calib !== 'none' ? ' selected' : ''}>자동(최근 완료 회차의 입고 ÷ 판매 비율 적용)</option><option value="none"${L.calib === 'none' ? ' selected' : ''}>없음(판매 소진량 그대로)</option></select>
-      <span class="note">POS에 안 잡히는 사용(폐기·자체POS 매장 등)이 있으면 판매만으로는 실제 발주보다 적게 나옵니다. "자동"은 그 차이를 최근 4주 실적 비율로 메웁니다.</span></div>
+    <div style="margin:8px 0;">판매 → 발주 환산: <select id="plCalib" class="search-input" style="flex:none;"><option value="type"${L.calib === 'type' ? ' selected' : ''}>회차 유형별(권장) — 같은 요일 입고 회차 최근 6개의 입고÷판매</option><option value="auto"${L.calib === 'auto' ? ' selected' : ''}>전체 통합 — 최근 12회차 전체의 입고÷판매</option><option value="none"${L.calib === 'none' ? ' selected' : ''}>없음(판매 소진량 그대로)</option></select>
+      <span class="note">POS에 안 잡히는 사용·발주 습관을 입고÷판매 비율로 메웁니다. 화·목·토는 사용 기간과 발주 습관이 달라 비율이 다르므로(최근 비교에서 화 +13%, 토 −15% 편향) 같은 요일 회차끼리 비교하는 "회차 유형별"을 권장합니다. 예측 vs 실제 비교 화면에서 두 방식의 오차를 나란히 볼 수 있습니다.</span></div>
     <div style="margin:8px 0;">기본 배달 비중 <input id="plDelShare" class="search-input" style="flex:none; width:70px; text-align:right;" value="${Math.round((L.deliveryShareDefault ?? 0.5) * 100)}"> % <span class="note">채널 자료(내점·포장·배달)가 없을 때만 씁니다. 자료가 있으면 기준선이 된 같은 요일 최근 4주의 품목별 배달 비중을 자동으로 씁니다.</span></div>
     <button class="btn btn-primary btn-sm" style="margin-top:6px;" onclick="saveProdLimits()">저장</button>`;
 }
@@ -6612,7 +6613,7 @@ async function saveProdLimits() {
     if (g > 0) gaps[n] = g;
   });
   const ds = Number(String(document.getElementById('plDelShare')?.value || '').replace(/[^0-9.]/g, ''));
-  prodLimits = { order, confirmDow, gaps, calib: document.getElementById('plCalib')?.value === 'none' ? 'none' : 'auto', deliveryShareDefault: ds > 0 && ds <= 100 ? ds / 100 : 0.5 };
+  prodLimits = { order, confirmDow, gaps, calib: ['type', 'auto', 'none'].includes(document.getElementById('plCalib')?.value) ? document.getElementById('plCalib').value : 'type', calibV: 2, deliveryShareDefault: ds > 0 && ds <= 100 ? ds / 100 : 0.5 };
   if (await storageSet('production_limits', JSON.stringify(prodLimits))) { document.getElementById('prodLimitsBox').style.display = 'none'; populateProdCycles(); renderProduction(); }
   else alert('저장 실패');
 }
@@ -6759,20 +6760,40 @@ function prodPosTrend(cutoff, ctx) {
   return { f, raw, note: `최근 7일 POS 매출 ÷ 4주 가중평균 = ${raw.toFixed(3)}${f !== raw ? ` → ${f.toFixed(2)}로 제한` : ''}` };
 }
 // ③ 판매 → 발주 환산: 확정 전에 사용일이 모두 끝난(추가발주 전산 포함) 최근 회차 최대 12개의 입고 ÷ 판매
-function prodCalibration(item, cutoff, ctx, mode) {
+// 판매 → 발주 환산 계수. 입고 요일(화·목·토)마다 사용 기간 길이와 발주 습관이 달라 입고÷판매 비율이 다르다
+// (실제 비교에서 화 회차는 예측이 13% 낮고 토 회차는 15% 높게 나왔다). 그래서 기본은 "같은 요일 입고 회차 최근 6개"의 비율을 쓰고,
+// 5개 이상이면 최대·최소를 빼서 한 번의 쏠린 발주(예: IP 오픈 직후 선주문)가 이후 환산을 흔들지 않게 한다. 같은 요일 회차가 3개 미만이면 전체 통합으로 대체한다.
+function prodCalibration(item, cutoff, ctx, mode, T) {
   if (mode === 'none') return { k: 1, n: 0, raw: null, note: '환산 안 함(판매 그대로)' };
   // 입고에는 IP 몫이 들어 있으므로 환산은 "IP 포함 총 소진"(consAll)으로 계산한다(기준선용 consBy는 IP를 뺀 값)
   const rv = ctx.recvBy[item] || {}, cons = ctx.consAll?.[item] || ctx.consBy[item] || {};
-  let sumR = 0, sumC = 0, n = 0;
-  for (let d = cutoff, i = 0; i < 100 && n < 12; d = addDaysStr(d, -1), i++) {
-    if (![2, 4, 6].includes(dowOf(d)) || !(rv[d] > 0)) continue;
-    const cd = cycleDays(d);
-    if (cd[cd.length - 1] > cutoff || !cd.every(x => ctx.salesDays.has(x))) continue;
-    sumR += rv[d]; sumC += cd.reduce((a, x) => a + (cons[x] || 0), 0); n++;
+  const collect = (typeDow, maxN) => {
+    const rows = [];
+    for (let d = cutoff, i = 0; i < 130 && rows.length < maxN; d = addDaysStr(d, -1), i++) {
+      if (![2, 4, 6].includes(dowOf(d)) || !(rv[d] > 0)) continue;
+      if (typeDow != null && dowOf(d) !== typeDow) continue;
+      const cd = cycleDays(d);
+      if (cd[cd.length - 1] > cutoff || !cd.every(x => ctx.salesDays.has(x))) continue;
+      const u = cd.reduce((a, x) => a + (cons[x] || 0), 0); if (!(u > 0)) continue;
+      rows.push({ d, r: rv[d], u });
+    }
+    return rows;
+  };
+  let fallbackNote = '';
+  if (mode === 'type' && T) {
+    const rows = collect(dowOf(T), 6);
+    if (rows.length >= 3) {
+      const ratios = rows.map(x => x.r / x.u).sort((a, b) => a - b);
+      const use = ratios.length >= 5 ? ratios.slice(1, -1) : ratios;
+      const raw = use.reduce((a, b) => a + b, 0) / use.length, k = clampN(raw, 0.5, 3);
+      return { k, n: rows.length, raw, type: true, note: `${DOW_KO[dowOf(T)]} 입고 회차 최근 ${rows.length}개의 입고÷판매 ${ratios.map(x => x.toFixed(2)).join('·')} → ${ratios.length >= 5 ? '최대·최소 제외 ' : ''}평균 ${raw.toFixed(2)}${k !== raw ? ` → ${k.toFixed(2)}로 제한` : ''}` };
+    }
+    fallbackNote = ` (같은 요일 회차 ${rows.length}개로 부족 → 전체 통합)`;
   }
+  const rows = collect(null, 12), n = rows.length, sumR = rows.reduce((a, x) => a + x.r, 0), sumC = rows.reduce((a, x) => a + x.u, 0);
   if (n < 4 || !(sumC > 0)) return { k: 1, n, raw: null, note: `환산 자료 부족(완료 회차 ${n}개) → 판매 그대로` };
   const raw = sumR / sumC, k = clampN(raw, 0.5, 3);
-  return { k, n, raw, note: `최근 ${n}회차 입고 ${Math.round(sumR).toLocaleString()} ÷ 판매 ${Math.round(sumC).toLocaleString()} = ${raw.toFixed(2)}${k !== raw ? ` → ${k.toFixed(2)}로 제한` : ''}` };
+  return { k, n, raw, note: `최근 ${n}회차 입고 ${Math.round(sumR).toLocaleString()} ÷ 판매 ${Math.round(sumC).toLocaleString()} = ${raw.toFixed(2)}${k !== raw ? ` → ${k.toFixed(2)}로 제한` : ''}${fallbackNote}` };
 }
 // 참고용: 최근 같은 요일 회차의 실제 발주(입고) 가중평균 — 예측에는 쓰지 않고 비교 근거로만 보여준다
 function prodRecvRef(item, T, cutoff, ctx) {
@@ -6791,7 +6812,7 @@ function forecastProd(item, T, ctx, calibMode) {
   const perDay = cycleDays(T).map(d => { const w = prodSameDow(series, d, cutoff, ctx.salesDays); return { d, v: w ? w.v : null, used: w ? w.used : [] }; });
   if (perDay.some(x => x.v == null)) return null; // 같은 요일 판매 실적이 없으면 예측하지 않는다
   const base = perDay.reduce((a, x) => a + x.v, 0);
-  const trend = prodPosTrend(cutoff, ctx), cal = prodCalibration(item, cutoff, ctx, calibMode), legacy = manualPromoAdd(T, item);
+  const trend = prodPosTrend(cutoff, ctx), cal = prodCalibration(item, cutoff, ctx, calibMode, T), legacy = manualPromoAdd(T, item);
   const baseTarget = Math.max(0, base * trend.f * cal.k);
   const k = cal.k, tf = trend.f, upp = ctx.pack?.[item]?.unitsPerPack || 1;
   // ① 배달앱 할인: 그날 진행 중인 배달 프로모션의 "배달 채널 증가율" × 품목의 배달 비중 × (기준 판매 × 트렌드 × 환산)
@@ -6947,7 +6968,7 @@ async function renderProduction() {
         <td style="font-size:12px;">${f.perDay.map(x => `<span title="${esc(x.used.map(u => u.slice(5)).join(', '))} 기준">${DOW_KO[dowOf(x.d)]} ${fmtNum(Math.round(x.v))}</span>`).join(' · ')}</td>
         <td class="num">${fmtNum(Math.round(f.base))}</td>
         <td class="num" title="${esc(f.trend.note)}">${f.trend.raw == null ? '<span class="note">보정 안 함</span>' : '×' + f.trend.f.toFixed(3)}</td>
-        <td class="num" title="${esc(f.cal.note)}">${f.cal.n ? '×' + f.cal.k.toFixed(2) : '<span class="note">없음</span>'}</td>
+        <td class="num" title="${esc(f.cal.note)}">${f.cal.n ? '×' + f.cal.k.toFixed(2) + (f.cal.type ? `<br><span class="note">${DOW_KO[dowOf(prodMeta?.T || '')] || ''} 입고 ${f.cal.n}회</span>` : '') : '<span class="note">없음</span>'}</td>
         <td class="num"><strong>${fmtNum(r.base)}</strong> ${esc(r.unit)}</td>
         <td style="font-size:12px;">${f.promo.notes.length ? esc(f.promo.notes.join(' / ')) : '<span class="note">입력 없음</span>'}</td>
         <td class="num">${r.half != null ? `${fmtNum(r.half * 2)} (±${fmtNum(Math.round(r.half))})` : '<span class="note">갭 미설정</span>'}</td>
@@ -7002,7 +7023,15 @@ async function computeProdAccuracy(n) {
       meanAdd: xs.length ? Math.round(sumAdd / xs.length) : null, addShare: sumA ? sumAdd / sumA : null,
       meanNormalDiff: xs.length ? Math.round(xs.reduce((a, x) => a + x.normalDiff, 0) / xs.length) : null };
   });
-  return { cycles, items, summary, gaps: L.gaps };
+  // 환산 방식 비교(같은 회차·같은 시점 데이터): 회차 유형별 vs 전체 통합
+  const modeStat = mode => {
+    const all = [], byType = { 2: [], 4: [], 6: [] };
+    done.forEach(T => items.forEach(it => { const fc = forecastProd(it, T, ctx, mode); const a = ctx.recvBy[it]?.[T]; if (!fc || !(fc.target > 0) || a == null) return; const r = a / fc.target - 1; all.push(r); byType[dowOf(T)].push(r); }));
+    const mae = a => a.length ? a.reduce((x, y) => x + Math.abs(y), 0) / a.length : null, bias = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
+    return { n: all.length, mape: mae(all), bias: bias(all), byType: Object.fromEntries([2, 4, 6].map(w => [w, { n: byType[w].length, mape: mae(byType[w]), bias: bias(byType[w]) }])) };
+  };
+  const modes = { type: modeStat('type'), auto: modeStat('auto') };
+  return { cycles, items, summary, gaps: L.gaps, modes, calibMode };
 }
 async function renderProdAccuracy() {
   const st = document.getElementById('accStatus'), wrap = document.getElementById('accWrap');
@@ -7013,8 +7042,11 @@ async function renderProdAccuracy() {
     if (!d) { st.innerHTML = '<span class="pill pill-warn">입고가 끝난 회차가 없습니다.</span>'; wrap.innerHTML = ''; return; }
     accData = d;
     st.innerHTML = `<span class="pill pill-ok">✓ ${d.cycles.length}회차</span><span>${d.cycles[0].T} ~ ${d.cycles[d.cycles.length - 1].T} · 각 회차 확정일 시점 데이터로 예측 · ○ 범위 안 / ▲ 실제가 최대 초과(예측 부족) / ▼ 실제가 최소 미만(예측 과다)</span>`;
+    // ⓪ 환산 방식 비교
+    const pc1 = v => v == null ? '-' : (v * 100).toFixed(1) + '%', sg1 = v => v == null ? '-' : `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
+    let html = `<div class="note" style="margin-bottom:4px;">환산 방식별 평균 오차(전 품목·전 회차, 각 회차 확정일 시점 데이터로 다시 예측) — 현재 설정: <strong>${d.calibMode === 'type' ? '회차 유형별' : d.calibMode === 'auto' ? '전체 통합' : '환산 없음'}</strong></div>` + tbTable(['환산 방식', '평균 오차(절대)', '편향(실제−타깃)', '화 입고 편향', '목 입고 편향', '토 입고 편향'], [['회차 유형별', 'type'], ['전체 통합', 'auto']].map(([lab, k]) => { const m = d.modes[k]; return [`${lab}${d.calibMode === k ? ' ◀ 현재' : ''}`, pc1(m.mape), sg1(m.bias), sg1(m.byType[2].bias), sg1(m.byType[4].bias), sg1(m.byType[6].bias)]; }), 1);
     // ① 요약
-    let html = '<div class="table-wrap"><table><thead><tr><th>품목</th><th class="num">비교 회차</th><th class="num">범위 안 ○</th><th class="num">예측 부족 ▲</th><th class="num">예측 과다 ▼</th><th class="num">평균 차이<br>(실제−타깃)</th><th class="num">평균 차이율</th><th class="num">평균 오차율<br>(절대값)</th><th class="num">평균 정발주</th><th class="num">평균 추가발주<br>(비중)</th><th>경향</th></tr></thead><tbody>';
+    html += '<div class="table-wrap" style="margin-top:10px;"><table><thead><tr><th>품목</th><th class="num">비교 회차</th><th class="num">범위 안 ○</th><th class="num">예측 부족 ▲</th><th class="num">예측 과다 ▼</th><th class="num">평균 차이<br>(실제−타깃)</th><th class="num">평균 차이율</th><th class="num">평균 오차율<br>(절대값)</th><th class="num">평균 정발주</th><th class="num">평균 추가발주<br>(비중)</th><th>경향</th></tr></thead><tbody>';
     d.summary.forEach(x => {
       const tend = x.mean == null ? '-' : Math.abs(x.mean) < 0.03 ? '균형' : x.mean > 0 ? '예측이 낮은 편(실제가 더 많음)' : '예측이 높은 편(실제가 더 적음)';
       html += `<tr><td><strong>${esc(x.it)}</strong></td><td class="num">${x.n}</td><td class="num"><strong>${x.inR}</strong> (${x.n ? Math.round(x.inR / x.n * 100) : 0}%)</td><td class="num">${x.under}</td><td class="num">${x.over}</td>
