@@ -5653,8 +5653,18 @@ function promoEnd(p) { return p.end || (p.type === 'launch' ? formatDate(new Dat
 function promosOn(d) { return promos.filter(p => d >= p.start && d <= promoEnd(p)); }
 // 판매를 끌어올리는 "행사"(프로모션·공휴일)만 — 신제품 출시는 행사 계수·기준선 제외 대상이 아니다
 function salesPromos() { return promos.filter(p => p.type !== 'launch'); }
+// 효과 측정의 기준선 판단: 공휴일·같은 채널 행사·전 채널 상품(IP 제휴)이 걸린 날은 p 채널의 기준선에도 섞인다.
+// "다른 채널 행사"는 배달앱 채널 프로모션만 해당(IP 제휴는 전 채널이라 다른 채널 행사가 아니다).
+const promoSameChannelOrAll = (q, p) => q.type === 'holiday' || q.channel === p.channel || promoKindOf(q) === 'ip';
+const promoOtherChannel = (q, p) => q.type === 'promo' && promoKindOf(q) !== 'ip' && q.channel !== p.channel;
+// 배지: IP 제휴는 채널이 아니라 "IP 제휴(전 채널)", 신제품은 "신제품"
+function promoBadge(p) {
+  if (promoKindOf(p) === 'ip') return { label: 'IP 제휴 · 전 채널', color: PROMO_COLORS['신제품'] };
+  return { label: p.channel, color: PROMO_COLORS[p.channel] || '#64748b' };
+}
 function promoSummary(p) {
   if (p.type === 'holiday') return '공휴일·명절';
+  if (promoKindOf(p) === 'ip') return `IP 제휴 · 내점·포장·배달 전 채널${p.target && p.target !== '전체' ? ` · 대상 ${p.target}` : ''}${(p.ipCodes || []).length ? ` · 코드 ${p.ipCodes.join(', ')}` : ''}`;
   if (p.type === 'launch') return `신제품 · 주요 계육: ${(p.items || []).join(', ') || '-'}${p.keywords ? ` · 상품명 키워드: ${p.keywords}` : ''}`;
   return (p.coupons || []).map(c => `${c.kind || '쿠폰'} ${fmtNum(c.total)}원${c.days && c.days !== '매일' ? `(${c.days})` : ''}`).join(' · ');
 }
@@ -5689,6 +5699,7 @@ function openPromoForm(id) {
     </div>
     <div id="pfIpBox" style="margin-top:8px; padding:8px 10px; border:1px dashed #f9a8d4; border-radius:8px; background:#fdf2f8;">
       <div style="font-size:13px; font-weight:600; margin-bottom:4px;">IP 상품코드 — 세트 코드만 입력(구성품은 같은 코드로 자동 집계)</div>
+      <div class="note" style="margin-bottom:4px;">IP 제휴는 <strong>내점·포장·배달 전 채널</strong>에서 판매하므로 배달앱 채널·쿠폰·최소주문은 입력하지 않습니다.</div>
       <div class="toolbar" style="gap:8px; flex-wrap:wrap; align-items:flex-start;"><textarea id="pfIpCodes" style="flex:1; min-width:240px; height:52px;" placeholder="예: 5024, 5025, 5026">${esc((p.ipCodes || []).join(', '))}</textarea><input id="pfIpDaily" class="search-input" style="flex:none; width:170px;" placeholder="일 예상 세트 수(선택)" value="${esc(p.ipDailySets ?? '')}"></div>
       <div class="note">입력한 코드로 합본에서 세트 판매량과 구성 계육을 직접 집계합니다(⑥ 목록의 "IP 분석"). "일 예상 세트 수"는 판매가 시작되기 전 예측에만 쓰이고, 판매가 시작되면 실제 판매(최근 3일 평균)로 바뀝니다.</div>
     </div>
@@ -5737,8 +5748,11 @@ function togglePromoFormType() {
   if (t === 'promo' && kind === 'delivery') updateDeliverySuggest();
   show('pfLaunchBox', t === 'launch');
   show('pfImpactBox', t !== 'launch');
-  ['pfChannel', 'pfOrderType', 'pfTarget', 'pfMinOrder', 'pfLift', 'pfAddCoupon'].forEach(id => show(id, t === 'promo'));
-  const ct = document.getElementById('pfCoupons'); if (ct) ct.closest('.table-wrap').style.display = t === 'promo' ? '' : 'none';
+  // IP 제휴는 내점·포장·배달 전 채널에서 파는 상품이라 배달앱 채널·주문유형·최소주문·예상 증가율·쿠폰 입력이 없다(대상 매장만 입력)
+  const appFields = t === 'promo' && kind !== 'ip';
+  ['pfChannel', 'pfOrderType', 'pfMinOrder', 'pfLift', 'pfAddCoupon'].forEach(id => show(id, appFields));
+  show('pfTarget', t === 'promo');
+  const ct = document.getElementById('pfCoupons'); if (ct) ct.closest('.table-wrap').style.display = appFields ? '' : 'none';
   const nm = document.getElementById('pfName'); if (nm) nm.placeholder = t === 'launch' ? '신제품명 (예: 후덕죽XO 시리즈)' : '이름 (예: 26.10 쿠팡이츠 데일리딜)';
   const en = document.getElementById('pfEnd'); if (en) en.title = t === 'launch' ? '판매 종료일(선택) — 비워두면 계속 판매 중으로 보고 오늘까지 분석합니다' : '';
 }
@@ -5746,7 +5760,7 @@ async function submitPromoForm() {
   const g = id => document.getElementById(id).value.trim();
   const num = v => { const n = Number(String(v).replace(/[^0-9.\-]/g, '')); return String(v).trim() === '' || !isFinite(n) ? null : n; };
   const p = {
-    id: g('pfId') || ('p' + Date.now()), type: g('pfType'), name: g('pfName'), channel: g('pfType') === 'holiday' ? '공휴일' : g('pfType') === 'launch' ? '신제품' : g('pfChannel'),
+    id: g('pfId') || ('p' + Date.now()), type: g('pfType'), name: g('pfName'), channel: g('pfType') === 'holiday' ? '공휴일' : g('pfType') === 'launch' ? '신제품' : (g('pfType') === 'promo' && g('pfKind') === 'ip') ? '전체' : g('pfChannel'),
     items: g('pfType') === 'launch' ? [...new Set([...[...document.querySelectorAll('.pf-item:checked')].map(x => x.value), ...g('pfItemsExtra').split(',').map(x => x.trim()).filter(Boolean)])] : undefined,
     keywords: g('pfType') === 'launch' ? g('pfKeywords') : undefined,
     kind: g('pfType') === 'promo' ? g('pfKind') : undefined,
@@ -5768,6 +5782,7 @@ async function submitPromoForm() {
   if (p.type !== 'launch' && !p.end) { alert('종료일을 입력해주세요.'); return; }
   if (p.end && p.end < p.start) { alert('종료일이 시작일보다 빠릅니다.'); return; }
   if (p.type === 'launch') { p.coupons = []; if (!p.items.length) { alert('신제품의 주요 계육을 하나 이상 선택해주세요.'); return; } }
+  if (p.type === 'promo' && p.kind === 'ip') { p.coupons = []; p.orderType = undefined; p.minOrder = null; p.expectedLift = null; } // 전 채널 상품: 배달앱 입력 없음
   if (p.type === 'promo' && p.kind === 'ip' && !p.ipCodes.length && !confirm('IP 상품코드가 비어 있습니다. 코드를 넣어야 IP 판매를 집계할 수 있습니다. 그래도 저장할까요?')) return;
   const old = promos.find(x => x.id === p.id); if (old && old.measured) p.measured = old.measured;
   promos = promos.filter(x => x.id !== p.id).concat(p);
@@ -5825,16 +5840,16 @@ function renderPromoList() {
   const y0 = `${cur}-01-01`, days = (new Date(`${+cur + 1}-01-01T00:00:00Z`) - new Date(y0 + 'T00:00:00Z')) / 864e5;
   const pos = d => Math.max(0, Math.min(100, (new Date(d + 'T00:00:00Z') - new Date(y0 + 'T00:00:00Z')) / 864e5 / days * 100));
   let tl = '<div style="position:relative; height:18px; font-size:10px; color:#9ca3af;">' + Array.from({ length: 12 }, (_, i) => `<span style="position:absolute; left:${i / 12 * 100}%;">${i + 1}월</span>`).join('') + '</div>';
-  tl += list.map(p => `<div style="position:relative; height:20px; margin:2px 0; background:#f9fafb; border-radius:4px;"><div title="${esc(p.name)} ${p.start}~${p.end || '진행 중'}" style="position:absolute; left:${pos(p.start)}%; width:${Math.max(0.6, pos(addDaysStr(promoEnd(p), 1)) - pos(p.start))}%; top:2px; bottom:2px; background:${PROMO_COLORS[p.channel] || '#64748b'}; border-radius:3px;"></div><span style="position:absolute; left:${Math.min(80, pos(addDaysStr(promoEnd(p), 1)))}%; padding-left:6px; font-size:11px; line-height:20px; white-space:nowrap;">${esc(p.name)}</span></div>`).join('');
+  tl += list.map(p => `<div style="position:relative; height:20px; margin:2px 0; background:#f9fafb; border-radius:4px;"><div title="${esc(p.name)} ${p.start}~${p.end || '진행 중'}" style="position:absolute; left:${pos(p.start)}%; width:${Math.max(0.6, pos(addDaysStr(promoEnd(p), 1)) - pos(p.start))}%; top:2px; bottom:2px; background:${promoBadge(p).color}; border-radius:3px;"></div><span style="position:absolute; left:${Math.min(80, pos(addDaysStr(promoEnd(p), 1)))}%; padding-left:6px; font-size:11px; line-height:20px; white-space:nowrap;">${esc(p.name)}</span></div>`).join('');
   document.getElementById('promoTimeline').innerHTML = list.length ? tl : '';
   const lift = p => p.type === 'launch' ? (p.measured ? Object.entries(p.measured.items || {}).map(([it, v]) => `${esc(it)} 순증 <strong style="color:${v.incr >= 0 ? '#b91c1c' : '#2563eb'}">${v.incr >= 0 ? '+' : ''}${Math.round(v.incr * 100)}%</strong>${v.cannib != null ? ` · 잠식 ${Math.round(v.cannib * 100)}%` : ''}`).join(', ') : '-') : p.measured ? Object.entries(p.measured.items || {}).map(([it, v]) => { const u = usableLift(p, v.lift); return `${esc(it)} <strong style="color:${v.lift >= 0 ? '#b91c1c' : '#2563eb'}">${v.lift >= 0 ? '+' : ''}${Math.round(v.lift * 100)}%</strong>${u.note ? ` <span class="pill pill-warn" title="${esc(u.note)}">예측엔 ${Math.round(u.v * 100)}%</span>` : ''}`; }).join(', ') : '-';
   let html = '<div class="table-wrap"><table><thead><tr><th>구분·채널</th><th>이름</th><th>기간</th><th>내용</th><th class="num">예상 증가율</th><th>측정 효과</th><th>임팩트 입력 vs 관측</th><th>예측에 쓰는 효과</th><th></th></tr></thead><tbody>';
   const tableList = (promoMonthSel === 'all' ? list : list.filter(p => monthsOf(p).includes(promoMonthSel))).slice().sort((x, y) => y.start.localeCompare(x.start));
   tableList.forEach(p => {
     const nd = (new Date(promoEnd(p) + 'T00:00:00Z') - new Date(p.start + 'T00:00:00Z')) / 864e5 + 1;
-    html += `<tr><td><span class="pill" style="background:${PROMO_COLORS[p.channel] || '#64748b'}; color:#fff;">${esc(p.channel)}</span></td><td><strong>${esc(p.name)}</strong>${p.note ? `<div class="note">${esc(p.note)}</div>` : ''}</td>
-      <td>${p.start.slice(5)}(${DOW_KO[dowOf(p.start)]}) ~ ${p.end ? `${p.end.slice(5)}(${DOW_KO[dowOf(p.end)]}) · ${nd}일` : `<span class="pill pill-neutral">진행 중</span> · 출시 ${nd}일째`}</td><td style="font-size:12px;">${esc(promoSummary(p))}${p.orderType ? ` · ${esc(p.orderType)}` : ''}${p.target && p.target !== '전체' ? ` · 대상 ${esc(p.target)}` : ''}</td>
-      <td class="num">${p.expectedLift != null ? p.expectedLift + '%' : '-'}</td><td style="font-size:12px;">${lift(p)}</td>
+    html += `<tr><td><span class="pill" style="background:${promoBadge(p).color}; color:#fff;">${esc(promoBadge(p).label)}</span></td><td><strong>${esc(p.name)}</strong>${p.note ? `<div class="note">${esc(p.note)}</div>` : ''}</td>
+      <td>${p.start.slice(5)}(${DOW_KO[dowOf(p.start)]}) ~ ${p.end ? `${p.end.slice(5)}(${DOW_KO[dowOf(p.end)]}) · ${nd}일` : `<span class="pill pill-neutral">진행 중</span> · 출시 ${nd}일째`}</td><td style="font-size:12px;">${esc(promoSummary(p))}${p.orderType && promoKindOf(p) !== 'ip' ? ` · ${esc(p.orderType)}` : ''}${p.target && p.target !== '전체' && promoKindOf(p) !== 'ip' ? ` · 대상 ${esc(p.target)}` : ''}</td>
+      <td class="num">${p.expectedLift != null && promoKindOf(p) !== 'ip' ? p.expectedLift + '%' : '-'}</td><td style="font-size:12px;">${promoKindOf(p) === 'ip' ? '<span class="note">IP는 "임팩트 입력 vs 관측" 칸 참고</span>' : lift(p)}</td>
       <td style="font-size:12px;" data-obs="${p.id}">${['delivery', 'ip'].includes(promoKindOf(p)) || (p.comp || []).length ? (promoObs[p.id] || '<span class="note">불러오는 중...</span>') : '-'}</td>
       <td style="font-size:12px;">${p.impact && Object.keys(p.impact).length ? `<div><strong>입력 임팩트(회차당):</strong> ${Object.entries(p.impact).map(([k, v]) => `${esc(k)} ${v > 0 ? '+' : ''}${fmtNum(v)}`).join(', ')}</div>` : ''}${p.type === 'launch' ? '-' : [...registeredOrderItems()].map(it => { const L = liftFor(p, it); return L.lift == null ? '' : `${esc(it)} ${L.lift >= 0 ? '+' : ''}${Math.round(L.lift * 100)}%<span class="note">(${L.src === 'measured' ? '측정' : L.src === 'expected' ? '예상' : '유사 ' + L.sm.n + '건'})</span>`; }).filter(Boolean).join(', ') || '<span class="note">자료 없음(0%)</span>'}</td>
       <td style="white-space:nowrap;"><button class="btn btn-ghost btn-sm" onclick="${p.type === 'launch' ? 'measureLaunch' : promoKindOf(p) === 'ip' ? 'measureIp' : 'measurePromo'}('${p.id}')">${p.type === 'launch' ? '카니발·증분 분석' : promoKindOf(p) === 'ip' ? 'IP 분석' : '효과 측정'}</button> <button class="btn btn-ghost btn-sm" onclick="openPromoForm('${p.id}')">수정</button> <button class="btn btn-danger btn-sm" onclick="deletePromo('${p.id}')">삭제</button></td></tr>`;
@@ -5847,7 +5862,7 @@ function renderPromoList() {
 // 어떤 행사·공휴일도 없던 날의 평균. 상승률 = 행사일 실제 합 ÷ 기준선 합 − 1.
 async function measureAllPastPromos() {
   const today = formatDate(new Date());
-  const todo = salesPromos().filter(p => p.end < today && (!p.measured || p.measured.at < p.end));
+  const todo = salesPromos().filter(p => promoKindOf(p) !== 'ip' && p.end < today && (!p.measured || p.measured.at < p.end));
   if (!todo.length) { alert('측정할 지난 행사가 없습니다(모두 측정됨).'); return; }
   if (!confirm(`끝난 행사 ${todo.length}건을 차례로 측정합니다. 계속할까요?`)) return;
   for (const p of todo) await measurePromo(p.id);
@@ -5888,12 +5903,13 @@ async function measurePromo(id) {
     //  2단계: 행사 전 10주로 넓힘
     //  3단계: 공휴일과 같은 채널 행사만 빼고, 다른 채널 행사가 있던 날도 쓰되 그 행사 효과(측정·예상·유사 추정)만큼 나눠 평소 수준으로 되돌림
     let baseMode = 1, baseItem = null;
-    const sameChannelOrHoliday = x => salesPromos().some(q => x >= q.start && x <= q.end && (q.type === 'holiday' || q.channel === p.channel));
+    // 전 채널 상품(IP 제휴)이 걸린 날은 어느 채널의 기준선에도 섞이므로 "같은 채널 행사"처럼 기준에서 뺀다
+    const sameChannelOrHoliday = x => salesPromos().some(q => x >= q.start && x <= q.end && promoSameChannelOrAll(q, p));
     // 다른 채널 행사 보정은 "그 행사를 직접 측정한, 믿을 만한 값"만 쓴다. 유사 행사 추정값을 쓰면
     // 측정 → 추정 → 측정이 서로 부풀리는 순환(예: 배민 측정이 쿠팡 추정을 키우고, 그 추정이 다시
     // 배민 기준선을 낮춰 배민 효과를 키움)이 생기기 때문. 믿을 만한 측정이 없으면 보정하지 않는다(보수적).
     const measuredOnlyLift = (q, item) => { const m = q.measured?.items?.[item]; if (!m || m.lift == null) return 0; const u = usableLift(q, m.lift); return u.note || (m.baseN != null && m.baseN < 2) ? 0 : u.v; };
-    const otherPromosOn = x => salesPromos().filter(q => q !== p && q.type === 'promo' && q.channel !== p.channel && x >= q.start && x <= q.end);
+    const otherPromosOn = x => salesPromos().filter(q => q !== p && promoOtherChannel(q, p) && x >= q.start && x <= q.end);
     const otherFactor = (x, item) => 1 + otherPromosOn(x).reduce((a, q) => a + measuredOnlyLift(q, item), 0);
     const baseDays = (d, mode) => {
       const out = [];
@@ -6669,7 +6685,7 @@ function promoTraits(p) {
 }
 function similarPromoLift(p, item) {
   const tp = promoTraits(p);
-  const cands = salesPromos().filter(q => q !== p && q.type === 'promo' && q.measured?.items?.[item]).map(q => {
+  const cands = salesPromos().filter(q => q !== p && q.type === 'promo' && promoKindOf(q) !== 'ip' && q.measured?.items?.[item]).map(q => {
     const m = q.measured.items[item];
     if (m.lift == null || m.lift < 0 || (m.baseN != null && m.baseN < 2)) return null; // 못 믿을 측정은 제외
     const tq = promoTraits(q);
@@ -6688,7 +6704,7 @@ function liftFor(p, item) {
   const m = p.measured?.items?.[item];
   if (m) { const mu = usableLift(p, m.lift); if (!mu.note) return { lift: mu.v, src: 'measured', mu, m }; }
   if (p.expectedLift != null) return { lift: p.expectedLift / 100, src: 'expected' };
-  if (p.type === 'promo') { const sm = similarPromoLift(p, item); if (sm) return { lift: sm.lift, src: 'similar', sm }; }
+  if (p.type === 'promo' && promoKindOf(p) !== 'ip') { const sm = similarPromoLift(p, item); if (sm) return { lift: sm.lift, src: 'similar', sm }; }
   if (m) { const mu = usableLift(p, m.lift); return { lift: mu.v, src: 'measured', mu, m }; }
   return { lift: null, src: null };
 }
@@ -6696,7 +6712,7 @@ function liftFor(p, item) {
 function promoDayFactor(d, item) {
   let f = 1;
   salesPromos().forEach(p => {
-    if (d < p.start || d > p.end) return;
+    if (d < p.start || d > p.end || promoKindOf(p) === 'ip') return; // IP 제휴는 채널 효과 계수가 아니라 구성 환산·IP 분석으로 다룬다
     const L = liftFor(p, item); let l = L.lift || 0;
     const m = L.src === 'measured' ? L.m : null;
     if (m && m.special) (p.coupons || []).forEach(c => { const key = `${c.kind} ${c.total}원 적용일`; if (m.special[key] != null && couponActiveOn(c, d, p)) { const su = usableLift(p, m.special[key]); if (su.v != null) l = su.v; } });
