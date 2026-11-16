@@ -8581,7 +8581,9 @@ function downloadPizzaTracking() {
       const pm = r.rev ? r.pzRev / r.rev : 0;
       aoa.push([toExcelSerialDate(r.date), pzWeekLabel(r.date), '', '', r.code, r.pizzaCode, r.launch, r.name, r.team, r.ac, '샵앤샵', '포함', Math.round(r.rev), Math.round(r.rev - r.pzRev), Math.round(r.pzRev), Math.round(pm * 10000) / 10000, r.qty, Math.round(r.pieceRev), r.piece, r.seg === '직영팀' ? '직영점' : '가맹점', '', r.qty, Math.round(r.pzRev), '', +r.date.slice(5, 7), r.single, r.qty - r.single]);
     });
-    const ws = XLSX.utils.aoa_to_sheet(aoa); ws['!cols'] = [{ wch: 11 }, { wch: 8 }]; XLSX.utils.book_append_sheet(wb, ws, '일자별 raw'); }
+    const ws = XLSX.utils.aoa_to_sheet(aoa); ws['!cols'] = [{ wch: 11 }, { wch: 8 }];
+    for (let i = 1; i < aoa.length; i++) { const cell = ws['A' + (i + 1)]; if (cell) cell.z = 'yyyy-mm-dd'; }
+    XLSX.utils.book_append_sheet(wb, ws, '일자별 raw'); }
   { const m = pzMismatch(c), aoa = [['구분', '코드', '매장명', '팀', '런칭일', '일수', '피자 수량', '전체 수량']];
     m.unknown.forEach(u => aoa.push(['판매 있음·운영현황 없음', u.code, u.name, '', '', u.dates.size, Math.round(u.pizza), Math.round(u.qty)]));
     m.unreg.forEach(u => aoa.push(['피자 판매·런칭일 없음/이전', u.code, u.name, u.team, u.launch, u.days, Math.round(u.qty), '']));
