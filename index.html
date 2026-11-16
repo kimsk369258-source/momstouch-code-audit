@@ -8511,6 +8511,7 @@ async function makePizzaTracking() {
     let html = '';
     if (!anyLaunch) html += '<div class="card"><span class="pill pill-bad">피자 런칭일 없음</span> 올려둔 가맹점현황에 G열 "피자 여부(런칭일)"가 없습니다. 새 매장운영현황 엑셀을 ⑤ 탭 "가맹점현황"에 다시 올려주세요(월 선택 후 저장).</div>';
     PZ_SEGS.forEach(seg => { html += pzSegCard(c, seg); });
+    [false, true].forEach(only => { const t = pzTypeView(c, '가맹점', only); if (c.rows.some(r => r.seg === '가맹점' && !!r.only === only)) html += pzSegCard(t.view, t.label); });
     PZ_SEGS.forEach(seg => { html += pzStoreCard(c, seg); });
     html += pzMismatchCard(c);
     html += pzTeamCard(c);
@@ -8547,9 +8548,9 @@ function pzStoreSummary(c, seg) {
 }
 function pzStoreCard(c, seg) {
   const list = pzStoreSummary(c, seg); if (!list.length) return '';
-  const head = ['E코드', '피자코드', '매장명', '팀', '담당 AC', '런칭일', '영업일', '피자 판매일', '피자 판매량', '싱글', '홀피자', '점일', '총매출', '맘스터치매출', '피자매출', 'P.mix'];
-  const rows = list.map(a => [a.code, a.pizzaCode, esc(a.name), esc(a.team), esc(a.ac), a.launch, fmtNum(a.openDays), fmtNum(a.soldDays), fmtNum(a.qty), fmtNum(a.single), fmtNum(a.qty - a.single), pzF1(a.openDays ? a.qty / a.openDays : 0), a.rev ? fmtNum(a.rev) : '–', a.rev ? fmtNum(a.mom) : '–', a.rev ? fmtNum(a.pzRev) : '–', a.rev ? (a.pzRev / a.rev * 100).toFixed(1) + '%' : '–']);
-  return `<div class="card"><h2>${seg} 매장별 (${list.length}곳)</h2><div class="note">기간 합계 · 점일 = 판매량 ÷ 영업일 · 일자별 매장 데이터는 엑셀 "일자별 raw" 시트</div><details open><summary style="cursor:pointer;">매장별 보기</summary>${tbTable(head, rows, 6)}</details></div>`;
+  const head = ['E코드', '피자코드', '매장명', '형태', '팀', '담당 AC', '런칭일', '영업일', '피자 판매일', '피자 판매량', '싱글', '홀피자', '점일', '총매출', '맘스터치매출', '피자매출', 'P.mix'];
+  const rows = list.map(a => [a.code, a.pizzaCode, esc(a.name), a.only ? '피자단독' : '샵앤샵', esc(a.team), esc(a.ac), a.launch, fmtNum(a.openDays), fmtNum(a.soldDays), fmtNum(a.qty), fmtNum(a.single), fmtNum(a.qty - a.single), pzF1(a.openDays ? a.qty / a.openDays : 0), a.rev ? fmtNum(a.rev) : '–', a.rev ? fmtNum(a.mom) : '–', a.rev ? fmtNum(a.pzRev) : '–', a.rev ? (a.pzRev / a.rev * 100).toFixed(1) + '%' : '–']);
+  return `<div class="card"><h2>${seg} 매장별 (${list.length}곳)</h2><div class="note">기간 합계 · 점일 = 판매량 ÷ 영업일 · 일자별 매장 데이터는 엑셀 "일자별 raw" 시트</div><details open><summary style="cursor:pointer;">매장별 보기</summary>${tbTable(head, rows, 7)}</details></div>`;
 }
 
 // 가맹점현황(매장운영현황)과 판매 자료가 맞지 않는 매장 — ① 판매는 있는데 현황에 없음 ② 피자를 팔았는데 런칭일이 없거나 이전 ③ 취급점인데 기간 내 판매 자료가 전혀 없음
@@ -8570,6 +8571,19 @@ function pzMismatchCard(c) {
     <details open><summary style="cursor:pointer;">② 피자를 팔았는데 런칭일이 없거나 이전인 매장 (${m.unreg.length})</summary>${t(['코드', '매장명', '팀', '런칭일', '해당 일수', '피자 수량'], m.unreg.map(u => [esc(u.code), esc(u.name), esc(u.team), u.launch || '(없음)', u.days, fmtNum(u.qty)]))}</details>
     <details open><summary style="cursor:pointer;">③ 취급점인데 기간 내 판매 자료가 없는 매장 (${m.silent.length})</summary>${t(['코드', '매장명', '팀', '런칭일', '취급 일수'], m.silent.map(u => [esc(u.code), esc(u.name), esc(u.team), u.launch, u.days]))}</details></div>`;
 }
+
+// 가맹점을 형태(샵앤샵 / 피자단독)로 나눈 일자별 합계 — 점포별 행에서 다시 만든다
+function pzTypeView(c, seg, only) {
+  const label = `${seg}(${only ? '피자단독' : '샵앤샵'})`, days = {};
+  c.dates.forEach(d => { days[d] = { [label]: { handled: 0, open: 0, closed: 0, sold: 0, noSale: 0, qty: 0, single: 0, whole: 0, piece: 0, newly: 0, rev: 0, pzRev: 0, mom: 0 } }; });
+  c.rows.filter(r => r.seg === seg && !!r.only === only).forEach(r => {
+    const o = days[r.date][label]; o.handled++; if (r.launch === r.date) o.newly++;
+    if (r.open) o.open++; else o.closed++;
+    if (r.qty > 0) { o.sold++; o.qty += r.qty; o.single += r.single; o.whole += r.qty - r.single; } else if (r.open) o.noSale++;
+    o.piece += r.piece; o.rev += r.rev; o.pzRev += r.pzRev; o.mom += r.mom;
+  });
+  return { view: { dates: c.dates, days }, label, count: c.rows.filter(r => r.seg === seg && !!r.only === only && r.date === c.dates[0]).length };
+}
 function pzTeamCard(c) {
   const rows = Object.entries(c.teams).sort((a, b) => b[1].qty - a[1].qty).map(([t, v]) => [esc(t), fmtNum(v.handledDays / (c.dates.length || 1)), fmtNum(v.qty), pzF1(v.openDays ? v.qty / v.openDays : 0)]);
   return `<div class="card"><h2>팀별 (가맹점)</h2>${tbTable(['팀', '평균 취급점', '피자 판매량', '점일(영업점)'], rows)}</div>`;
@@ -8582,7 +8596,7 @@ function downloadPizzaTracking() {
     const aoa = [H];
     c.rows.slice().sort((x, y) => x.date.localeCompare(y.date)).forEach(r => {
       const pm = r.rev ? r.pzRev / r.rev : 0;
-      aoa.push([toExcelSerialDate(r.date), pzWeekLabel(r.date), '', '', r.code, r.pizzaCode, r.launch, r.name, r.team, r.ac, '샵앤샵', '포함', Math.round(r.rev), Math.round(r.mom), Math.round(r.pzRev), Math.round(pm * 10000) / 10000, r.qty, Math.round(r.pieceRev), r.piece, r.seg === '직영팀' ? '직영점' : '가맹점', '', r.qty, Math.round(r.pzRev), '', +r.date.slice(5, 7), r.single, r.qty - r.single]);
+      aoa.push([toExcelSerialDate(r.date), pzWeekLabel(r.date), '', '', r.code, r.pizzaCode, r.launch, r.name, r.team, r.ac, r.only ? '피자단독' : '샵앤샵', '포함', Math.round(r.rev), Math.round(r.mom), Math.round(r.pzRev), Math.round(pm * 10000) / 10000, r.qty, Math.round(r.pieceRev), r.piece, r.seg === '직영팀' ? '직영점' : '가맹점', '', r.qty, Math.round(r.pzRev), '', +r.date.slice(5, 7), r.single, r.qty - r.single]);
     });
     const ws = XLSX.utils.aoa_to_sheet(aoa); ws['!cols'] = [{ wch: 11 }, { wch: 8 }];
     for (let i = 1; i < aoa.length; i++) { const cell = ws['A' + (i + 1)]; if (cell) cell.z = 'yyyy-mm-dd'; }
@@ -8594,8 +8608,8 @@ function downloadPizzaTracking() {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '불일치 매장'); }
   PZ_SEGS.forEach(seg => {
     const L = pzStoreSummary(c, seg); if (!L.length) return;
-    const aoa = [['E점포코드', '피자점포코드', '매장명', '팀', '담당 AC', '런칭일', '영업일', '피자 판매일', '피자 판매량', '싱글', '홀피자', '점일', '총매출(VAT제외)', '맘스터치매출', '피자매출(VAT제외)', 'P.mix', '(참고)조각피자 수량']];
-    L.forEach(a => aoa.push([a.code, a.pizzaCode, a.name, a.team, a.ac, a.launch, a.openDays, a.soldDays, a.qty, a.single, a.qty - a.single, a.openDays ? Math.round(a.qty / a.openDays * 100) / 100 : 0, Math.round(a.rev), Math.round(a.mom), Math.round(a.pzRev), a.rev ? Math.round(a.pzRev / a.rev * 10000) / 10000 : '', a.piece]));
+    const aoa = [['E점포코드', '피자점포코드', '매장명', '형태', '팀', '담당 AC', '런칭일', '영업일', '피자 판매일', '피자 판매량', '싱글', '홀피자', '점일', '총매출(VAT제외)', '맘스터치매출', '피자매출(VAT제외)', 'P.mix', '(참고)조각피자 수량']];
+    L.forEach(a => aoa.push([a.code, a.pizzaCode, a.name, a.only ? '피자단독' : '샵앤샵', a.team, a.ac, a.launch, a.openDays, a.soldDays, a.qty, a.single, a.qty - a.single, a.openDays ? Math.round(a.qty / a.openDays * 100) / 100 : 0, Math.round(a.rev), Math.round(a.mom), Math.round(a.pzRev), a.rev ? Math.round(a.pzRev / a.rev * 10000) / 10000 : '', a.piece]));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), seg + ' 매장별');
   });
   PZ_SEGS.forEach(seg => {
@@ -8604,6 +8618,14 @@ function downloadPizzaTracking() {
     const s = pzSum(c.dates.map(d => c.days[d][seg]));
     aoa.push(['합계', '', s.handled, '', s.open, s.closed, s.sold, s.noSale, s.qty, s.single, s.whole, Math.round(s.perOpen * 100) / 100, Math.round(s.perSold * 100) / 100, '', '', '', Math.round(s.rev), Math.round(s.mom), Math.round(s.pzRev), s.rev ? Math.round(s.pmix * 10000) / 10000 : '']);
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), seg);
+  });
+  [false, true].forEach(only => {
+    if (!c.rows.some(r => r.seg === '가맹점' && !!r.only === only)) return;
+    const t = pzTypeView(c, '가맹점', only), aoa = [['일자', '요일', '취급점', '신규 런칭', '영업점', '휴점', '피자 판매점', '자매출 미발생점', '피자 판매량', '싱글', '홀피자', '점일(영업점)', '점일(판매점)', '총매출(VAT제외)', '맘스터치매출', '피자매출(VAT제외)', 'P.mix']];
+    c.dates.forEach(d => { const r = t.view.days[d][t.label]; aoa.push([d, DOW_KO[dowOf(d)], r.handled, r.newly, r.open, r.closed, r.sold, r.noSale, r.qty, r.single, r.whole, r.open ? Math.round(r.qty / r.open * 100) / 100 : 0, r.sold ? Math.round(r.qty / r.sold * 100) / 100 : 0, Math.round(r.rev), Math.round(r.mom), Math.round(r.pzRev), r.rev ? Math.round(r.pzRev / r.rev * 10000) / 10000 : '']); });
+    const s = pzSum(c.dates.map(d => t.view.days[d][t.label]));
+    aoa.push(['합계', '', s.handled, '', s.open, s.closed, s.sold, s.noSale, s.qty, s.single, s.whole, Math.round(s.perOpen * 100) / 100, Math.round(s.perSold * 100) / 100, Math.round(s.rev), Math.round(s.mom), Math.round(s.pzRev), s.rev ? Math.round(s.pmix * 10000) / 10000 : '']);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), t.label);
   });
   XLSX.writeFile(wb, `피자판매현황_${start}_${end}.xlsx`);
 }
