@@ -8491,6 +8491,17 @@ async function makePizzaTracking() {
     const have = dates.filter(d => byDate[d] && byDate[d].length).sort();
     if (!have.length) throw new Error('이 기간에 저장된 일별 대조가 없습니다.');
     await loadPzRev(have);
+    // 매장별 매출 자료(pzrev)가 없는 날은 저장된 합본에서 바로 만든다(날짜당 합본 읽기 1회 + 쓰기 2회). 이미 있는 날은 건너뜀.
+    const need = have.filter(d => !pzRevCache[d]), failedRev = [];
+    if (need.length) {
+      if (need.length > 40 && !confirm(`매출 자료가 없는 ${need.length}일을 저장된 합본에서 만듭니다(시간이 걸립니다). 진행할까요?`)) throw new Error('매출 자료 만들기를 취소했습니다. 기간을 줄여서 다시 해보세요.');
+      const dir = await ensureDirectCodes(); let n = 0;
+      for (const d of need) {
+        st.innerHTML = `<span class="pill pill-neutral">매출 자료 만드는 중 ${++n}/${need.length}</span><span>${d} · 저장된 합본에서 매장별 총매출·피자매출을 집계합니다</span>`;
+        try { await saveDaySum(await daySumFromStoredExport(d, dir)); } catch (e) { console.error('pzrev build failed', d, e); failedRev.push(d); }
+        await sleep(200);
+      }
+    }
     const c = pizzaTrackCompute(have, byDate, info, pzRevCache); c._IM = info.map;
     pizzaLast = { c, start, end };
     const anyLaunch = Object.values(info.map).some(v => v.pizzaLaunch);
@@ -8501,7 +8512,7 @@ async function makePizzaTracking() {
     html += pzMismatchCard(c);
     html += pzTeamCard(c);
     const miss = dates.filter(d => !have.includes(d)); const noRev = have.filter(d => !pzRevCache[d]);
-    html += `<div class="note" style="margin:8px 0;">매장 ${fmtNum(Object.keys(info.map).length)}개 · 런칭일 미등록 ${fmtNum(c.noLaunch)}개(취급점에서 제외) · 가맹점현황 월: ${info.months.join(', ')}${c.unknown.size ? ` · 가맹점현황에 없는 판매 매장 ${c.unknown.size}개(제외)` : ''}${miss.length ? ` · 저장 자료 없는 날 ${miss.length}일` : ''}${noRev.length ? ` · ⚠ 매출 자료 없는 날 ${noRev.length}일(P.mix 제외) — ⑦ 탭 "일 요약 채우기"로 채우세요` : ''}</div>`;
+    html += `<div class="note" style="margin:8px 0;">매장 ${fmtNum(Object.keys(info.map).length)}개 · 런칭일 미등록 ${fmtNum(c.noLaunch)}개(취급점에서 제외) · 가맹점현황 월: ${info.months.join(', ')}${c.unknown.size ? ` · 가맹점현황에 없는 판매 매장 ${c.unknown.size}개(제외)` : ''}${miss.length ? ` · 저장 자료 없는 날 ${miss.length}일` : ''}${noRev.length ? ` · ⚠ 매출 자료를 만들지 못한 날 ${noRev.length}일(${noRev.join(', ')}) — 저장된 합본이 없거나 형식을 읽지 못했습니다(P.mix 제외)` : ''}</div>`;
     wrap.innerHTML = html;
     st.innerHTML = `<span class="pill pill-ok">✓ ${have.length}일 계산</span> ${start} ~ ${end}`;
   } catch (err) { st.innerHTML = `<span class="pill pill-bad">✗ 실패</span> ${esc(err.message)}`; }
