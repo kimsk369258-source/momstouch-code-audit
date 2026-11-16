@@ -1962,7 +1962,7 @@ const dsFin = o => ({ rev: Math.round(o.rev), stores: o.stores.size, bySales: ds
 // 직영 집합이 있으면 v2(합계 + direct 분리분), 없으면 v1(합계만). 트렌드 브리핑은 합계 − direct로 가맹점 기준 값을 만든다.
 function dsDone(date, T, Dd, pzRev) { const o = Dd ? { v: 2, date, ...dsFin(T), direct: dsFin(Dd) } : { v: 1, date, ...dsFin(T) }; if (pzRev) Object.defineProperty(o, 'pzRev', { value: pzRev, enumerable: false }); return o; }
 // 매장별 [총매출, 피자매출(매출분류 "피자")] — ⑧ 피자 판매현황의 P.mix(= 피자매출 ÷ 총매출)용. 금액은 부가세 포함 그대로, 계산할 때 ÷1.1.
-function pzRevAdd(m, store, rev, sc) { if (!store || !rev) return; const a = m[store] || (m[store] = [0, 0]); a[0] += rev; if (sc === '피자') a[1] += rev; }
+function pzRevAdd(m, store, rev, sc) { if (!store || !rev) return; const a = m[store] || (m[store] = [0, 0, 0]); a[0] += rev; if (sc === '피자') a[1] += rev; else if (sc === '조각피자') a[2] += rev; }
 function buildDaySum(date, items, catEntries, consEntries, directSet) {
   const dset = directSet && directSet.size ? directSet : null, T = dsMk(), Dd = dset ? dsMk() : null, PZ = {};
   const each = (code, f) => { f(T); if (Dd && dset.has(code)) f(Dd); };
@@ -1975,7 +1975,7 @@ async function saveDaySum(sum) {
   const ok = await storageSet('daysum_' + sum.date, JSON.stringify(sum));
   if (ok) daySumCache[sum.date] = sum;
   if (ok && sum.pzRev) { // 매장별 매출 문서(피자 판매현황용) — 실패해도 일 요약 저장은 유지
-    try { pzRevCache[sum.date] = Object.fromEntries(Object.entries(sum.pzRev).map(([c, a]) => [c, [Math.round(a[0]), Math.round(a[1])]])); const rows = Object.entries(sum.pzRev).map(([c, a]) => [c, Math.round(a[0]), Math.round(a[1])]); await storageSet('pzrev_' + sum.date, JSON.stringify({ v: 1, date: sum.date, rows })); } catch (e) { console.warn('pzrev save failed', sum.date, e); }
+    try { const rows = Object.entries(sum.pzRev).map(([c, a]) => [c, Math.round(a[0]), Math.round(a[1]), Math.round(a[2])]); pzRevCache[sum.date] = Object.fromEntries(rows.map(([c, t, p, k]) => [c, [t, p, k]])); await storageSet('pzrev_' + sum.date, JSON.stringify({ v: 2, date: sum.date, rows })); } catch (e) { console.warn('pzrev save failed', sum.date, e); }
   }
   return ok;
 }
@@ -2021,7 +2021,7 @@ const pzRevCache = {};
 async function loadPzRev(dates) {
   const need = dates.filter(d => !(d in pzRevCache));
   for (let i = 0; i < need.length; i += 10) await Promise.all(need.slice(i, i + 10).map(async d => {
-    try { const raw = await storageGet('pzrev_' + d); pzRevCache[d] = raw ? Object.fromEntries(JSON.parse(raw).rows.map(([c, t, p]) => [c, [t, p]])) : null; } catch (e) { pzRevCache[d] = null; }
+    try { const raw = await storageGet('pzrev_' + d); const o = raw ? JSON.parse(raw) : null; pzRevCache[d] = o && o.v >= 2 ? Object.fromEntries(o.rows.map(([c, t, p, k]) => [c, [t, p, k]])) : null; } catch (e) { pzRevCache[d] = null; }
   }));
   return pzRevCache;
 }
@@ -8426,7 +8426,7 @@ const PZ_SEGS = ['가맹점', '직영팀'];
 // dates: 정렬된 날짜들, byDate: date -> catqty entries, info: {map, order}
 function pizzaTrackCompute(dates, byDate, info, revBy) {
   const IM = info.map || {}, alias = buildAliasMap(info);
-  const out = { dates: [], days: {}, teams: {}, unreg: {}, noLaunch: 0, unknown: new Set() };
+  const out = { dates: [], days: {}, teams: {}, unreg: {}, noLaunch: 0, unknown: new Set(), rows: [], misUnknown: {}, misUnreg: {}, handledDays: {}, openDays: {} };
   Object.values(IM).forEach(v => { if (!v.pizzaLaunch) out.noLaunch++; });
   const stores = Object.keys(IM).filter(c => !isTestStore(c, IM[c].name));
   dates.forEach(d => {
@@ -8434,10 +8434,10 @@ function pizzaTrackCompute(dates, byDate, info, revBy) {
     out.dates.push(d);
     const agg = {}; // code -> {tot, pz, sg, pc, rev, prev}
     const rv = revBy && revBy[d]; if (rv) out.hasRev = (out.hasRev || 0) + 1;
-    if (rv) Object.entries(rv).forEach(([c0, a]) => { const code = alias[c0] || c0; if (!IM[code]) return; const x = agg[code] || (agg[code] = { tot: 0, pz: 0, sg: 0, pc: 0 }); x.rev = (x.rev || 0) + a[0] / 1.1; x.prev = (x.prev || 0) + a[1] / 1.1; });
+    if (rv) Object.entries(rv).forEach(([c0, a]) => { const code = alias[c0] || c0; if (!IM[code]) return; const x = agg[code] || (agg[code] = { tot: 0, pz: 0, sg: 0, pc: 0 }); x.rev = (x.rev || 0) + a[0] / 1.1; x.prev = (x.prev || 0) + a[1] / 1.1; x.krev = (x.krev || 0) + (a[2] || 0) / 1.1; });
     ents.forEach(e => {
       const code = alias[e.storeCode] || e.storeCode;
-      if (!IM[code]) { out.unknown.add(code); return; }
+      if (!IM[code]) { out.unknown.add(code); const u = out.misUnknown[code] || (out.misUnknown[code] = { code, name: e.storeName || '', dates: new Set(), qty: 0, pizza: 0 }); u.dates.add(d); u.qty += Number(e.qty) || 0; if (e.cat === '피자') u.pizza += Number(e.qty) || 0; if (!u.name && e.storeName) u.name = e.storeName; return; }
       const a = agg[code] || (agg[code] = { tot: 0, pz: 0, sg: 0, pc: 0 });
       const q = Number(e.qty) || 0; a.tot += q;
       if (e.cat === '피자') { a.pz += q; if (/싱글/.test(e.detail1 || '')) a.sg += q; } else if (e.cat === '조각피자') a.pc += q;
@@ -8447,11 +8447,13 @@ function pizzaTrackCompute(dates, byDate, info, revBy) {
     stores.forEach(code => {
       const inf = IM[code], seg = pzSegOf(inf), r = day[seg], a = agg[code] || { tot: 0, pz: 0, sg: 0, pc: 0 };
       const handled = !!inf.pizzaLaunch && inf.pizzaLaunch <= d;
-      if (!handled) { if (a.pz > 0) { r.unregStores++; r.unregQty += a.pz; } return; }
+      if (!handled) { if (a.pz > 0) { r.unregStores++; r.unregQty += a.pz; const m = out.misUnreg[code] || (out.misUnreg[code] = { code, name: inf.name, team: inf.team, seg, launch: inf.pizzaLaunch || '', days: 0, qty: 0 }); m.days++; m.qty += a.pz; } return; }
       r.handled++; if (inf.pizzaLaunch === d) r.newly++;
+      out.handledDays[code] = (out.handledDays[code] || 0) + 1; if (a.tot > 0) out.openDays[code] = (out.openDays[code] || 0) + 1;
       if (a.tot > 0) r.open++; else r.closed++;
       if (a.pz > 0) { r.sold++; r.qty += a.pz; r.single += a.sg; r.whole += a.pz - a.sg; } else if (a.tot > 0) r.noSale++;
       r.piece += a.pc; r.rev += a.rev || 0; r.pzRev += a.prev || 0;
+      out.rows.push({ date: d, code, pizzaCode: inf.pizza || '', launch: inf.pizzaLaunch, name: inf.name || '', team: inf.team || '', ac: inf.ac || '', seg, rev: a.rev || 0, pzRev: a.prev || 0, qty: a.pz, single: a.sg, piece: a.pc, pieceRev: a.krev || 0, open: a.tot > 0 });
       if (seg === '가맹점') { const t = inf.team || '(팀 없음)'; const T = out.teams[t] || (out.teams[t] = { handledDays: 0, openDays: 0, qty: 0 }); T.handledDays++; if (a.tot > 0) T.openDays++; T.qty += a.pz; }
     });
   });
@@ -8489,12 +8491,14 @@ async function makePizzaTracking() {
     const have = dates.filter(d => byDate[d] && byDate[d].length).sort();
     if (!have.length) throw new Error('이 기간에 저장된 일별 대조가 없습니다.');
     await loadPzRev(have);
-    const c = pizzaTrackCompute(have, byDate, info, pzRevCache);
+    const c = pizzaTrackCompute(have, byDate, info, pzRevCache); c._IM = info.map;
     pizzaLast = { c, start, end };
     const anyLaunch = Object.values(info.map).some(v => v.pizzaLaunch);
     let html = '';
     if (!anyLaunch) html += '<div class="card"><span class="pill pill-bad">피자 런칭일 없음</span> 올려둔 가맹점현황에 G열 "피자 여부(런칭일)"가 없습니다. 새 매장운영현황 엑셀을 ⑤ 탭 "가맹점현황"에 다시 올려주세요(월 선택 후 저장).</div>';
     PZ_SEGS.forEach(seg => { html += pzSegCard(c, seg); });
+    PZ_SEGS.forEach(seg => { html += pzStoreCard(c, seg); });
+    html += pzMismatchCard(c);
     html += pzTeamCard(c);
     const miss = dates.filter(d => !have.includes(d)); const noRev = have.filter(d => !pzRevCache[d]);
     html += `<div class="note" style="margin:8px 0;">매장 ${fmtNum(Object.keys(info.map).length)}개 · 런칭일 미등록 ${fmtNum(c.noLaunch)}개(취급점에서 제외) · 가맹점현황 월: ${info.months.join(', ')}${c.unknown.size ? ` · 가맹점현황에 없는 판매 매장 ${c.unknown.size}개(제외)` : ''}${miss.length ? ` · 저장 자료 없는 날 ${miss.length}일` : ''}${noRev.length ? ` · ⚠ 매출 자료 없는 날 ${noRev.length}일(P.mix 제외) — ⑦ 탭 "일 요약 채우기"로 채우세요` : ''}</div>`;
@@ -8512,6 +8516,46 @@ function pzSegCard(c, seg) {
   const dy = c.dates.map(d => { const r = c.days[d][seg], s = pzSum([r]); return row(`${d.slice(5)}(${DOW_KO[dowOf(d)]})${r.newly ? ` +${r.newly}` : ''}`, s); });
   return `<div class="card"><h2>${seg} 피자 판매현황 ${seg === '가맹점' ? '<span class="note">(기준)</span>' : ''}</h2><div class="note">취급점·영업점·피자 판매점은 구간 마지막 날 기준 · 점일 = 판매량 ÷ 영업점(또는 판매점)일 합 · 조각피자 제외 · 매출은 부가세 제외(÷1.1), P.mix = 피자매출(매출분류 "피자") ÷ 취급점 총매출</div>${tbTable(head, [tot, ...wk])}<details style="margin-top:8px;"><summary style="cursor:pointer;">일자별 보기</summary>${tbTable(head, dy)}</details></div>`;
 }
+
+// 주차: 금~목 한 주, 그 주 7일 중 4일 이상이 속한 달 기준("11m 1w" 형식 — 피자매출집계 파일의 주차표와 같은 방식)
+function pzWeekLabel(d) {
+  const start = addDaysStr(d, -((dowOf(d) + 2) % 7)), mid = addDaysStr(start, 3);
+  return `${+mid.slice(5, 7)}m ${Math.floor((+mid.slice(8, 10) - 1) / 7) + 1}w`;
+}
+// 매장별 기간 합계 (구분 → 팀 → 매장 순서)
+function pzStoreSummary(c, seg) {
+  const m = {};
+  c.rows.filter(r => r.seg === seg).forEach(r => {
+    const a = m[r.code] || (m[r.code] = { code: r.code, pizzaCode: r.pizzaCode, name: r.name, team: r.team, ac: r.ac, launch: r.launch, days: 0, openDays: 0, soldDays: 0, qty: 0, single: 0, piece: 0, rev: 0, pzRev: 0 });
+    a.days++; if (r.open) a.openDays++; if (r.qty > 0) a.soldDays++; a.qty += r.qty; a.single += r.single; a.piece += r.piece; a.rev += r.rev; a.pzRev += r.pzRev;
+  });
+  return Object.values(m).sort((x, y) => (x.team || '').localeCompare(y.team || '', 'ko', { numeric: true }) || x.code.localeCompare(y.code));
+}
+function pzStoreCard(c, seg) {
+  const list = pzStoreSummary(c, seg); if (!list.length) return '';
+  const head = ['E코드', '피자코드', '매장명', '팀', '담당 AC', '런칭일', '영업일', '피자 판매일', '피자 판매량', '싱글', '홀피자', '점일', '총매출', '피자매출', 'P.mix'];
+  const rows = list.map(a => [a.code, a.pizzaCode, esc(a.name), esc(a.team), esc(a.ac), a.launch, fmtNum(a.openDays), fmtNum(a.soldDays), fmtNum(a.qty), fmtNum(a.single), fmtNum(a.qty - a.single), pzF1(a.openDays ? a.qty / a.openDays : 0), a.rev ? fmtNum(a.rev) : '–', a.rev ? fmtNum(a.pzRev) : '–', a.rev ? (a.pzRev / a.rev * 100).toFixed(1) + '%' : '–']);
+  return `<div class="card"><h2>${seg} 매장별 (${list.length}곳)</h2><div class="note">기간 합계 · 점일 = 판매량 ÷ 영업일 · 일자별 매장 데이터는 엑셀 "일자별 raw" 시트</div><details open><summary style="cursor:pointer;">매장별 보기</summary>${tbTable(head, rows, 6)}</details></div>`;
+}
+
+// 가맹점현황(매장운영현황)과 판매 자료가 맞지 않는 매장 — ① 판매는 있는데 현황에 없음 ② 피자를 팔았는데 런칭일이 없거나 이전 ③ 취급점인데 기간 내 판매 자료가 전혀 없음
+function pzMismatch(c) {
+  const IM = c._IM || {};
+  const unknown = Object.values(c.misUnknown).sort((a, b) => b.pizza - a.pizza || b.qty - a.qty);
+  const unreg = Object.values(c.misUnreg).sort((a, b) => b.qty - a.qty);
+  const silent = Object.keys(c.handledDays).filter(k => !c.openDays[k]).map(k => ({ code: k, name: IM[k]?.name || '', team: IM[k]?.team || '', seg: pzSegOf(IM[k]), launch: IM[k]?.pizzaLaunch || '', days: c.handledDays[k] }));
+  return { unknown, unreg, silent };
+}
+function pzMismatchCard(c) {
+  const m = pzMismatch(c), n = m.unknown.length + m.unreg.length + m.silent.length;
+  if (!n) return '<div class="card"><h2>운영현황 ↔ 판매 자료 불일치</h2><span class="pill pill-ok">✓ 불일치 없음</span></div>';
+  const t = (head, rows) => rows.length ? tbTable(head, rows, 3) : '<div class="note">없음</div>';
+  return `<div class="card"><h2>운영현황 ↔ 판매 자료 불일치 <span class="pill pill-warn">${n}곳</span></h2>
+    <div class="note">매장운영현황과 맞지 않는 매장입니다. 코드가 다르거나(폐점·양도양수·E/D코드 묶음 누락), 런칭일 입력이 빠졌거나, 자체POS일 수 있습니다. 위 계산에서는 ①은 제외, ②는 취급점에서 제외(수량은 참고), ③은 휴점으로 처리됩니다.</div>
+    <details open><summary style="cursor:pointer;">① 판매는 있는데 운영현황에 없는 매장 (${m.unknown.length})</summary>${t(['코드', '매장명', '판매일수', '피자 수량', '전체 수량'], m.unknown.map(u => [esc(u.code), esc(u.name), u.dates.size, fmtNum(u.pizza), fmtNum(u.qty)]))}</details>
+    <details open><summary style="cursor:pointer;">② 피자를 팔았는데 런칭일이 없거나 이전인 매장 (${m.unreg.length})</summary>${t(['코드', '매장명', '팀', '런칭일', '해당 일수', '피자 수량'], m.unreg.map(u => [esc(u.code), esc(u.name), esc(u.team), u.launch || '(없음)', u.days, fmtNum(u.qty)]))}</details>
+    <details open><summary style="cursor:pointer;">③ 취급점인데 기간 내 판매 자료가 없는 매장 (${m.silent.length})</summary>${t(['코드', '매장명', '팀', '런칭일', '취급 일수'], m.silent.map(u => [esc(u.code), esc(u.name), esc(u.team), u.launch, u.days]))}</details></div>`;
+}
 function pzTeamCard(c) {
   const rows = Object.entries(c.teams).sort((a, b) => b[1].qty - a[1].qty).map(([t, v]) => [esc(t), fmtNum(v.handledDays / (c.dates.length || 1)), fmtNum(v.qty), pzF1(v.openDays ? v.qty / v.openDays : 0)]);
   return `<div class="card"><h2>팀별 (가맹점)</h2>${tbTable(['팀', '평균 취급점', '피자 판매량', '점일(영업점)'], rows)}</div>`;
@@ -8519,6 +8563,25 @@ function pzTeamCard(c) {
 function downloadPizzaTracking() {
   if (!pizzaLast) { alert('먼저 "현황 만들기"를 눌러주세요.'); return; }
   const { c, start, end } = pizzaLast, wb = XLSX.utils.book_new();
+  // 공유받은 P.mix 파일 "일자별 raw" 형식 — 매장×일자 한 줄(총매출·맘스터치·맘스피자는 부가세 제외)
+  { const H = ['일자', '주차', 'E점포코드', '피자점포코드', 'E점포코드', '피자점포코드', '피자 오픈일', '매장명', '팀', '담당 AC', '양도양수 구분', '포함구분', '총매출', '맘스터치', '맘스피자', '피자비중', '피자 수량', '조각피자 매출', '조각피자 수량', '직가맹 구분', '', '조각피자 제외 수량', '조각피자 제외 매출', '', 'month', '싱글', '홀피자'];
+    const aoa = [H];
+    c.rows.slice().sort((x, y) => x.date.localeCompare(y.date)).forEach(r => {
+      const pm = r.rev ? r.pzRev / r.rev : 0;
+      aoa.push([toExcelSerialDate(r.date), pzWeekLabel(r.date), '', '', r.code, r.pizzaCode, r.launch, r.name, r.team, r.ac, '샵앤샵', '포함', Math.round(r.rev), Math.round(r.rev - r.pzRev), Math.round(r.pzRev), Math.round(pm * 10000) / 10000, r.qty, Math.round(r.pieceRev), r.piece, r.seg === '직영팀' ? '직영점' : '가맹점', '', r.qty, Math.round(r.pzRev), '', +r.date.slice(5, 7), r.single, r.qty - r.single]);
+    });
+    const ws = XLSX.utils.aoa_to_sheet(aoa); ws['!cols'] = [{ wch: 11 }, { wch: 8 }]; XLSX.utils.book_append_sheet(wb, ws, '일자별 raw'); }
+  { const m = pzMismatch(c), aoa = [['구분', '코드', '매장명', '팀', '런칭일', '일수', '피자 수량', '전체 수량']];
+    m.unknown.forEach(u => aoa.push(['판매 있음·운영현황 없음', u.code, u.name, '', '', u.dates.size, Math.round(u.pizza), Math.round(u.qty)]));
+    m.unreg.forEach(u => aoa.push(['피자 판매·런칭일 없음/이전', u.code, u.name, u.team, u.launch, u.days, Math.round(u.qty), '']));
+    m.silent.forEach(u => aoa.push(['취급점·판매 자료 없음', u.code, u.name, u.team, u.launch, u.days, '', '']));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '불일치 매장'); }
+  PZ_SEGS.forEach(seg => {
+    const L = pzStoreSummary(c, seg); if (!L.length) return;
+    const aoa = [['E점포코드', '피자점포코드', '매장명', '팀', '담당 AC', '런칭일', '영업일', '피자 판매일', '피자 판매량', '싱글', '홀피자', '점일', '총매출(VAT제외)', '피자매출(VAT제외)', 'P.mix', '(참고)조각피자 수량']];
+    L.forEach(a => aoa.push([a.code, a.pizzaCode, a.name, a.team, a.ac, a.launch, a.openDays, a.soldDays, a.qty, a.single, a.qty - a.single, a.openDays ? Math.round(a.qty / a.openDays * 100) / 100 : 0, Math.round(a.rev), Math.round(a.pzRev), a.rev ? Math.round(a.pzRev / a.rev * 10000) / 10000 : '', a.piece]));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), seg + ' 매장별');
+  });
   PZ_SEGS.forEach(seg => {
     const aoa = [['일자', '요일', '취급점', '신규 런칭', '영업점', '휴점', '피자 판매점', '자매출 미발생점', '피자 판매량', '싱글', '홀피자', '점일(영업점)', '점일(판매점)', '런칭일 미등록 판매점', '(참고)조각피자', '총매출(VAT제외)', '피자매출(VAT제외)', 'P.mix']];
     c.dates.forEach(d => { const r = c.days[d][seg]; aoa.push([d, DOW_KO[dowOf(d)], r.handled, r.newly, r.open, r.closed, r.sold, r.noSale, r.qty, r.single, r.whole, r.open ? Math.round(r.qty / r.open * 100) / 100 : 0, r.sold ? Math.round(r.qty / r.sold * 100) / 100 : 0, r.unregStores, r.piece, Math.round(r.rev), Math.round(r.pzRev), r.rev ? Math.round(r.pzRev / r.rev * 10000) / 10000 : '']); });
