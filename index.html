@@ -209,6 +209,7 @@
     <button class="tab-btn" data-tab="extract">⑤ 데이터 추출</button>
     <button class="tab-btn" data-tab="promo">⑥ 프로모션</button>
     <button class="tab-btn" data-tab="trend">⑦ 트렌드 브리핑</button>
+    <button class="tab-btn" data-tab="pizza">⑧ 피자 판매현황</button>
   </div>
 
   <!-- ===================== TAB 1: 기준코드 관리 ===================== -->
@@ -652,6 +653,20 @@
   </section>
 
 
+  <section class="panel" id="panel-pizza">
+    <div class="card">
+      <h2>피자 판매현황 (가맹점 기준)</h2>
+      <div class="card-sub">저장된 <strong>일별 대조</strong> 수량으로 피자 판매를 추적합니다. <strong>취급점</strong>은 매장운영현황 G열 "피자 여부(런칭일)"가 있고 런칭일이 지난 매장, 구분은 J열 가맹그룹(<strong>가맹1·2그룹 → 가맹점</strong>, <strong>직영사업그룹 → 직영팀</strong>)입니다. 피자 수량은 분류 "피자"만이고 <strong>조각피자는 제외</strong>합니다(싱글 = 싱글피자, 홀피자 = 피자 − 싱글). 런칭일은 월별 가맹점현황을 올릴 때 함께 저장되니, 새 매장운영현황 엑셀을 한 번 올려주세요.</div>
+      <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:8px;">
+        <label style="font-size:13px;">기간 <input type="date" id="pzStart" class="search-input" style="flex:none;"> ~ <input type="date" id="pzEnd" class="search-input" style="flex:none;"></label>
+        <button class="btn btn-primary btn-sm" onclick="makePizzaTracking()">현황 만들기</button>
+        <button class="btn btn-ghost btn-sm" onclick="downloadPizzaTracking()">엑셀 다운로드</button>
+      </div>
+      <div class="status-line" id="pzStatus" style="margin:8px 0;"></div>
+    </div>
+    <div id="pzWrap"></div>
+  </section>
+
   <div class="footer-note">POS 엑셀 합치기 툴의 결과 파일과 함께 사용하도록 설계되었습니다.</div>
 </div>
 <!-- /#mainApp -->
@@ -969,6 +984,7 @@ function unwrapDoc(data) {
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     if (btn.dataset.tab === 'trend') setTimeout(() => { try { initTrendTab(); } catch (e) { /* 아직 준비 전 */ } }, 0);
+    if (btn.dataset.tab === 'pizza') setTimeout(() => { try { initPizzaTab(); } catch (e) { /* 아직 준비 전 */ } }, 0);
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
@@ -1944,18 +1960,23 @@ const dsR1 = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Math.
 const dsMk = () => ({ rev: 0, bySales: {}, byCat: {}, items: {}, stores: new Set() });
 const dsFin = o => ({ rev: Math.round(o.rev), stores: o.stores.size, bySales: dsR0(o.bySales), byCat: dsR1(o.byCat), items: dsR1(o.items) });
 // 직영 집합이 있으면 v2(합계 + direct 분리분), 없으면 v1(합계만). 트렌드 브리핑은 합계 − direct로 가맹점 기준 값을 만든다.
-function dsDone(date, T, Dd) { return Dd ? { v: 2, date, ...dsFin(T), direct: dsFin(Dd) } : { v: 1, date, ...dsFin(T) }; }
+function dsDone(date, T, Dd, pzRev) { const o = Dd ? { v: 2, date, ...dsFin(T), direct: dsFin(Dd) } : { v: 1, date, ...dsFin(T) }; if (pzRev) Object.defineProperty(o, 'pzRev', { value: pzRev, enumerable: false }); return o; }
+// 매장별 [총매출, 피자매출(매출분류 "피자")] — ⑧ 피자 판매현황의 P.mix(= 피자매출 ÷ 총매출)용. 금액은 부가세 포함 그대로, 계산할 때 ÷1.1.
+function pzRevAdd(m, store, rev, sc) { if (!store || !rev) return; const a = m[store] || (m[store] = [0, 0]); a[0] += rev; if (sc === '피자') a[1] += rev; }
 function buildDaySum(date, items, catEntries, consEntries, directSet) {
-  const dset = directSet && directSet.size ? directSet : null, T = dsMk(), Dd = dset ? dsMk() : null;
+  const dset = directSet && directSet.size ? directSet : null, T = dsMk(), Dd = dset ? dsMk() : null, PZ = {};
   const each = (code, f) => { f(T); if (Dd && dset.has(code)) f(Dd); };
-  items.forEach(it => { const v = Number(it.revenue) || 0, sc = it.salesCat || '(없음)'; each(it.storeCode, o => { o.rev += v; o.bySales[sc] = (o.bySales[sc] || 0) + v; }); });
+  items.forEach(it => { const v = Number(it.revenue) || 0, sc = it.salesCat || '(없음)'; pzRevAdd(PZ, it.storeCode, v, it.salesCat); each(it.storeCode, o => { o.rev += v; o.bySales[sc] = (o.bySales[sc] || 0) + v; }); });
   catEntries.forEach(e => each(e.storeCode, o => { o.stores.add(e.storeCode); o.byCat[e.cat] = (o.byCat[e.cat] || 0) + e.qty; }));
   consEntries.forEach(e => each(e.storeCode, o => { o.stores.add(e.storeCode); o.items[e.orderItem] = (o.items[e.orderItem] || 0) + e.qty; }));
-  return dsDone(date, T, Dd);
+  return dsDone(date, T, Dd, PZ);
 }
 async function saveDaySum(sum) {
   const ok = await storageSet('daysum_' + sum.date, JSON.stringify(sum));
   if (ok) daySumCache[sum.date] = sum;
+  if (ok && sum.pzRev) { // 매장별 매출 문서(피자 판매현황용) — 실패해도 일 요약 저장은 유지
+    try { pzRevCache[sum.date] = Object.fromEntries(Object.entries(sum.pzRev).map(([c, a]) => [c, [Math.round(a[0]), Math.round(a[1])]])); const rows = Object.entries(sum.pzRev).map(([c, a]) => [c, Math.round(a[0]), Math.round(a[1])]); await storageSet('pzrev_' + sum.date, JSON.stringify({ v: 1, date: sum.date, rows })); } catch (e) { console.warn('pzrev save failed', sum.date, e); }
+  }
   return ok;
 }
 async function loadDaySums(dates) {
@@ -1970,7 +1991,7 @@ async function loadDaySums(dates) {
 // 저장된 합본(Storage)을 한 줄씩 읽어 일 요약을 만든다 — Firestore 읽기 없음, 쓰기 1회
 async function daySumFromStoredExport(date, directSet) {
   const url = await getDownloadURL(exportStorageRef(date));
-  const dset = directSet && directSet.size ? directSet : null, T = dsMk(), Dd = dset ? dsMk() : null;
+  const dset = directSet && directSet.size ? directSet : null, T = dsMk(), Dd = dset ? dsMk() : null, PZ = {};
   let cols, catIdx, d1Idx, fIdx, scIdx, bad = false;
   await streamCsvRows(url, header => {
     cols = resolveRawCols(header);
@@ -1985,6 +2006,7 @@ async function daySumFromStoredExport(date, directSet) {
     const revenue = cols.realSales3 >= 0 ? toNum(r[cols.realSales3]) : (cols.totalSales >= 0 ? toNum(r[cols.totalSales]) : 0);
     const sc = (scIdx >= 0 ? String(r[scIdx] ?? '').trim() : '') || '(없음)';
     each(o => { o.rev += revenue; o.bySales[sc] = (o.bySales[sc] || 0) + revenue; });
+    pzRevAdd(PZ, store, revenue, sc);
     const cat = String(r[catIdx] ?? '').trim(), qty = toNum(r[cols.qty]);
     if (!store || !cat || cat === '제외' || !qty) return;
     const factor = fIdx >= 0 ? r[fIdx] : '';
@@ -1993,8 +2015,17 @@ async function daySumFromStoredExport(date, directSet) {
     each(o => { o.stores.add(store); o.byCat[cat] = (o.byCat[cat] || 0) + qty * qtyMultiplier(factor); if (item) o.items[item] = (o.items[item] || 0) + units; });
   });
   if (bad) throw new Error('합본 형식 인식 실패');
-  return dsDone(date, T, Dd);
+  return dsDone(date, T, Dd, PZ);
 }
+const pzRevCache = {};
+async function loadPzRev(dates) {
+  const need = dates.filter(d => !(d in pzRevCache));
+  for (let i = 0; i < need.length; i += 10) await Promise.all(need.slice(i, i + 10).map(async d => {
+    try { const raw = await storageGet('pzrev_' + d); pzRevCache[d] = raw ? Object.fromEntries(JSON.parse(raw).rows.map(([c, t, p]) => [c, [t, p]])) : null; } catch (e) { pzRevCache[d] = null; }
+  }));
+  return pzRevCache;
+}
+async function pzMissingDates(dates) { await loadPzRev(dates); return new Set(dates.filter(d => !pzRevCache[d])); }
 async function backfillDaySums(maxDays = 70) {
   const st = document.getElementById('trendStatus');
   if (heavyJob) { st.innerHTML = `<span class="pill pill-warn">다른 작업(${heavyJob}) 진행 중 — 끝난 뒤 다시 눌러주세요.</span>`; return; }
@@ -2004,7 +2035,8 @@ async function backfillDaySums(maxDays = 70) {
   const dir = await ensureDirectCodes();
   if (!dir.size) { st.innerHTML = '<span class="pill pill-warn">직영점을 판별할 가맹점현황이 없습니다 — ⑤ 탭에서 매장운영현황을 먼저 올려주세요(직영사업그룹·직영팀 기준).</span>'; return; }
   // 없는 날짜 + 직영 제외 형식(v2)이 아닌 예전 요약(v1)은 다시 만든다
-  const todo = dates.filter(d => !daySumCache[d] || !(daySumCache[d].v >= 2)).reverse(); // 최근 날짜부터
+  const pzMiss = await pzMissingDates(dates);
+  const todo = dates.filter(d => !daySumCache[d] || !(daySumCache[d].v >= 2) || pzMiss.has(d)).reverse(); // 최근 날짜부터
   if (!todo.length) { st.innerHTML = `<span class="pill pill-ok">✓ 최근 ${dates.length}일 요약이 모두 있습니다(직영 제외 형식).</span>`; return; }
   const old = todo.filter(d => daySumCache[d]).length;
   if (!confirm(`${todo.length}개 날짜의 일 요약을 저장된 합본에서 만듭니다${old ? ` (이 중 ${old}일은 직영점을 제외하도록 다시 만드는 것)` : ''}. 직영 ${dir.size}곳을 따로 집계해 저장합니다(최근 날짜부터, 날짜당 수 초~수십 초, 쓰기는 날짜당 1회). 진행할까요?`)) return;
@@ -3863,7 +3895,7 @@ async function loadCatQtyCompact(date) {
 
 // 매장별로 나뉘어 저장된 catqty 문서를 특정 날짜 기준으로 전부 지운다.
 async function deleteCatQtyForDate(date) {
-  try { await storageSet('daysum_' + date, ''); delete daySumCache[date]; } catch (e) { /* 무시 */ }
+  try { await storageSet('daysum_' + date, ''); delete daySumCache[date]; await storageSet('pzrev_' + date, ''); } catch (e) { /* 무시 */ }
   try { await storageSetLarge('catqtyd_' + date, ''); } catch (e) { /* 무시 */ }
   let storeCodes = [];
   try {
@@ -4177,6 +4209,7 @@ function buildStoreInfoMapFromRows(json) {
     if (cE < 0) continue;
     const col = (name, fallback) => { const k = r.indexOf(name); return k >= 0 ? k : fallback; };
     const cP = col('피자점포코드', 4), cN = col('매장명', 7), cG = col('가맹그룹', 9), cT = col('팀', 10), cA = col('담당AC', 11);
+    const cL = col('피자여부', -1); // G열 "피자 여부(런칭일)"
     const map = {}, order = [];
     for (let j = i + 1; j < json.length; j++) {
       const row = json[j] || [];
@@ -4185,6 +4218,7 @@ function buildStoreInfoMapFromRows(json) {
       if (isTestStore(code, row[cN])) continue;
       if (!(code in map)) order.push(code);
       map[code] = { name: String(row[cN] ?? '').trim(), team: String(row[cT] ?? '').trim(), pizza: String(row[cP] ?? '').trim(), group: String(row[cG] ?? '').trim(), ac: String(row[cA] ?? '').trim() };
+      { const pl = cL >= 0 ? pzLaunchStr(row[cL]) : ''; if (pl) map[code].pizzaLaunch = pl; }
     }
     if (order.length) return { map, order: storeOrderWithDirectLast(order, map) };
   }
@@ -8374,7 +8408,129 @@ if (!isConfigured) {
   });
 }
 
+// ==========================================================================
+// ⑧ 피자 판매현황 — 저장된 일별 대조(catqty)로 가맹점 기준 피자 판매를 추적한다.
+//   · 취급점 = 매장운영현황 G열 "피자 여부(런칭일)"가 있고 런칭일 ≤ 해당 일자인 매장
+//   · 가맹점/직영팀 = J열 가맹그룹(가맹1·2그룹 → 가맹점, 직영사업그룹 → 직영팀)
+//   · 피자 수량 = 분류 "피자"만(조각피자는 별도 분류라 제외). 싱글 = 세부구분1 "싱글피자", 홀피자 = 피자 − 싱글
+// ==========================================================================
+function pzLaunchStr(v) {
+  if (v == null || v === '') return '';
+  if (v instanceof Date && !isNaN(v)) return new Date(v.getTime() + 12 * 3600e3).toISOString().slice(0, 10);
+  if (typeof v === 'number' && v > 20000 && v < 80000) return new Date(Math.round((v - 25569) * 86400000)).toISOString().slice(0, 10);
+  const m = String(v).match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
+  return m ? `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}` : '';
+}
+function pzSegOf(info) { return isDirectStore(info) ? '직영팀' : '가맹점'; }
+const PZ_SEGS = ['가맹점', '직영팀'];
+// dates: 정렬된 날짜들, byDate: date -> catqty entries, info: {map, order}
+function pizzaTrackCompute(dates, byDate, info, revBy) {
+  const IM = info.map || {}, alias = buildAliasMap(info);
+  const out = { dates: [], days: {}, teams: {}, unreg: {}, noLaunch: 0, unknown: new Set() };
+  Object.values(IM).forEach(v => { if (!v.pizzaLaunch) out.noLaunch++; });
+  const stores = Object.keys(IM).filter(c => !isTestStore(c, IM[c].name));
+  dates.forEach(d => {
+    const ents = byDate[d]; if (!ents) return;
+    out.dates.push(d);
+    const agg = {}; // code -> {tot, pz, sg, pc, rev, prev}
+    const rv = revBy && revBy[d]; if (rv) out.hasRev = (out.hasRev || 0) + 1;
+    if (rv) Object.entries(rv).forEach(([c0, a]) => { const code = alias[c0] || c0; if (!IM[code]) return; const x = agg[code] || (agg[code] = { tot: 0, pz: 0, sg: 0, pc: 0 }); x.rev = (x.rev || 0) + a[0] / 1.1; x.prev = (x.prev || 0) + a[1] / 1.1; });
+    ents.forEach(e => {
+      const code = alias[e.storeCode] || e.storeCode;
+      if (!IM[code]) { out.unknown.add(code); return; }
+      const a = agg[code] || (agg[code] = { tot: 0, pz: 0, sg: 0, pc: 0 });
+      const q = Number(e.qty) || 0; a.tot += q;
+      if (e.cat === '피자') { a.pz += q; if (/싱글/.test(e.detail1 || '')) a.sg += q; } else if (e.cat === '조각피자') a.pc += q;
+    });
+    const day = out.days[d] = {};
+    PZ_SEGS.forEach(s => { day[s] = { handled: 0, open: 0, closed: 0, sold: 0, noSale: 0, qty: 0, single: 0, whole: 0, piece: 0, newly: 0, unregStores: 0, unregQty: 0, rev: 0, pzRev: 0 }; });
+    stores.forEach(code => {
+      const inf = IM[code], seg = pzSegOf(inf), r = day[seg], a = agg[code] || { tot: 0, pz: 0, sg: 0, pc: 0 };
+      const handled = !!inf.pizzaLaunch && inf.pizzaLaunch <= d;
+      if (!handled) { if (a.pz > 0) { r.unregStores++; r.unregQty += a.pz; } return; }
+      r.handled++; if (inf.pizzaLaunch === d) r.newly++;
+      if (a.tot > 0) r.open++; else r.closed++;
+      if (a.pz > 0) { r.sold++; r.qty += a.pz; r.single += a.sg; r.whole += a.pz - a.sg; } else if (a.tot > 0) r.noSale++;
+      r.piece += a.pc; r.rev += a.rev || 0; r.pzRev += a.prev || 0;
+      if (seg === '가맹점') { const t = inf.team || '(팀 없음)'; const T = out.teams[t] || (out.teams[t] = { handledDays: 0, openDays: 0, qty: 0 }); T.handledDays++; if (a.tot > 0) T.openDays++; T.qty += a.pz; }
+    });
+  });
+  return out;
+}
+// 구간 합산: 판매량·영업점일 합산 후 점일 계산. 취급점은 구간 마지막 날 기준.
+function pzSum(rows) {
+  const s = { handled: 0, open: 0, closed: 0, sold: 0, noSale: 0, qty: 0, single: 0, whole: 0, piece: 0, rev: 0, pzRev: 0, openDays: 0, soldDays: 0, n: rows.length };
+  rows.forEach((r, i) => { s.openDays += r.open; s.soldDays += r.sold; ['qty', 'single', 'whole', 'piece', 'rev', 'pzRev'].forEach(k => s[k] += r[k]); if (i === rows.length - 1) { s.handled = r.handled; s.open = r.open; s.closed = r.closed; s.sold = r.sold; s.noSale = r.noSale; } });
+  s.pmix = s.rev ? s.pzRev / s.rev : 0; s.perOpen = s.openDays ? s.qty / s.openDays : 0; s.perSold = s.soldDays ? s.qty / s.soldDays : 0;
+  return s;
+}
+function pzWeeks(c, seg) {
+  const w = {}; c.dates.forEach(d => { const k = addDaysStr(d, -((dowOf(d) + 6) % 7)); (w[k] = w[k] || []).push(c.days[d][seg]); });
+  return Object.keys(w).sort().map(k => ({ k, n: w[k].length, s: pzSum(w[k]) }));
+}
+const pzF1 = n => (Math.round(n * 10) / 10).toLocaleString();
+let pizzaLast = null;
+function initPizzaTab() {
+  const e = document.getElementById('pzEnd'), s = document.getElementById('pzStart'); if (!e || e.value) return;
+  const ds = dailyIndex.map(d => d.date).filter(d => !isMonthKey(d)).sort(); if (!ds.length) return;
+  e.value = ds[ds.length - 1]; s.value = ds[Math.max(0, ds.length - 14)];
+}
+async function makePizzaTracking() {
+  const st = document.getElementById('pzStatus'), wrap = document.getElementById('pzWrap');
+  const start = document.getElementById('pzStart').value, end = document.getElementById('pzEnd').value;
+  if (!start || !end || start > end) { st.innerHTML = '<span class="pill pill-warn">기간(시작~끝)을 확인하세요.</span>'; return; }
+  if (heavyJob) { st.innerHTML = `<span class="pill pill-warn">다른 작업(${heavyJob}) 진행 중 — 끝난 뒤 다시 눌러주세요.</span>`; return; }
+  heavyJob = '피자 판매현황';
+  st.innerHTML = '<span class="pill pill-neutral">저장된 일별 대조 읽는 중...</span>'; wrap.innerHTML = '';
+  try {
+    const info = await storeInfoForRange(start, end);
+    if (!info.order.length) throw new Error('가맹점현황(매장운영현황)이 없습니다. ⑤ 데이터 추출 탭에서 먼저 올려주세요.');
+    const { dates, byDate } = await loadCategoryQtyForRange(start, end);
+    const have = dates.filter(d => byDate[d] && byDate[d].length).sort();
+    if (!have.length) throw new Error('이 기간에 저장된 일별 대조가 없습니다.');
+    await loadPzRev(have);
+    const c = pizzaTrackCompute(have, byDate, info, pzRevCache);
+    pizzaLast = { c, start, end };
+    const anyLaunch = Object.values(info.map).some(v => v.pizzaLaunch);
+    let html = '';
+    if (!anyLaunch) html += '<div class="card"><span class="pill pill-bad">피자 런칭일 없음</span> 올려둔 가맹점현황에 G열 "피자 여부(런칭일)"가 없습니다. 새 매장운영현황 엑셀을 ⑤ 탭 "가맹점현황"에 다시 올려주세요(월 선택 후 저장).</div>';
+    PZ_SEGS.forEach(seg => { html += pzSegCard(c, seg); });
+    html += pzTeamCard(c);
+    const miss = dates.filter(d => !have.includes(d)); const noRev = have.filter(d => !pzRevCache[d]);
+    html += `<div class="note" style="margin:8px 0;">매장 ${fmtNum(Object.keys(info.map).length)}개 · 런칭일 미등록 ${fmtNum(c.noLaunch)}개(취급점에서 제외) · 가맹점현황 월: ${info.months.join(', ')}${c.unknown.size ? ` · 가맹점현황에 없는 판매 매장 ${c.unknown.size}개(제외)` : ''}${miss.length ? ` · 저장 자료 없는 날 ${miss.length}일` : ''}${noRev.length ? ` · ⚠ 매출 자료 없는 날 ${noRev.length}일(P.mix 제외) — ⑦ 탭 "일 요약 채우기"로 채우세요` : ''}</div>`;
+    wrap.innerHTML = html;
+    st.innerHTML = `<span class="pill pill-ok">✓ ${have.length}일 계산</span> ${start} ~ ${end}`;
+  } catch (err) { st.innerHTML = `<span class="pill pill-bad">✗ 실패</span> ${esc(err.message)}`; }
+  finally { heavyJob = null; }
+}
+function pzSegCard(c, seg) {
+  const all = pzSum(c.dates.map(d => c.days[d][seg]));
+  const head = ['구분', '취급점', '영업점', '휴점', '피자 판매점', '자매출 미발생점', '피자 판매량', '싱글', '홀피자', '점일(영업점)', '점일(판매점)', '총매출', '피자매출', 'P.mix'];
+  const row = (label, s) => [label, fmtNum(s.handled), fmtNum(s.open), fmtNum(s.closed), fmtNum(s.sold), fmtNum(s.noSale), fmtNum(s.qty), fmtNum(s.single), fmtNum(s.whole), pzF1(s.perOpen), pzF1(s.perSold), s.rev ? fmtNum(s.rev) : '–', s.rev ? fmtNum(s.pzRev) : '–', s.rev ? (s.pmix * 100).toFixed(1) + '%' : '–'];
+  const tot = row(`<strong>기간 합계(${all.n}일)</strong>`, all);
+  const wk = pzWeeks(c, seg).map(w => row(`주 ${w.k.slice(5)}~ (${w.n}일)`, w.s));
+  const dy = c.dates.map(d => { const r = c.days[d][seg], s = pzSum([r]); return row(`${d.slice(5)}(${DOW_KO[dowOf(d)]})${r.newly ? ` +${r.newly}` : ''}`, s); });
+  return `<div class="card"><h2>${seg} 피자 판매현황 ${seg === '가맹점' ? '<span class="note">(기준)</span>' : ''}</h2><div class="note">취급점·영업점·피자 판매점은 구간 마지막 날 기준 · 점일 = 판매량 ÷ 영업점(또는 판매점)일 합 · 조각피자 제외 · 매출은 부가세 제외(÷1.1), P.mix = 피자매출(매출분류 "피자") ÷ 취급점 총매출</div>${tbTable(head, [tot, ...wk])}<details style="margin-top:8px;"><summary style="cursor:pointer;">일자별 보기</summary>${tbTable(head, dy)}</details></div>`;
+}
+function pzTeamCard(c) {
+  const rows = Object.entries(c.teams).sort((a, b) => b[1].qty - a[1].qty).map(([t, v]) => [esc(t), fmtNum(v.handledDays / (c.dates.length || 1)), fmtNum(v.qty), pzF1(v.openDays ? v.qty / v.openDays : 0)]);
+  return `<div class="card"><h2>팀별 (가맹점)</h2>${tbTable(['팀', '평균 취급점', '피자 판매량', '점일(영업점)'], rows)}</div>`;
+}
+function downloadPizzaTracking() {
+  if (!pizzaLast) { alert('먼저 "현황 만들기"를 눌러주세요.'); return; }
+  const { c, start, end } = pizzaLast, wb = XLSX.utils.book_new();
+  PZ_SEGS.forEach(seg => {
+    const aoa = [['일자', '요일', '취급점', '신규 런칭', '영업점', '휴점', '피자 판매점', '자매출 미발생점', '피자 판매량', '싱글', '홀피자', '점일(영업점)', '점일(판매점)', '런칭일 미등록 판매점', '(참고)조각피자', '총매출(VAT제외)', '피자매출(VAT제외)', 'P.mix']];
+    c.dates.forEach(d => { const r = c.days[d][seg]; aoa.push([d, DOW_KO[dowOf(d)], r.handled, r.newly, r.open, r.closed, r.sold, r.noSale, r.qty, r.single, r.whole, r.open ? Math.round(r.qty / r.open * 100) / 100 : 0, r.sold ? Math.round(r.qty / r.sold * 100) / 100 : 0, r.unregStores, r.piece, Math.round(r.rev), Math.round(r.pzRev), r.rev ? Math.round(r.pzRev / r.rev * 10000) / 10000 : '']); });
+    const s = pzSum(c.dates.map(d => c.days[d][seg]));
+    aoa.push(['합계', '', s.handled, '', s.open, s.closed, s.sold, s.noSale, s.qty, s.single, s.whole, Math.round(s.perOpen * 100) / 100, Math.round(s.perSold * 100) / 100, '', '', '', Math.round(s.rev), Math.round(s.pzRev), s.rev ? Math.round(s.pmix * 10000) / 10000 : '']);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), seg);
+  });
+  XLSX.writeFile(wb, `피자판매현황_${start}_${end}.xlsx`);
+}
+
 Object.assign(window, {
+  makePizzaTracking, downloadPizzaTracking,
   doLogin, doLogout,
   manualAddCode, toggleDay, toggleAddForm, addAnomalyToMaster, updateMasterName,
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
