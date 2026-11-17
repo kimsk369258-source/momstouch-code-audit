@@ -550,7 +550,7 @@
       <div class="card-sub">매장운영현황을 올릴 때마다 <strong>직전 현황과 비교</strong>해서 바뀐 항목(팀, 담당 AC, 가맹그룹, 매장명, 피자 런칭일, 신규·제외 매장)을 적용일과 함께 기록합니다. ⑧ 피자 판매현황은 <strong>일자 기준으로 그때의 팀·담당자</strong>를 보여줍니다. (적용일 = 위 "적용일", 비우면 업로드한 날)</div>
       <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:8px;">
         <input type="text" id="siLogSearch" class="search-input" placeholder="매장명·코드·담당자 검색" oninput="renderStoreInfoLog()" style="flex:1 1 200px;">
-        <select id="siLogField" class="search-input" style="flex:none;" onchange="renderStoreInfoLog()"><option value="">전체 항목</option><option>팀</option><option>담당 AC</option><option>가맹그룹</option><option>매장명</option><option>피자 런칭일</option><option>신규</option><option>제외</option></select>
+        <select id="siLogField" autocomplete="off" class="search-input" style="flex:none;" onchange="renderStoreInfoLog()"><option value="">전체 항목</option><option>팀</option><option>담당 AC</option><option>가맹그룹</option><option>매장명</option><option>피자 런칭일</option><option>신규</option><option>제외</option></select>
         <button class="btn btn-ghost btn-sm" onclick="renderStoreInfoLog(true)">이력 불러오기</button>
         <button class="btn btn-ghost btn-sm" onclick="downloadStoreInfoLog()">엑셀 다운로드</button>
       </div>
@@ -8482,7 +8482,7 @@ async function renderStoreInfoLog(force) {
   const log = await loadStoreInfoLog(!!force);
   const q = (document.getElementById('siLogSearch')?.value || '').trim().toLowerCase(), f = document.getElementById('siLogField')?.value || '';
   const rows = log.filter(r => (!f || r[3] === f) && (!q || r.slice(0, 7).join(' ').toLowerCase().includes(q))).sort((a, b) => b[0].localeCompare(a[0]) || b[8].localeCompare(a[8]));
-  if (!log.length) { wrap.innerHTML = '<div class="note">기록된 변경이 없습니다. 다음 업로드부터 직전 현황과 비교해 기록합니다.</div>'; return; }
+  if (!log.length) { wrap.innerHTML = `<div class="note">기록된 변경이 없습니다. 올린 현황이 직전 현황과 같으면(팀·담당자 등 변화 없음) 아무것도 기록되지 않습니다. 현재 기준 현황: ${esc(storeInfoUpdatedAt ? new Date(storeInfoUpdatedAt).toLocaleString('ko-KR') : '없음')} 갱신 · 다음 업로드에서 달라진 항목부터 기록합니다.</div>`; return; }
   const sum = {}; log.forEach(r => { sum[r[3]] = (sum[r[3]] || 0) + 1; });
   wrap.innerHTML = `<div class="note" style="margin-bottom:6px;">전체 ${fmtNum(log.length)}건 · ${Object.entries(sum).map(([k, v]) => `${k} ${v}`).join(' · ')} · 표시 ${fmtNum(Math.min(rows.length, 300))}/${fmtNum(rows.length)}건</div>` +
     tbTable(['적용일', '코드', '매장명', '항목', '이전', '→ 변경 후', '파일', '입력자', '기록 시각'], rows.slice(0, 300).map(r => [r[0], esc(r[1]), esc(r[2]), esc(r[3]), esc(r[4] || '–'), esc(r[5] || '–'), esc(r[6]), esc(r[7] || ''), esc(new Date(r[8]).toLocaleString('ko-KR'))]), 9);
