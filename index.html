@@ -522,6 +522,8 @@
       <div class="card-sub">매장코드(E코드) → 매장명/팀 매핑표입니다. <strong>월별로 따로 보관</strong>합니다 — 적용 월을 고르고 그 달 매장운영현황을 올리세요. 추출할 때는 기간에 해당하는 달의 현황을 씁니다(그 달 현황이 없으면 가장 가까운 이전 달 현황). 가장 최근 달 현황은 권장 발주·재고 화면의 "가맹점현황 매장" 기준으로도 쓰입니다.</div>
       <div class="toolbar" style="gap:8px; margin-top:10px; flex-wrap:wrap;">
         <label style="font-size:13px;">적용 월 <input type="month" id="storeInfoMonth" class="search-input" style="flex:none; width:150px;"></label>
+        <label style="font-size:13px;" title="이 날짜부터 새 팀·담당자가 적용된 것으로 기록합니다">적용일 <input type="date" id="storeInfoEffective" class="search-input" style="flex:none; width:150px;"></label>
+        <label style="font-size:13px;">입력자(선택) <input type="text" id="storeInfoWho" class="search-input" style="flex:none; width:110px;" placeholder="예: Ethan"></label>
         <span class="note" id="storeInfoMonths"></span>
       </div>
       <details style="margin-top:8px;"><summary style="cursor:pointer; font-size:13px;">매장 묶음(보조 코드 → 대표 매장) — 추출 때 보조 코드 판매를 대표 매장 행에 합치고 B열에 표시</summary>
@@ -541,6 +543,18 @@
       </div>
       <input type="file" id="storeInfoFileInput" accept=".xlsx,.xls,.xlsb">
       <div id="storeInfoStatus" class="status-line" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card">
+      <h2>매장운영현황 변경 이력 (팀·담당자·그룹 등)</h2>
+      <div class="card-sub">매장운영현황을 올릴 때마다 <strong>직전 현황과 비교</strong>해서 바뀐 항목(팀, 담당 AC, 가맹그룹, 매장명, 피자 런칭일, 신규·제외 매장)을 적용일과 함께 기록합니다. ⑧ 피자 판매현황은 <strong>일자 기준으로 그때의 팀·담당자</strong>를 보여줍니다. (적용일 = 위 "적용일", 비우면 업로드한 날)</div>
+      <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:8px;">
+        <input type="text" id="siLogSearch" class="search-input" placeholder="매장명·코드·담당자 검색" oninput="renderStoreInfoLog()" style="flex:1 1 200px;">
+        <select id="siLogField" class="search-input" style="flex:none;" onchange="renderStoreInfoLog()"><option value="">전체 항목</option><option>팀</option><option>담당 AC</option><option>가맹그룹</option><option>매장명</option><option>피자 런칭일</option><option>신규</option><option>제외</option></select>
+        <button class="btn btn-ghost btn-sm" onclick="renderStoreInfoLog(true)">이력 불러오기</button>
+        <button class="btn btn-ghost btn-sm" onclick="downloadStoreInfoLog()">엑셀 다운로드</button>
+      </div>
+      <div id="siLogWrap" style="margin-top:8px;"><div class="note">"이력 불러오기"를 누르세요.</div></div>
     </div>
 
     <div class="card">
@@ -4063,6 +4077,8 @@ function renderStoreInfoMonths() {
   const el = document.getElementById('storeInfoMonths'); if (!el) return;
   el.innerHTML = storeInfoMonths.length ? '등록된 월: ' + storeInfoMonths.slice().sort((x, y) => y.ym.localeCompare(x.ym)).map(m => `${m.ym}(${fmtNum(m.count)})`).join(' · ') : '월별로 등록된 현황이 아직 없습니다(지금은 하나의 현황을 모든 달에 사용).';
   const mi = document.getElementById('storeInfoMonth'); if (mi && !mi.value) mi.value = formatDate(new Date()).slice(0, 7);
+  const ef = document.getElementById('storeInfoEffective'); if (ef && !ef.value) ef.value = formatDate(new Date());
+  const wh = document.getElementById('storeInfoWho'); if (wh && !wh.value) { try { wh.value = localStorage.getItem('storeInfoWho') || ''; } catch (e) { /* 무시 */ } }
 }
 async function loadStoreInfoForMonth(ym) {
   if (storeInfoMonthCache[ym] !== undefined) return storeInfoMonthCache[ym];
@@ -4250,6 +4266,7 @@ setupDropZone('storeInfoDropZone', 'storeInfoFileInput', async (file) => {
     const json = await readWorkbook(file);
     const { map, order } = buildStoreInfoMapFromRows(json);
     const ym = document.getElementById('storeInfoMonth')?.value || formatDate(new Date()).slice(0, 7);
+    const prevCurrent = storeInfoMap, hadPrev = Object.keys(prevCurrent || {}).length > 0; // 변경 비교용 직전 현황
     // 그 달 현황으로 저장
     const ok = await storageSet('meta:storeInfo:' + ym, JSON.stringify({ map, order, updatedAt: nowISO(), fileName: file.name }));
     if (!ok) throw new Error('Firebase에 저장하지 못했습니다.');
@@ -4262,6 +4279,18 @@ setupDropZone('storeInfoDropZone', 'storeInfoFileInput', async (file) => {
     const latest = storeInfoMonths.map(x => x.ym).sort().pop();
     if (ym === latest) await saveStoreInfoMap(map, order);
     statusEl.innerHTML += `<div class="note">${ym} 가맹점현황 ${fmtNum(order.length)}개 매장으로 저장${ym === latest ? ' · 현재 현황으로도 적용' : ' (과거 달 — 현재 현황은 그대로)'}</div>`;
+    // 직전 "현재 현황"과 비교해 팀·담당자 등 변경을 적용일과 함께 기록(최신 달 업로드일 때만)
+    if (ym === latest) {
+      if (!hadPrev) statusEl.innerHTML += '<div class="note">첫 업로드라 비교할 직전 현황이 없습니다 — 이 현황을 기준으로 다음 업로드부터 변경을 기록합니다.</div>';
+      else {
+        const eff = document.getElementById('storeInfoEffective')?.value || formatDate(new Date()), who = (document.getElementById('storeInfoWho')?.value || '').trim();
+        try { localStorage.setItem('storeInfoWho', who); } catch (e) { /* 무시 */ }
+        const changes = storeInfoDiff(prevCurrent, map), n = await appendStoreInfoLog(changes, eff, file.name, who);
+        const cnt = {}; changes.forEach(c => { cnt[c.field] = (cnt[c.field] || 0) + 1; });
+        statusEl.innerHTML += changes.length ? `<div class="note"><strong>변경 ${changes.length}건</strong> (${Object.entries(cnt).map(([k, v]) => `${k} ${v}`).join(' · ')}) · 적용일 ${eff}${n < changes.length ? ` · 이미 기록된 ${changes.length - n}건 제외` : ''} → 아래 "변경 이력"에서 확인</div>` : '<div class="note">직전 현황과 달라진 항목이 없습니다.</div>';
+        renderStoreInfoLog(true);
+      }
+    }
   } catch (err) {
     statusEl.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`;
   }
@@ -8408,6 +8437,64 @@ if (!isConfigured) {
   });
 }
 
+
+// ==========================================================================
+// 매장운영현황 변경 이력 — 올릴 때마다 직전 현황과 비교해 팀·담당자 등의 변경을 적용일과 함께 기록한다.
+// 기록 한 줄: [적용일, 코드, 매장명, 항목, 이전, 이후, 파일명, 입력자, 기록시각]
+// ==========================================================================
+const SI_FIELDS = [['team', '팀'], ['ac', '담당 AC'], ['group', '가맹그룹'], ['name', '매장명'], ['pizzaLaunch', '피자 런칭일']];
+let storeInfoLog = null;
+async function loadStoreInfoLog(force) {
+  if (storeInfoLog && !force) return storeInfoLog;
+  try { const raw = await storageGet('meta:storeInfoLog'); storeInfoLog = raw ? (JSON.parse(raw).rows || []) : []; } catch (e) { storeInfoLog = []; }
+  return storeInfoLog;
+}
+// 두 현황의 차이 → 변경 목록(적용일·파일명·입력자는 호출하는 쪽에서 채움)
+function storeInfoDiff(oldMap, newMap) {
+  const out = [], oldHasLaunch = Object.values(oldMap).some(v => v && v.pizzaLaunch); // 예전 양식·런칭일 저장 전 현황이면 없던 항목은 "변경"으로 보지 않는다
+  Object.keys(newMap).forEach(code => {
+    const n = newMap[code], o = oldMap[code];
+    if (!o) { out.push({ code, name: n.name, field: '신규', from: '', to: [n.group, n.team, n.ac].filter(Boolean).join(' / ') }); return; }
+    SI_FIELDS.forEach(([k, label]) => { if (k === 'pizzaLaunch' ? !oldHasLaunch : !(k in o)) return; const a = String(o[k] ?? '').trim(), b = String(n[k] ?? '').trim(); if (a !== b) out.push({ code, name: n.name || o.name, field: label, from: a, to: b }); });
+  });
+  Object.keys(oldMap).forEach(code => { if (!newMap[code]) out.push({ code, name: oldMap[code].name, field: '제외', from: [oldMap[code].group, oldMap[code].team, oldMap[code].ac].filter(Boolean).join(' / '), to: '' }); });
+  return out;
+}
+async function appendStoreInfoLog(changes, date, fileName, who) {
+  if (!changes.length) return 0;
+  const log = await loadStoreInfoLog(true), at = nowISO();
+  const seen = new Set(log.map(r => [r[0], r[1], r[3], r[5]].join('|')));
+  const add = changes.map(c => [date, c.code, c.name || '', c.field, c.from, c.to, fileName || '', who || '', at]).filter(r => !seen.has([r[0], r[1], r[3], r[5]].join('|')));
+  if (!add.length) return 0;
+  const rows = [...log, ...add].slice(-6000);
+  const ok = await storageSet('meta:storeInfoLog', JSON.stringify({ v: 1, rows }));
+  if (!ok) throw new Error('변경 이력을 저장하지 못했습니다.');
+  storeInfoLog = rows; return add.length;
+}
+// 일자 d에 그 매장의 field(team|ac) 값 — 현재 값에서, d 이후에 적용된 변경이 있으면 가장 이른 변경의 "이전" 값으로 거슬러 올라간다.
+function storeAttrAt(log, code, fieldLabel, cur, d) {
+  let best = null;
+  for (const r of log) if (r[1] === code && r[3] === fieldLabel && r[0] > d && (!best || r[0] < best[0] || (r[0] === best[0] && r[8] < best[8]))) best = r;
+  return best ? best[4] : cur;
+}
+async function renderStoreInfoLog(force) {
+  const wrap = document.getElementById('siLogWrap'); if (!wrap) return;
+  const log = await loadStoreInfoLog(!!force);
+  const q = (document.getElementById('siLogSearch')?.value || '').trim().toLowerCase(), f = document.getElementById('siLogField')?.value || '';
+  const rows = log.filter(r => (!f || r[3] === f) && (!q || r.slice(0, 7).join(' ').toLowerCase().includes(q))).sort((a, b) => b[0].localeCompare(a[0]) || b[8].localeCompare(a[8]));
+  if (!log.length) { wrap.innerHTML = '<div class="note">기록된 변경이 없습니다. 다음 업로드부터 직전 현황과 비교해 기록합니다.</div>'; return; }
+  const sum = {}; log.forEach(r => { sum[r[3]] = (sum[r[3]] || 0) + 1; });
+  wrap.innerHTML = `<div class="note" style="margin-bottom:6px;">전체 ${fmtNum(log.length)}건 · ${Object.entries(sum).map(([k, v]) => `${k} ${v}`).join(' · ')} · 표시 ${fmtNum(Math.min(rows.length, 300))}/${fmtNum(rows.length)}건</div>` +
+    tbTable(['적용일', '코드', '매장명', '항목', '이전', '→ 변경 후', '파일', '입력자', '기록 시각'], rows.slice(0, 300).map(r => [r[0], esc(r[1]), esc(r[2]), esc(r[3]), esc(r[4] || '–'), esc(r[5] || '–'), esc(r[6]), esc(r[7] || ''), esc(new Date(r[8]).toLocaleString('ko-KR'))]), 9);
+}
+async function downloadStoreInfoLog() {
+  const log = await loadStoreInfoLog(true);
+  if (!log.length) { alert('기록된 변경 이력이 없습니다.'); return; }
+  const aoa = [['적용일', '코드', '매장명', '항목', '이전', '변경 후', '파일', '입력자', '기록 시각'], ...log.slice().sort((a, b) => b[0].localeCompare(a[0])).map(r => [...r.slice(0, 8), new Date(r[8]).toLocaleString('ko-KR')])];
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '변경 이력');
+  XLSX.writeFile(wb, `매장운영현황_변경이력_${formatDate(new Date())}.xlsx`);
+}
+
 // ==========================================================================
 // ⑧ 피자 판매현황 — 저장된 일별 대조(catqty)로 가맹점 기준 피자 판매를 추적한다.
 //   · 취급점 = 매장운영현황 G열 "피자 여부(런칭일)"가 있고 런칭일 ≤ 해당 일자인 매장
@@ -8427,7 +8514,8 @@ const pzIsOnly = (code, inf) => PZ_ONLY_CODES.has(code) || PZ_ONLY_CODES.has(Str
 function pzSegOf(info) { return isDirectStore(info) ? '직영팀' : '가맹점'; }
 const PZ_SEGS = ['가맹점', '직영팀'];
 // dates: 정렬된 날짜들, byDate: date -> catqty entries, info: {map, order}
-function pizzaTrackCompute(dates, byDate, info, revBy) {
+function pizzaTrackCompute(dates, byDate, info, revBy, log) {
+  log = log || [];
   const IM = info.map || {}, alias = buildAliasMap(info);
   const out = { dates: [], days: {}, teams: {}, unreg: {}, noLaunch: 0, unknown: new Set(), rows: [], misUnknown: {}, misUnreg: {}, handledDays: {}, openDays: {} };
   Object.values(IM).forEach(v => { if (!v.pizzaLaunch) out.noLaunch++; });
@@ -8456,8 +8544,8 @@ function pizzaTrackCompute(dates, byDate, info, revBy) {
       if (a.tot > 0) r.open++; else r.closed++;
       if (a.pz > 0) { r.sold++; r.qty += a.pz; r.single += a.sg; r.whole += a.pz - a.sg; } else if (a.tot > 0) r.noSale++;
       r.piece += a.pc; r.rev += a.rev || 0; r.pzRev += a.prev || 0; const only = pzIsOnly(code, inf), mom = only ? 0 : (a.rev || 0) - (a.prev || 0); r.mom += mom;
-      out.rows.push({ only, mom, date: d, code, pizzaCode: inf.pizza || '', launch: inf.pizzaLaunch, name: inf.name || '', team: inf.team || '', ac: inf.ac || '', seg, rev: a.rev || 0, pzRev: a.prev || 0, qty: a.pz, single: a.sg, piece: a.pc, pieceRev: a.krev || 0, open: a.tot > 0 });
-      if (seg === '가맹점') { const t = inf.team || '(팀 없음)'; const T = out.teams[t] || (out.teams[t] = { handledDays: 0, openDays: 0, qty: 0 }); T.handledDays++; if (a.tot > 0) T.openDays++; T.qty += a.pz; }
+      out.rows.push({ only, mom, date: d, code, pizzaCode: inf.pizza || '', launch: inf.pizzaLaunch, name: inf.name || '', team: storeAttrAt(log, code, '팀', inf.team || '', d), ac: storeAttrAt(log, code, '담당 AC', inf.ac || '', d), seg, rev: a.rev || 0, pzRev: a.prev || 0, qty: a.pz, single: a.sg, piece: a.pc, pieceRev: a.krev || 0, open: a.tot > 0 });
+      if (seg === '가맹점') { const t = storeAttrAt(log, code, '팀', inf.team || '', d) || '(팀 없음)'; const T = out.teams[t] || (out.teams[t] = { handledDays: 0, openDays: 0, qty: 0 }); T.handledDays++; if (a.tot > 0) T.openDays++; T.qty += a.pz; }
     });
   });
   return out;
@@ -8493,6 +8581,7 @@ async function makePizzaTracking() {
     const { dates, byDate } = await loadCategoryQtyForRange(start, end);
     const have = dates.filter(d => byDate[d] && byDate[d].length).sort();
     if (!have.length) throw new Error('이 기간에 저장된 일별 대조가 없습니다.');
+    const siLog = await loadStoreInfoLog();
     await loadPzRev(have);
     // 매장별 매출 자료(pzrev)가 없는 날은 저장된 합본에서 바로 만든다(날짜당 합본 읽기 1회 + 쓰기 2회). 이미 있는 날은 건너뜀.
     const need = have.filter(d => !pzRevCache[d]), failedRev = [];
@@ -8505,7 +8594,7 @@ async function makePizzaTracking() {
         await sleep(200);
       }
     }
-    const c = pizzaTrackCompute(have, byDate, info, pzRevCache); c._IM = info.map;
+    const c = pizzaTrackCompute(have, byDate, info, pzRevCache, siLog); c._IM = info.map;
     pizzaLast = { c, start, end };
     const anyLaunch = Object.values(info.map).some(v => v.pizzaLaunch);
     let html = '';
@@ -8542,7 +8631,7 @@ function pzStoreSummary(c, seg) {
   const m = {};
   c.rows.filter(r => r.seg === seg).forEach(r => {
     const a = m[r.code] || (m[r.code] = { code: r.code, pizzaCode: r.pizzaCode, name: r.name, team: r.team, ac: r.ac, launch: r.launch, days: 0, openDays: 0, soldDays: 0, qty: 0, single: 0, piece: 0, rev: 0, pzRev: 0, mom: 0, only: r.only });
-    a.days++; if (r.open) a.openDays++; if (r.qty > 0) a.soldDays++; a.qty += r.qty; a.single += r.single; a.piece += r.piece; a.rev += r.rev; a.pzRev += r.pzRev; a.mom += r.mom;
+    a.team = r.team; a.ac = r.ac; a.days++; if (r.open) a.openDays++; if (r.qty > 0) a.soldDays++; a.qty += r.qty; a.single += r.single; a.piece += r.piece; a.rev += r.rev; a.pzRev += r.pzRev; a.mom += r.mom;
   });
   return Object.values(m).sort((x, y) => (x.team || '').localeCompare(y.team || '', 'ko', { numeric: true }) || x.code.localeCompare(y.code));
 }
@@ -8631,7 +8720,7 @@ function downloadPizzaTracking() {
 }
 
 Object.assign(window, {
-  makePizzaTracking, downloadPizzaTracking,
+  makePizzaTracking, downloadPizzaTracking, renderStoreInfoLog, downloadStoreInfoLog,
   doLogin, doLogout,
   manualAddCode, toggleDay, toggleAddForm, addAnomalyToMaster, updateMasterName,
   saveDayReport, viewHistoryDetail, deleteDayReport, resetAllHistory,
