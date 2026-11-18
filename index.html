@@ -536,7 +536,7 @@
             <option value="month">월별 (열 = 월)</option>
           </select>
         </div>
-        <label style="font-size:12px; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="catExActive" checked> 가맹점현황 매장만</label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="catExActive" autocomplete="off"> 가맹점현황 매장만</label>
         <button class="btn btn-primary btn-sm" onclick="downloadCategoryExtract()">📥 전체 분류 시트로 한번에 다운로드</button>
       </div>
       <div class="note" style="margin-top:6px;">버거/치킨/비프/피자/피자(싱글)/피자(홀피자) 총 6개 시트가 한 엑셀 파일로 만들어집니다. "피자 수량"은 기준표 분류가 "피자"인 전체이고, 그중 세부구분1이 <strong>"싱글피자"</strong>인 것이 싱글, 나머지가 홀피자입니다(<strong>피자 수량 = 싱글 + 홀피자</strong>). 분류가 "조각피자"인 상품은 P.mix 집계처럼 세 피자 시트에 넣지 않습니다. 기간을 비워두면 저장된 전체 기간이 포함됩니다. 월별로 뽑으면 월합계로 올린 달은 그 값을, 월합계가 없는 달은 저장된 일별 데이터를 합산해서 채웁니다(해당 월의 시작~종료일이 기간에 걸리면 포함).</div>
@@ -549,7 +549,7 @@
       <div class="note" id="chanSavedInfo" style="margin-top:6px;"></div>
       <div class="toolbar" style="gap:8px; margin-top:8px; flex-wrap:wrap;">
         <input type="date" id="chanExStart" class="search-input" style="flex:none;"> ~ <input type="date" id="chanExEnd" class="search-input" style="flex:none;">
-        <label style="font-size:12px; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="chanExActive" checked> 가맹점현황 매장만</label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="chanExActive" autocomplete="off"> 가맹점현황 매장만</label>
         <button class="btn btn-primary btn-sm" onclick="downloadChannelExtract()">📥 채널별 엑셀 추출</button>
       </div>
       <div class="status-line" id="chanExStatus" style="margin-top:8px;"></div>
@@ -558,13 +558,13 @@
       <h2>일자별 가맹점 실제 판매(소진) 추출 — 발주품목 기준</h2>
       <div class="card-sub">판매 소진 원장에서 매장 × 날짜별 발주품목 판매량을 뽑습니다(판매수량 × 보정값, 뼈치킨은 한마리·반반 2봉 / 반마리·기타 1봉 규칙). 품목마다 시트 1장(행 = 매장, 열 = 날짜) + 전국 일자별 합계 시트가 만들어집니다. 휴무(그날 판매 기록 없음)는 빈칸, 영업했지만 판매 0이면 0으로 구분합니다.</div>
       <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:10px;">
-        <input type="date" id="soldExStart" class="search-input" style="flex:none;" value="2026-09-01"> ~
-        <input type="date" id="soldExEnd" class="search-input" style="flex:none;" value="2026-10-19">
+        <input type="date" id="soldExStart" class="search-input" style="flex:none;"> ~
+        <input type="date" id="soldExEnd" class="search-input" style="flex:none;">
         <select id="soldExUnit" class="search-input" style="flex:none;">
           <option value="pack">포장(bag/box) 단위</option>
           <option value="unit">낱개(개·조각) 단위</option>
         </select>
-        <label style="font-size:12px; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="soldExActive" checked> 가맹점현황 매장만</label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="soldExActive" autocomplete="off"> 가맹점현황 매장만</label>
       </div>
       <div class="toolbar" style="gap:10px; flex-wrap:wrap; margin-top:6px;" id="soldExItems"></div>
       <button class="btn btn-primary btn-sm" style="margin-top:8px;" onclick="downloadDailySold()">📥 일자별 판매 추출</button>
@@ -577,6 +577,7 @@
       <div class="card-sub">저장된 <strong>일별 대조</strong> 수량으로 피자 판매를 추적합니다. <strong>취급점</strong>은 매장운영현황 G열 "피자 여부(런칭일)"가 있고 런칭일이 지난 매장, 구분은 J열 가맹그룹(<strong>가맹1·2그룹 → 가맹점</strong>, <strong>직영사업그룹 → 직영팀</strong>)입니다. 피자 수량은 분류 "피자"만이고 <strong>조각피자는 제외</strong>합니다(싱글 = 싱글피자, 홀피자 = 피자 − 싱글). 런칭일은 월별 가맹점현황을 올릴 때 함께 저장되니, 새 매장운영현황 엑셀을 한 번 올려주세요.</div>
       <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:8px;">
         <label style="font-size:13px;">기간 <input type="date" id="pzStart" class="search-input" style="flex:none;"> ~ <input type="date" id="pzEnd" class="search-input" style="flex:none;"></label>
+        <label style="font-size:12px; display:flex; align-items:center; gap:4px;" title="체크하면 가맹점현황(취급점) 매장만, 해제하면 가맹점현황에 없거나 런칭일 전인데 피자를 판 매장도 엑셀 일자별 raw 아래에 붙입니다"><input type="checkbox" id="pzActive" autocomplete="off"> 가맹점현황 매장만</label>
         <button class="btn btn-primary btn-sm" onclick="makePizzaTracking()">현황 만들기</button>
         <button class="btn btn-ghost btn-sm" onclick="downloadPizzaTracking()">엑셀 다운로드</button>
       </div>
@@ -631,9 +632,10 @@
       <h2>매장 휴무 패턴 · 자체POS 구분</h2>
       <div class="card-sub">(직영점 제외) 최근 8주 판매 소진 원장으로 매장별 휴무 패턴(매주 X요일, 격주, 불규칙, 장기 미판매)을 찾습니다. <strong>가맹점현황에는 있지만 POS 판매가 입력되지 않는 매장(자체POS)</strong>은 입고 기록으로 구분해서 휴무 분석에서 뺍니다. 처음 한 번은 판매·입고 원장 몇 개월분을 읽어 시간이 걸립니다(이후 재사용).</div>
       <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:8px;">
+        <label style="font-size:13px;">기간 <input type="date" id="closureStart" class="search-input" style="flex:none;"> ~ <input type="date" id="closureEnd" class="search-input" style="flex:none;"></label>
         <button class="btn btn-primary btn-sm" onclick="analyzeClosures()">휴무 패턴 분석</button>
         <button class="btn btn-ghost btn-sm" onclick="downloadClosures()">엑셀 다운로드</button>
-        <span class="note">기준일은 위 "기준일"을 따릅니다.</span>
+        <span class="note">기간을 비우면 위 "기준일" 기준 최근 8주를 봅니다. 기간을 정하면 그 기간의 날짜가 열로 나열됩니다(14일 미만이면 패턴 판정은 생략하고 일자별 표만 보여줍니다).</span>
       </div>
       <div class="status-line" id="closureStatus" style="margin:8px 0;"></div>
       <div id="closureWrap"></div>
@@ -7974,30 +7976,47 @@ function closureForecast(patterns, E, n = 7) {
 let closureLast = null, closureImpactLast = null;
 async function analyzeClosures() {
   const st = document.getElementById('closureStatus'), wrap = document.getElementById('closureWrap');
-  const E = document.getElementById('trendDate')?.value || formatDate(new Date());
+  const startIn = document.getElementById('closureStart')?.value || '', endIn = document.getElementById('closureEnd')?.value || '';
+  const E = endIn || document.getElementById('trendDate')?.value || formatDate(new Date());
   if (heavyJob) { st.innerHTML = `<span class="pill pill-warn">다른 작업(${heavyJob}) 진행 중</span>`; return; }
+  if (startIn && startIn > E) { st.innerHTML = '<span class="pill pill-warn">시작일이 종료일보다 늦습니다.</span>'; return; }
   st.innerHTML = '<span class="pill pill-neutral">판매·입고 원장 읽는 중... (처음 한 번은 오래 걸리고, 이후는 재사용됩니다)</span>';
   try {
-    const from = addDaysStr(E, -55), months = []; for (let m = from.slice(0, 7); m <= E.slice(0, 7); m = addDaysStr(m + '-28', 5).slice(0, 7)) months.push(m);
+    const from = startIn || addDaysStr(E, -55), months = []; for (let m = from.slice(0, 7); m <= E.slice(0, 7); m = addDaysStr(m + '-28', 5).slice(0, 7)) months.push(m);
     const [S, R] = await Promise.all([ledgerLoadMonthsCached(LEDGER_SOLD, months), ledgerLoadMonthsCached(LEDGER_RECV, months)]);
     if (!soldDates) await loadSoldDates();
     const salesDays = [...salesDaySetNow()].filter(d => d >= from && d <= E).sort();
-    if (salesDays.length < 14) { st.innerHTML = `<span class="pill pill-warn">POS 판매 자료가 있는 날이 ${salesDays.length}일뿐입니다(최소 14일 필요).</span>`; return; }
+    if (salesDays.length < 1) { st.innerHTML = '<span class="pill pill-warn">이 기간에 POS 판매 자료가 있는 날이 없습니다.</span>'; return; }
     const dirCodes = await ensureDirectCodes();
     const sdSet = new Set(salesDays), opens = new Map();
     Object.entries(S).forEach(([code, o]) => { if (isTestStore(code, o.storeName) || dirCodes.has(code)) return; const set = new Set(); Object.values(o.byItem).forEach(days => Object.entries(days).forEach(([d, q]) => { if (sdSet.has(d) && Number(q) > 0) set.add(d); })); if (set.size) opens.set(code, set); });
-    const recvIn = new Set(); Object.entries(R).forEach(([code, o]) => { if (Object.values(o.byItem).some(days => Object.keys(days).some(d => d >= from && d <= E))) recvIn.add(code); });
+    const recvIn = new Set(), recvDays = new Map(); Object.entries(R).forEach(([code, o]) => { const set = new Set(); Object.values(o.byItem).forEach(days => Object.entries(days).forEach(([d, q]) => { if (d >= from && d <= E && Number(q) > 0) set.add(d); })); if (Object.values(o.byItem).some(days => Object.keys(days).some(d => d >= from && d <= E))) recvIn.add(code); if (set.size) recvDays.set(code, set); });
     const info = await storeInfoForRange(from, E);
     const infoCodes = info.order.filter(c => info.map[c] && !isTestStore(c, info.map[c].name) && !dirCodes.has(c) && !isDirectStore(info.map[c])); // 직영점 제외
-    const res = closureAnalyze(opens, salesDays);
+    const res = salesDays.length >= 14 ? closureAnalyze(opens, salesDays) : { patterns: [], longIdle: [], rate: {}, med: {}, mass: [], nCodes: opens.size, days: salesDays, short: true };
     const selfPos = infoCodes.filter(c => !opens.has(c) && recvIn.has(c));
     const noAct = infoCodes.filter(c => !opens.has(c) && !recvIn.has(c));
     const nameOf = c => info.map[c]?.name || S[c]?.storeName || '', teamOf = c => info.map[c]?.team || '';
     const fc = closureForecast(res.patterns, E, 7);
-    closureLast = { E, res, selfPos, noAct, info, nameOf, teamOf, fc, universe: infoCodes.length, salesDays };
+    const calDays = []; for (let d = from; d <= E; d = addDaysStr(d, 1)) calDays.push(d);
+    closureLast = { E, from, res, selfPos, noAct, info, nameOf, teamOf, fc, universe: infoCodes.length, salesDays, opens, recvDays, calDays };
     wrap.innerHTML = closureRender(closureLast);
-    st.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${tbMd(salesDays[0])}~${tbMd(E)} POS 자료 ${salesDays.length}일 · 판매 기록 매장 ${opens.size}곳 · 가맹점현황 ${infoCodes.length}곳 · 직영점 제외</span>`;
+    st.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${tbMd(from)}~${tbMd(E)} POS 자료 ${salesDays.length}일 · 판매 기록 매장 ${opens.size}곳 · 가맹점현황 ${infoCodes.length}곳 · 직영점 제외</span>`;
   } catch (err) { console.error(err); st.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`; }
+}
+
+// 매장 × 날짜(열 = 날짜) 표. kind 'open' = 영업(○)/휴무(✕)(POS 판매 자료가 없는 날은 –), 'recv' = 입고 있는 날 표시
+function closureMatrix(c, codes, kind) {
+  const MAXCOL = 62, all = c.calDays, days = all.slice(-MAXCOL), sd = new Set(c.salesDays);
+  const cell = (code, d) => {
+    if (kind === 'recv') return c.recvDays.get(code)?.has(d) ? '<td style="text-align:center; padding:2px 3px; background:#dcfce7; color:#166534;">입</td>' : '<td style="text-align:center; padding:2px 3px; color:#d1d5db;">·</td>';
+    if (!sd.has(d)) return '<td style="text-align:center; padding:2px 3px; color:#d1d5db;">–</td>';
+    return c.opens.get(code)?.has(d) ? '<td style="text-align:center; padding:2px 3px; color:#6b7280;">○</td>' : '<td style="text-align:center; padding:2px 3px; background:#fee2e2; color:#b91c1c; font-weight:700;">✕</td>';
+  };
+  const cnt = code => kind === 'recv' ? days.filter(d => c.recvDays.get(code)?.has(d)).length : days.filter(d => sd.has(d) && !c.opens.get(code)?.has(d)).length;
+  const head = `<tr><th>매장코드</th><th>매장명</th><th>팀</th><th class="num">${kind === 'recv' ? '입고일수' : '휴무일수'}</th>${days.map(d => `<th style="font-size:10px; padding:2px 3px; text-align:center; ${dowOf(d) === 0 ? 'color:#b91c1c;' : dowOf(d) === 6 ? 'color:#1d4ed8;' : ''}">${d.slice(5).replace('-', '/')}<br>${DOW_KO[dowOf(d)]}</th>`).join('')}</tr>`;
+  const body = codes.map(code => `<tr><td>${esc(code)}</td><td style="white-space:nowrap;">${esc(c.nameOf(code))}</td><td>${esc(c.teamOf(code))}</td><td class="num">${cnt(code)}</td>${days.map(d => cell(code, d)).join('')}</tr>`).join('');
+  return `<div class="table-wrap"><table style="font-size:11px;"><thead>${head}</thead><tbody>${body}</tbody></table></div>${all.length > MAXCOL ? `<div class="note">화면에는 마지막 ${MAXCOL}일만 보입니다(전체 ${all.length}일은 엑셀).</div>` : ''}`;
 }
 function closureRender(c) {
   const { res, selfPos, noAct, nameOf, teamOf, fc } = c, DW = DOW_KO;
@@ -8015,6 +8034,12 @@ function closureRender(c) {
   html += `<details><summary style="cursor:pointer;">자체POS ${selfPos.length}곳 — 입고는 있고 POS 판매 기록이 없는 가맹점(권장 발주·판매 분석에서 제외 대상)</summary>${tbTable(['매장코드', '매장명', '팀'], selfPos.slice(0, 200).map(x => [x, esc(nameOf(x)), esc(teamOf(x))]), 3)}</details>`;
   html += `<details><summary style="cursor:pointer;">판매·입고 모두 없음 ${noAct.length}곳 — 가맹점현황에만 있는 매장(휴업·폐점·신규 후보)</summary>${tbTable(['매장코드', '매장명', '팀'], noAct.slice(0, 200).map(x => [x, esc(nameOf(x)), esc(teamOf(x))]), 3)}</details>`;
   html += `<details><summary style="cursor:pointer;">장기 미판매 ${res.longIdle.length}곳</summary>${tbTable(['매장코드', '매장명', '마지막 판매일', '이후 POS 자료일'], res.longIdle.slice(0, 200).map(x => [x.code, esc(nameOf(x.code)), x.lastOpen, tbNum(x.days)]), 3)}</details>`;
+  if (res.short) html += '<div class="note">기간이 14일 미만이라 휴무 패턴 판정은 하지 않았습니다. 아래 일자별 표는 그대로 볼 수 있습니다.</div>';
+  const patCodes = res.patterns.slice().sort((a, b) => a.type.localeCompare(b.type) || nameOf(a.code).localeCompare(nameOf(b.code), 'ko')).map(p => p.code);
+  if (patCodes.length) html += `<details open><summary style="cursor:pointer; margin-top:10px;">휴무 패턴 매장 일자별 (열 = 날짜) — ${patCodes.length}곳, ○ 영업 · ✕ 휴무 · – POS 자료 없는 날</summary>${closureMatrix(c, patCodes.slice(0, 150), 'open')}${patCodes.length > 150 ? '<div class="note">화면에는 150곳까지, 전체는 엑셀.</div>' : ''}</details>`;
+  const idleCodes = res.longIdle.map(x => x.code);
+  if (idleCodes.length) html += `<details><summary style="cursor:pointer;">장기 미판매 매장 일자별 (열 = 날짜) — ${idleCodes.length}곳</summary>${closureMatrix(c, idleCodes.slice(0, 150), 'open')}</details>`;
+  if (selfPos.length) html += `<details open><summary style="cursor:pointer;">자체POS 매장 일자별 입고 (열 = 날짜) — ${selfPos.length}곳, 입 = 그날 입고 기록 있음</summary>${closureMatrix(c, selfPos.slice(0, 150), 'recv')}${selfPos.length > 150 ? '<div class="note">화면에는 150곳까지, 전체는 엑셀.</div>' : ''}</details>`;
   return html;
 }
 function downloadClosures() {
@@ -8028,8 +8053,12 @@ function downloadClosures() {
   add('자체POS', [['매장코드', '매장명', '팀', '담당 AC'], ...selfPos.map(c => [c, nameOf(c), teamOf(c), ac(c)])]);
   add('판매·입고 없음', [['매장코드', '매장명', '팀', '담당 AC'], ...noAct.map(c => [c, nameOf(c), teamOf(c), ac(c)])]);
   add('장기 미판매', [['매장코드', '매장명', '팀', '마지막 판매일', '이후 POS 자료일'], ...res.longIdle.map(x => [x.code, nameOf(x.code), teamOf(x.code), x.lastOpen, x.days])]);
+  { const cd = closureLast.calDays, sd = new Set(closureLast.salesDays), op = closureLast.opens, rv = closureLast.recvDays, name = nameOf;
+    const o = c => cd.map(d => (sd.has(d) ? (op.get(c)?.has(d) ? '영업' : '휴무') : ''));
+    add('휴무 일자별', [['매장코드', '매장명', '팀', '담당 AC', '유형', '휴무일수', ...cd], ...res.patterns.map(p => { const r = o(p.code); return [p.code, name(p.code), teamOf(p.code), ac(p.code), p.type, r.filter(x => x === '휴무').length, ...r]; }), ...res.longIdle.map(x => { const r = o(x.code); return [x.code, name(x.code), teamOf(x.code), ac(x.code), '장기 미판매', r.filter(v => v === '휴무').length, ...r]; })]);
+    add('자체POS 입고 일자별', [['매장코드', '매장명', '팀', '담당 AC', '입고일수', ...cd], ...selfPos.map(c => { const r = cd.map(d => (rv.get(c)?.has(d) ? '입고' : '')); return [c, name(c), teamOf(c), ac(c), r.filter(Boolean).length, ...r]; })]); }
   add('다음 7일 예상 휴무', [['날짜', '요일', '예상 휴무 매장 수'], ...fc.map(x => [x.d, DW[x.w], x.n])]);
-  XLSX.writeFile(wb, `매장_휴무패턴_${E}.xlsx`);
+  XLSX.writeFile(wb, `매장_휴무패턴_${closureLast.from}_${E}.xlsx`);
 }
 
 // ── 휴무 패턴이 생산 예측 오차에 주는 영향 점검 ─────────────────────────────────────────
@@ -8523,7 +8552,7 @@ const PZ_SEGS = ['가맹점', '직영팀'];
 function pizzaTrackCompute(dates, byDate, info, revBy, log) {
   log = log || [];
   const IM = info.map || {}, alias = buildAliasMap(info);
-  const out = { dates: [], days: {}, teams: {}, unreg: {}, noLaunch: 0, unknown: new Set(), rows: [], misUnknown: {}, misUnreg: {}, handledDays: {}, openDays: {} };
+  const out = { dates: [], days: {}, teams: {}, unreg: {}, noLaunch: 0, unknown: new Set(), rows: [], misUnknown: {}, misUnreg: {}, handledDays: {}, openDays: {}, extraRows: [] };
   Object.values(IM).forEach(v => { if (!v.pizzaLaunch) out.noLaunch++; });
   const stores = Object.keys(IM).filter(c => !isTestStore(c, IM[c].name));
   dates.forEach(d => {
@@ -8531,10 +8560,10 @@ function pizzaTrackCompute(dates, byDate, info, revBy, log) {
     out.dates.push(d);
     const agg = {}; // code -> {tot, pz, sg, pc, rev, prev}
     const rv = revBy && revBy[d]; if (rv) out.hasRev = (out.hasRev || 0) + 1;
-    if (rv) Object.entries(rv).forEach(([c0, a]) => { const code = alias[c0] || c0; if (!IM[code]) return; const x = agg[code] || (agg[code] = { tot: 0, pz: 0, sg: 0, pc: 0 }); x.rev = (x.rev || 0) + a[0] / 1.1; x.prev = (x.prev || 0) + a[1] / 1.1; x.krev = (x.krev || 0) + (a[2] || 0) / 1.1; });
+    if (rv) Object.entries(rv).forEach(([c0, a]) => { const code = alias[c0] || c0; if (!IM[code]) { const eu = (out._xu = out._xu || {})[d + '|' + code] || ((out._xu)[d + '|' + code] = { date: d, code, name: '', rev: 0, pzRev: 0, krev: 0, qty: 0, single: 0, piece: 0 }); eu.rev += a[0] / 1.1; eu.pzRev += a[1] / 1.1; eu.krev += (a[2] || 0) / 1.1; return; } const x = agg[code] || (agg[code] = { tot: 0, pz: 0, sg: 0, pc: 0 }); x.rev = (x.rev || 0) + a[0] / 1.1; x.prev = (x.prev || 0) + a[1] / 1.1; x.krev = (x.krev || 0) + (a[2] || 0) / 1.1; });
     ents.forEach(e => {
       const code = alias[e.storeCode] || e.storeCode;
-      if (!IM[code]) { out.unknown.add(code); const u = out.misUnknown[code] || (out.misUnknown[code] = { code, name: e.storeName || '', dates: new Set(), qty: 0, pizza: 0 }); u.dates.add(d); u.qty += Number(e.qty) || 0; if (e.cat === '피자') u.pizza += Number(e.qty) || 0; if (!u.name && e.storeName) u.name = e.storeName; return; }
+      if (!IM[code]) { out.unknown.add(code); { const eu = (out._xu = out._xu || {})[d + '|' + code] || ((out._xu)[d + '|' + code] = { date: d, code, name: '', rev: 0, pzRev: 0, krev: 0, qty: 0, single: 0, piece: 0 }); eu.name = eu.name || e.storeName || ''; if (e.cat === '피자') { eu.qty += Number(e.qty) || 0; if (/싱글/.test(e.detail1 || '')) eu.single += Number(e.qty) || 0; } else if (e.cat === '조각피자') eu.piece += Number(e.qty) || 0; } const u = out.misUnknown[code] || (out.misUnknown[code] = { code, name: e.storeName || '', dates: new Set(), qty: 0, pizza: 0 }); u.dates.add(d); u.qty += Number(e.qty) || 0; if (e.cat === '피자') u.pizza += Number(e.qty) || 0; if (!u.name && e.storeName) u.name = e.storeName; return; }
       const a = agg[code] || (agg[code] = { tot: 0, pz: 0, sg: 0, pc: 0 });
       const q = Number(e.qty) || 0; a.tot += q;
       if (e.cat === '피자') { a.pz += q; if (/싱글/.test(e.detail1 || '')) a.sg += q; } else if (e.cat === '조각피자') a.pc += q;
@@ -8544,7 +8573,7 @@ function pizzaTrackCompute(dates, byDate, info, revBy, log) {
     stores.forEach(code => {
       const inf = IM[code], seg = pzSegOf(inf), r = day[seg], a = agg[code] || { tot: 0, pz: 0, sg: 0, pc: 0 };
       const handled = !!inf.pizzaLaunch && inf.pizzaLaunch <= d;
-      if (!handled) { if (a.pz > 0) { r.unregStores++; r.unregQty += a.pz; const m = out.misUnreg[code] || (out.misUnreg[code] = { code, name: inf.name, team: inf.team, seg, launch: inf.pizzaLaunch || '', days: 0, qty: 0 }); m.days++; m.qty += a.pz; } return; }
+      if (!handled) { if (a.pz > 0) { r.unregStores++; r.unregQty += a.pz; const m = out.misUnreg[code] || (out.misUnreg[code] = { code, name: inf.name, team: inf.team, seg, launch: inf.pizzaLaunch || '', days: 0, qty: 0 }); m.days++; m.qty += a.pz; out.extraRows.push({ date: d, code, pizzaCode: inf.pizza || '', name: inf.name || '', team: storeAttrAt(log, code, '팀', inf.team || '', d), ac: storeAttrAt(log, code, '담당 AC', inf.ac || '', d), launch: inf.pizzaLaunch || '', seg, kind: '런칭일 없음/이전', rev: a.rev || 0, pzRev: a.prev || 0, qty: a.pz, single: a.sg, piece: a.pc, pieceRev: a.krev || 0, only: pzIsOnly(code, inf) }); } return; }
       r.handled++; if (inf.pizzaLaunch === d) r.newly++;
       out.handledDays[code] = (out.handledDays[code] || 0) + 1; if (a.tot > 0) out.openDays[code] = (out.openDays[code] || 0) + 1;
       if (a.tot > 0) r.open++; else r.closed++;
@@ -8554,6 +8583,7 @@ function pizzaTrackCompute(dates, byDate, info, revBy, log) {
       if (seg === '가맹점') { const t = storeAttrAt(log, code, '팀', inf.team || '', d) || '(팀 없음)'; const T = out.teams[t] || (out.teams[t] = { handledDays: 0, openDays: 0, qty: 0 }); T.handledDays++; if (a.tot > 0) T.openDays++; T.qty += a.pz; }
     });
   });
+  Object.values(out._xu || {}).forEach(u => out.extraRows.push({ date: u.date, code: u.code, pizzaCode: '', name: u.name, team: '가맹점현황 없음', ac: '', launch: '', seg: '가맹점', kind: '가맹점현황 없음', rev: u.rev, pzRev: u.pzRev, qty: u.qty, single: u.single, piece: u.piece, pieceRev: u.krev, only: pzIsOnly(u.code, null) }));
   return out;
 }
 // 구간 합산: 판매량·영업점일 합산 후 점일 계산. 취급점은 구간 마지막 날 기준.
@@ -8693,6 +8723,12 @@ function downloadPizzaTracking() {
       const pm = r.rev ? r.pzRev / r.rev : 0;
       aoa.push([toExcelSerialDate(r.date), pzWeekLabel(r.date), '', '', r.code, r.pizzaCode, r.launch, r.name, r.team, r.ac, r.only ? '피자단독' : '샵앤샵', '포함', Math.round(r.rev), Math.round(r.mom), Math.round(r.pzRev), Math.round(pm * 10000) / 10000, r.qty, Math.round(r.pieceRev), r.piece, r.seg === '직영팀' ? '직영점' : '가맹점', '', r.qty, Math.round(r.pzRev), '', +r.date.slice(5, 7), r.single, r.qty - r.single]);
     });
+    if (!document.getElementById('pzActive')?.checked) { // "가맹점현황 매장만"을 해제하면 불일치 매장(현황에 없음·런칭일 없음/이전)도 아래에 붙인다
+      c.extraRows.filter(r => r.qty > 0 || r.rev > 0).sort((x, y) => x.date.localeCompare(y.date) || x.code.localeCompare(y.code)).forEach(r => {
+        const mom = r.only ? 0 : r.rev - r.pzRev, pm = r.rev ? r.pzRev / r.rev : 0;
+        aoa.push([toExcelSerialDate(r.date), pzWeekLabel(r.date), '', '', r.code, r.pizzaCode, r.launch, r.name, r.team, r.ac, r.only ? '피자단독' : '샵앤샵', r.kind, Math.round(r.rev), Math.round(mom), Math.round(r.pzRev), Math.round(pm * 10000) / 10000, r.qty, Math.round(r.pieceRev), r.piece, r.seg === '직영팀' ? '직영점' : '가맹점', '', r.qty, Math.round(r.pzRev), '', +r.date.slice(5, 7), r.single, r.qty - r.single]);
+      });
+    }
     const ws = XLSX.utils.aoa_to_sheet(aoa); ws['!cols'] = [{ wch: 11 }, { wch: 8 }];
     for (let i = 1; i < aoa.length; i++) { const cell = ws['A' + (i + 1)]; if (cell) cell.z = 'yyyy-mm-dd'; }
     XLSX.utils.book_append_sheet(wb, ws, '일자별 raw'); }
