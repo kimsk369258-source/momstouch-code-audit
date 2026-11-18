@@ -7973,6 +7973,55 @@ function closureForecast(patterns, E, n = 7) {
   }
   return out;
 }
+// 매장별 예상 휴무: 패턴(매주·격주)이 잡힌 매장이 E 다음 n일 중 어느 날 쉴지. 격주는 마지막으로 관측한 같은 요일(lastDate)의 영업/휴무 상태에서 2주 간격으로 계산한다.
+function closurePredictStores(patterns, E, n = 7) {
+  const out = [];
+  for (let i = 1; i <= n; i++) {
+    const d = addDaysStr(E, i), w = dowOf(d);
+    patterns.forEach(p => {
+      if (p.weekly.includes(w)) { out.push({ d, w, code: p.code, kind: '매주' }); return; }
+      p.biweekly.forEach(b => { if (b.w !== w) return; const diff = Math.round((new Date(d) - new Date(b.lastDate)) / 864e5 / 7); if (b.lastOpen ? diff % 2 === 1 : diff % 2 === 0) out.push({ d, w, code: p.code, kind: '격주' }); });
+    });
+  }
+  return out;
+}
+// ── 예측 정확도(백테스트): 기준일 E에서 7일씩 뒤로 물러나, 그 시점까지의 자료만으로 패턴을 만들고 이후 7일을 예측해 실제와 비교한다.
+// 대상 = 기준일 시점에 영업 중인 매장(마지막 판매 이후 5일 미만). 예측일이 POS 자료 없는 날이면 건너뛴다.
+function closureBacktest(opens, salesDays, E, weeks = 4, lookback = 56) {
+  const sd = [...salesDays].sort(), out = [];
+  for (let k = 1; k <= weeks; k++) {
+    const cut = addDaysStr(E, -7 * k), from = addDaysStr(cut, -(lookback - 1));
+    const hist = sd.filter(d => d >= from && d <= cut); if (hist.length < 14) continue;
+    const targets = sd.filter(d => d > cut && d <= addDaysStr(cut, 7)); if (!targets.length) continue;
+    const hs = new Set(hist), o2 = new Map();
+    opens.forEach((set, code) => { const s = new Set([...set].filter(d => hs.has(d))); if (s.size) o2.set(code, s); });
+    const res = closureAnalyze(o2, hist), lastHist = hist[hist.length - 1];
+    const active = [...o2.keys()].filter(c => { const l = [...o2.get(c)].sort().pop(); return hist.filter(d => d > l).length < 5; });
+    const aSet = new Set(active), tSet = new Set(targets);
+    const pred = closurePredictStores(res.patterns, cut, 7).filter(x => tSet.has(x.d) && aSet.has(x.code));
+    const predKey = new Set(pred.map(x => x.d + '|' + x.code));
+    let act = 0, tp = 0; const byDow = {};
+    targets.forEach(d => active.forEach(c => { if (!opens.get(c)?.has(d)) { act++; const hit = predKey.has(d + '|' + c); if (hit) tp++; const b = byDow[dowOf(d)] || (byDow[dowOf(d)] = { act: 0, tp: 0 }); b.act++; if (hit) b.tp++; } }));
+    out.push({ cut, from: targets[0], to: targets[targets.length - 1], patterns: res.patterns.filter(p => p.weekly.length || p.biweekly.length).length, pred: pred.length, act, tp, precision: pred.length ? tp / pred.length : null, recall: act ? tp / act : null, byDow });
+  }
+  return out;
+}
+// ── 신규 휴무 알림: 평소 꾸준히 영업하던 매장이 최근 연속으로 판매가 없으면 알린다. (전체 휴무일은 건너뜀)
+//   2~3일 = 주의 · 4일 = 경고 · 5일 이상(장기 미판매) = 위험. 평소 영업률 80% 미만이거나 판매 이력이 14일 미만이면 제외.
+function closureNewAlerts(opens, salesDays, mass, E) {
+  const ms = new Set(mass || []), days = [...salesDays].sort().filter(d => d <= E && !ms.has(d)), out = [];
+  if (days.length < 14) return out;
+  opens.forEach((set, code) => {
+    const first = [...set].sort()[0]; let streak = 0, i = days.length - 1;
+    while (i >= 0 && !set.has(days[i])) { streak++; i--; }
+    if (streak < 2 || i < 0) return;
+    const lastOpen = days[i], prev = days.slice(Math.max(0, i - 27), i + 1).filter(d => d >= first);
+    if (prev.length < 14) return;
+    const rate = prev.filter(d => set.has(d)).length / prev.length; if (rate < 0.8) return;
+    out.push({ code, streak, lastOpen, rate, level: streak >= 5 ? '위험' : streak >= 4 ? '경고' : '주의' });
+  });
+  return out.sort((a, b) => b.streak - a.streak || a.code.localeCompare(b.code));
+}
 let closureLast = null, closureImpactLast = null;
 async function analyzeClosures() {
   const st = document.getElementById('closureStatus'), wrap = document.getElementById('closureWrap');
@@ -7982,7 +8031,7 @@ async function analyzeClosures() {
   if (startIn && startIn > E) { st.innerHTML = '<span class="pill pill-warn">시작일이 종료일보다 늦습니다.</span>'; return; }
   st.innerHTML = '<span class="pill pill-neutral">판매·입고 원장 읽는 중... (처음 한 번은 오래 걸리고, 이후는 재사용됩니다)</span>';
   try {
-    const from = startIn || addDaysStr(E, -55), months = []; for (let m = from.slice(0, 7); m <= E.slice(0, 7); m = addDaysStr(m + '-28', 5).slice(0, 7)) months.push(m);
+    const from = startIn || addDaysStr(E, -55), loadFrom = from < addDaysStr(E, -83) ? from : addDaysStr(E, -83), months = []; for (let m = loadFrom.slice(0, 7); m <= E.slice(0, 7); m = addDaysStr(m + '-28', 5).slice(0, 7)) months.push(m);
     const [S, R] = await Promise.all([ledgerLoadMonthsCached(LEDGER_SOLD, months), ledgerLoadMonthsCached(LEDGER_RECV, months)]);
     if (!soldDates) await loadSoldDates();
     const salesDays = [...salesDaySetNow()].filter(d => d >= from && d <= E).sort();
@@ -7999,7 +8048,13 @@ async function analyzeClosures() {
     const nameOf = c => info.map[c]?.name || S[c]?.storeName || '', teamOf = c => info.map[c]?.team || '';
     const fc = closureForecast(res.patterns, E, 7);
     const calDays = []; for (let d = from; d <= E; d = addDaysStr(d, 1)) calDays.push(d);
-    closureLast = { E, from, res, selfPos, noAct, info, nameOf, teamOf, fc, universe: infoCodes.length, infoCodes, salesDays, opens, recvDays, calDays };
+    const acOf = c => info.map[c]?.ac || '';
+    const upcoming = closurePredictStores(res.patterns, E, 7), alerts = res.short ? [] : closureNewAlerts(opens, salesDays, res.mass, E);
+    // 백테스트는 더 긴 자료(최대 84일)로: 패턴 학습 56일 + 검증 4주
+    const salesDaysBT = [...salesDaySetNow()].filter(d => d >= loadFrom && d <= E).sort(), sdBT = new Set(salesDaysBT), opensBT = new Map();
+    Object.entries(S).forEach(([code, o]) => { if (isTestStore(code, o.storeName) || dirCodes.has(code)) return; const set = new Set(); Object.values(o.byItem).forEach(days => Object.entries(days).forEach(([d, q]) => { if (sdBT.has(d) && Number(q) > 0) set.add(d); })); if (set.size) opensBT.set(code, set); });
+    const bt = res.short ? [] : closureBacktest(opensBT, salesDaysBT, E, 4);
+    closureLast = { E, from, res, selfPos, noAct, info, nameOf, teamOf, acOf, fc, upcoming, alerts, bt, universe: infoCodes.length, infoCodes, salesDays, opens, recvDays, calDays };
     wrap.innerHTML = closureRender(closureLast); closureShowAll('');
     st.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${tbMd(from)}~${tbMd(E)} POS 자료 ${salesDays.length}일 · 판매 기록 매장 ${opens.size}곳 · 가맹점현황 ${infoCodes.length}곳 · 직영점 제외</span>`;
   } catch (err) { console.error(err); st.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`; }
@@ -8037,11 +8092,54 @@ function closureAllRows(c) {
   rows.sort((a, b) => a.kind.localeCompare(b.kind, 'ko') || (c.teamOf(a.code) || '').localeCompare(c.teamOf(b.code) || '', 'ko', { numeric: true }) || a.code.localeCompare(b.code));
   return rows;
 }
+
+// 날짜별 영업·휴무 매장 수 — 휴무를 구분(패턴 매주·격주 / 불규칙 / 휴무 소수 / 장기 미판매)별로 나눠 센다.
+// 대상 = POS 판매 기록이 있는 가맹점(직영 제외). 첫 판매일 이전(신규)은 센 적 없고, 마지막 판매 이후는 "장기 미판매"로 센다.
+function closureDailyCounts(c) {
+  const rows = closureAllRows(c), kindBy = new Map(rows.map(r => [r.code, r.kind])), first = new Map();
+  c.opens.forEach((o, code) => first.set(code, [...o].sort()[0]));
+  const grp = k => !k ? '' : k.startsWith('휴무 패턴(불규칙') ? '불규칙' : k.startsWith('휴무 패턴') ? '매주·격주' : k.startsWith('휴무 소수') ? '휴무 소수' : k === '장기 미판매' ? '장기 미판매' : '기타';
+  return c.salesDays.map(d => {
+    const o = { d, w: dowOf(d), open: 0, closed: 0, '매주·격주': 0, '불규칙': 0, '휴무 소수': 0, '장기 미판매': 0, '기타': 0 };
+    c.opens.forEach((set, code) => {
+      if (set.has(d)) { o.open++; return; }
+      if (d < first.get(code)) return;
+      o.closed++; o[grp(kindBy.get(code)) || '기타']++;
+    });
+    return o;
+  });
+}
 function closureShowAll(kind) {
   const w = document.getElementById('closureAllWrap'); if (!w || !closureLast) return;
   const all = closureAllRows(closureLast), rows = kind ? all.filter(r => r.kind === kind || (kind === '휴무 패턴' && r.kind.startsWith('휴무 패턴'))) : all;
   const shown = rows.slice(0, 300);
   w.innerHTML = rows.length ? closureMatrix(closureLast, shown.map(r => r.code), 'open') + (rows.length > 300 ? `<div class="note">화면에는 300곳까지(${fmtNum(rows.length)}곳 중), 전체는 엑셀 "전체 매장 일자별" 시트.</div>` : '') : '<div class="note">해당 매장이 없습니다.</div>';
+}
+// 슈퍼바이저용 3개 패널: ① 신규 휴무 알림 ② 향후 7일 휴무 예정(팀·AC 선택) ③ 예측 정확도
+function closureSupervisorHtml(c) {
+  const { alerts, bt, nameOf, teamOf, acOf, upcoming, res } = c, DW = DOW_KO;
+  const pill = l => `<span class="pill ${l === '위험' ? 'pill-bad' : l === '경고' ? 'pill-warn' : 'pill-neutral'}">${l}</span>`;
+  const teams = [...new Set(upcoming.map(x => teamOf(x.code)).concat(alerts.map(x => teamOf(x.code))).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ko', { numeric: true }));
+  const acs = [...new Set(upcoming.map(x => acOf(x.code)).concat(alerts.map(x => acOf(x.code))).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ko'));
+  let h = `<h3 style="margin:16px 0 4px; font-size:14px;">슈퍼바이저 확인 목록</h3><div class="toolbar" style="margin:4px 0;"><select id="clvTeam" class="search-input" style="flex:none;" autocomplete="off" onchange="closureSupFilter()"><option value="">전체 팀</option>${teams.map(t => `<option>${esc(t)}</option>`).join('')}</select><select id="clvAc" class="search-input" style="flex:none;" autocomplete="off" onchange="closureSupFilter()"><option value="">전체 담당 AC</option>${acs.map(t => `<option>${esc(t)}</option>`).join('')}</select></div><div id="clvWrap"></div>`;
+  if (bt.length) {
+    const sum = bt.reduce((a, x) => ({ p: a.p + x.pred, t: a.t + x.tp, a: a.a + x.act }), { p: 0, t: 0, a: 0 });
+    h += `<h3 style="margin:16px 0 4px; font-size:14px;">예측 정확도 (최근 ${bt.length}주 백테스트)</h3><div class="note">각 주의 시작 전까지의 자료(56일)만으로 패턴을 만들고 그 주 7일을 예측해 실제와 비교했습니다. <strong>정밀도</strong> = 휴무 예정이라 한 매장 중 실제 휴무 비율, <strong>재현율</strong> = 실제 휴무 매장 중 예정 목록에 있던 비율. 합계: 정밀도 ${sum.p ? (sum.t / sum.p * 100).toFixed(0) : '-'}% · 재현율 ${sum.a ? (sum.t / sum.a * 100).toFixed(0) : '-'}%</div>${tbTable(['예측 구간', '패턴 매장', '예정(예측)', '실제 휴무', '적중', '정밀도', '재현율'], bt.map(x => [`${tbMd(x.from)}~${tbMd(x.to)}`, tbNum(x.patterns), tbNum(x.pred), tbNum(x.act), tbNum(x.tp), x.precision == null ? '-' : (x.precision * 100).toFixed(0) + '%', x.recall == null ? '-' : (x.recall * 100).toFixed(0) + '%']), 1)}<div class="note">재현율이 낮은 것은 정상입니다. 휴무의 상당수가 불규칙(요일 패턴 없음)이라 "예정 목록"은 확실한 일부만 알려주고, 나머지는 위 "신규 휴무 알림"으로 사후에 빠르게 포착합니다.</div>`;
+  }
+  setTimeout(closureSupFilter, 0);
+  return h;
+}
+function closureSupFilter() {
+  if (typeof document === 'undefined') return;
+  const c = closureLast, w = document.getElementById('clvWrap'); if (!c || !w) return;
+  const t = document.getElementById('clvTeam')?.value || '', a = document.getElementById('clvAc')?.value || '', DW = DOW_KO;
+  const ok = code => (!t || c.teamOf(code) === t) && (!a || c.acOf(code) === a);
+  const pill = l => `<span class="pill ${l === '위험' ? 'pill-bad' : l === '경고' ? 'pill-warn' : 'pill-neutral'}">${l}</span>`;
+  const al = c.alerts.filter(x => ok(x.code)), up = c.upcoming.filter(x => ok(x.code));
+  const sevN = l => al.filter(x => x.level === l).length;
+  let h = `<details open><summary style="cursor:pointer;"><strong>신규 휴무 알림 ${al.length}곳</strong> — 평소 꾸준히 영업하던 매장이 ${tbMd(c.E)} 기준 연속 판매 없음 (위험 ${sevN('위험')} · 경고 ${sevN('경고')} · 주의 ${sevN('주의')})</summary>${al.length ? tbTable(['수준', '매장코드', '매장명', '팀', '담당 AC', '연속 무판매(일)', '마지막 판매일', '평소 영업률'], al.slice(0, 300).map(x => [pill(x.level), x.code, esc(c.nameOf(x.code)), esc(c.teamOf(x.code)), esc(c.acOf(x.code)), tbNum(x.streak), x.lastOpen, (x.rate * 100).toFixed(0) + '%']), 5) : '<div class="note">해당 매장이 없습니다.</div>'}</details>`;
+  h += `<details open><summary style="cursor:pointer; margin-top:6px;"><strong>향후 7일 휴무 예정 ${up.length}건</strong> — 매주·격주 패턴 매장 (정밀도는 아래 백테스트 참고)</summary>${up.length ? tbTable(['날짜', '요일', '매장코드', '매장명', '팀', '담당 AC', '유형'], up.slice(0, 400).map(x => [tbMd(x.d), DW[x.w], x.code, esc(c.nameOf(x.code)), esc(c.teamOf(x.code)), esc(c.acOf(x.code)), x.kind]), 7) : '<div class="note">해당 매장이 없습니다.</div>'}${up.length > 400 ? '<div class="note">화면에는 400건까지, 전체는 엑셀.</div>' : ''}</details>`;
+  w.innerHTML = h;
 }
 function closureRender(c) {
   const { res, selfPos, noAct, nameOf, teamOf, fc } = c, DW = DOW_KO;
@@ -8054,11 +8152,14 @@ function closureRender(c) {
   html += `<h3 style="margin:14px 0 4px; font-size:14px;">요일별 영업 비율(판매 기록 있는 매장 기준)</h3>${tbTable(['요일', '평균 영업 비율', '평균 휴무 매장 수', '매주 휴무(패턴)', '격주 휴무(패턴)'], dowRows)}`;
   html += `<div class="note">연휴 등 전체 휴무일로 보고 패턴 계산에서 뺀 날: ${res.mass.length ? res.mass.map(tbMd).join(', ') : '없음'}</div>`;
   html += `<h3 style="margin:14px 0 4px; font-size:14px;">앞으로 7일 패턴상 휴무 예상 매장 수(매주·격주만)</h3>${tbTable(['날짜', '요일', '예상 휴무 매장'], fc.map(x => [tbMd(x.d), DW[x.w], tbNum(x.n)]), 2)}`;
+  html += closureSupervisorHtml(c);
   const desc = p => [...p.weekly.map(w => `매주 ${DW[w]}`), ...p.biweekly.map(b => `격주 ${DW[b.w]}`), ...(p.type === '불규칙' ? [`불규칙 ${p.extra.length}일`] : [])].join(', ');
   html += `<details open><summary style="cursor:pointer; margin-top:10px;">휴무 패턴 매장 ${res.patterns.length}곳 (상위 80곳 표시, 전체는 엑셀)</summary>${tbTable(['매장코드', '매장명', '팀', '유형', '휴무 내용', '최근 휴무일(최대 6)'], res.patterns.slice().sort((a, b) => a.type.localeCompare(b.type) || a.code.localeCompare(b.code)).slice(0, 80).map(p => [p.code, esc(nameOf(p.code)), esc(teamOf(p.code)), p.type, esc(desc(p)), p.extra.slice(-6).map(tbMd).join(', ') || '-']), 6)}</details>`;
   html += `<details><summary style="cursor:pointer;">자체POS ${selfPos.length}곳 — 입고는 있고 POS 판매 기록이 없는 가맹점(권장 발주·판매 분석에서 제외 대상)</summary>${tbTable(['매장코드', '매장명', '팀'], selfPos.slice(0, 200).map(x => [x, esc(nameOf(x)), esc(teamOf(x))]), 3)}</details>`;
   html += `<details><summary style="cursor:pointer;">판매·입고 모두 없음 ${noAct.length}곳 — 가맹점현황에만 있는 매장(휴업·폐점·신규 후보)</summary>${tbTable(['매장코드', '매장명', '팀'], noAct.slice(0, 200).map(x => [x, esc(nameOf(x)), esc(teamOf(x))]), 3)}</details>`;
   html += `<details><summary style="cursor:pointer;">장기 미판매 ${res.longIdle.length}곳</summary>${tbTable(['매장코드', '매장명', '마지막 판매일', '이후 POS 자료일'], res.longIdle.slice(0, 200).map(x => [x.code, esc(nameOf(x.code)), x.lastOpen, tbNum(x.days)]), 3)}</details>`;
+  { const dc = closureDailyCounts(c);
+    html += `<h3 style="margin:14px 0 4px; font-size:14px;">날짜별 영업·휴무 매장 수 (직영 제외, POS 판매 기록 있는 가맹점)</h3><div class="note">휴무 매장 = 그날 판매가 없었던 매장(첫 판매일 이전 신규는 제외). 요일 패턴으로 잡힌 매장(매주·격주)은 일부일 뿐이고, 일회성·불규칙 휴무와 장기 미판매가 함께 포함됩니다.</div>${tbTable(['날짜', '요일', '영업', '휴무 합계', '매주·격주 패턴', '불규칙 패턴', '휴무 소수', '장기 미판매'], dc.map(x => [tbMd(x.d), DOW_KO[x.w], tbNum(x.open), tbNum(x.closed), tbNum(x['매주·격주']), tbNum(x['불규칙']), tbNum(x['휴무 소수']), tbNum(x['장기 미판매'])]), 2)}`; }
   { const all = closureAllRows(c), cnt = {}; all.forEach(r => { cnt[r.kind.startsWith('휴무 패턴') ? '휴무 패턴' : r.kind] = (cnt[r.kind.startsWith('휴무 패턴') ? '휴무 패턴' : r.kind] || 0) + 1; });
     const noInfo = all.filter(r => !r.inInfo).length;
     html += `<h3 style="margin:16px 0 4px; font-size:14px;">전체 가맹점 일자별 (열 = 날짜)</h3><div class="note">대상 ${fmtNum(all.length)}곳 = 가맹점현황 가맹점 ${fmtNum(all.length - noInfo)}곳 + POS 판매는 있으나 가맹점현황에 없는 ${fmtNum(noInfo)}곳 (직영점 제외) · ${Object.entries(cnt).map(([k, v]) => `${k} ${fmtNum(v)}`).join(' · ')}</div>
@@ -8078,6 +8179,9 @@ function downloadClosures() {
   const desc = p => [...p.weekly.map(w => `매주 ${DW[w]}`), ...p.biweekly.map(b => `격주 ${DW[b.w]}`), ...(p.type === '불규칙' ? [`불규칙 ${p.extra.length}일`] : [])].join(', ');
   const wb = XLSX.utils.book_new();
   const add = (n, rows) => XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), n);
+  add('신규 휴무 알림', [['수준', '매장코드', '매장명', '팀', '담당 AC', '연속 무판매(일)', '마지막 판매일', '평소 영업률'], ...closureLast.alerts.map(x => [x.level, x.code, nameOf(x.code), teamOf(x.code), ac(x.code), x.streak, x.lastOpen, Math.round(x.rate * 100) + '%'])]);
+  add('향후7일 휴무 예정', [['날짜', '요일', '매장코드', '매장명', '팀', '담당 AC', '유형'], ...closureLast.upcoming.map(x => [x.d, DW[x.w], x.code, nameOf(x.code), teamOf(x.code), ac(x.code), x.kind])]);
+  add('예측 정확도', [['예측 구간', '기준일(자료 마감)', '패턴 매장', '예정(예측)', '실제 휴무', '적중', '정밀도', '재현율'], ...closureLast.bt.map(x => [`${x.from}~${x.to}`, x.cut, x.patterns, x.pred, x.act, x.tp, x.precision == null ? '' : Math.round(x.precision * 100) + '%', x.recall == null ? '' : Math.round(x.recall * 100) + '%'])]);
   { // 최근 휴무일을 한 칸에 이어 쓰지 않고, 기간의 날짜를 열로 펼쳐 휴무인 날에 "휴무"를 표시한다
     const cd = closureLast.calDays, sd = new Set(closureLast.salesDays), op = closureLast.opens;
     add('휴무 패턴 매장', [['매장코드', '매장명', '팀', '담당 AC', '유형', '휴무 내용', '마지막 판매일', '휴무일수', ...cd], ...res.patterns.map(p => { const r = cd.map(d => (sd.has(d) && !op.get(p.code)?.has(d) ? '휴무' : '')); return [p.code, nameOf(p.code), teamOf(p.code), ac(p.code), p.type, desc(p), p.lastOpen, r.filter(Boolean).length, ...r]; })]);
@@ -8097,6 +8201,7 @@ function downloadClosures() {
     });
     add('전체 매장 일자별', [['매장코드', '매장명', '팀', '담당 AC', '가맹점현황', '구분', '유형', '휴무 내용', '휴무일수', ...cd], ...rows]);
     wb.SheetNames.unshift(wb.SheetNames.pop()); }
+  { const dc = closureDailyCounts(closureLast); add('날짜별 휴무 매장 수', [['날짜', '요일', '영업', '휴무 합계', '매주·격주 패턴', '불규칙 패턴', '휴무 소수', '장기 미판매'], ...dc.map(x => [x.d, DOW_KO[x.w], x.open, x.closed, x['매주·격주'], x['불규칙'], x['휴무 소수'], x['장기 미판매']])]); }
   add('다음 7일 예상 휴무', [['날짜', '요일', '예상 휴무 매장 수'], ...fc.map(x => [x.d, DW[x.w], x.n])]);
   XLSX.writeFile(wb, `매장_휴무패턴_${closureLast.from}_${E}.xlsx`);
 }
