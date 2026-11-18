@@ -209,7 +209,7 @@
     <button class="tab-btn" data-tab="extract">⑤ 데이터 추출</button>
     <button class="tab-btn" data-tab="promo">⑥ 프로모션</button>
     <button class="tab-btn" data-tab="trend">⑦ 트렌드 브리핑</button>
-    <button class="tab-btn" data-tab="pizza">⑧ 피자 판매현황</button>
+    <button class="tab-btn" data-tab="storeinfo">⑧ 가맹점 현황</button>
   </div>
 
   <!-- ===================== TAB 1: 기준코드 관리 ===================== -->
@@ -404,7 +404,7 @@
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" id="stockCard" style="display:none;"><!-- 비노출: 되살리려면 style="display:none;" 삭제 -->
       <h2>재고 현황</h2>
       <div class="card-sub">배송일자별 입고와 일별 판매(판매수량×보정값)를 날짜순으로 따라가며 재고를 추정합니다. 배송받은 날부터 판매 가능하다고 보고, 재고가 0 아래로 내려가는 순간은 "입고로 설명 안 되는 판매"로 따로 쌓은 뒤 0부터 다시 셉니다 — 기초재고를 몰라도 시간이 지나면 추정 재고가 실제에 수렴합니다.</div>
       <div class="toolbar">
@@ -518,46 +518,6 @@
   <!-- ===================== TAB 5: 데이터 추출 ===================== -->
   <section class="panel" id="panel-extract">
     <div class="card">
-      <h2>가맹점현황</h2>
-      <div class="card-sub">매장코드(E코드) → 매장명/팀 매핑표입니다. <strong>월별로 따로 보관</strong>합니다 — 적용 월을 고르고 그 달 매장운영현황을 올리세요. 추출할 때는 기간에 해당하는 달의 현황을 씁니다(그 달 현황이 없으면 가장 가까운 이전 달 현황). 가장 최근 달 현황은 권장 발주·재고 화면의 "가맹점현황 매장" 기준으로도 쓰입니다.</div>
-      <div class="toolbar" style="gap:8px; margin-top:10px; flex-wrap:wrap;">
-        <label style="font-size:13px;">적용 월 <input type="month" id="storeInfoMonth" class="search-input" style="flex:none; width:150px;"></label>
-        <label style="font-size:13px;" title="이 날짜부터 새 팀·담당자가 적용된 것으로 기록합니다">적용일 <input type="date" id="storeInfoEffective" class="search-input" style="flex:none; width:150px;"></label>
-        <label style="font-size:13px;">입력자(선택) <input type="text" id="storeInfoWho" class="search-input" style="flex:none; width:110px;" placeholder="예: Ethan"></label>
-        <span class="note" id="storeInfoMonths"></span>
-      </div>
-      <details style="margin-top:8px;"><summary style="cursor:pointer; font-size:13px;">매장 묶음(보조 코드 → 대표 매장) — 추출 때 보조 코드 판매를 대표 매장 행에 합치고 B열에 표시</summary>
-        <div class="note">매장운영현황의 피자점포코드(예: E01824 한남대점 ↔ D00050)는 자동으로 묶입니다. 그 외 묶음은 한 줄에 "보조코드 대표코드"로 적고 저장하세요(예: E10322 E10300).</div>
-        <textarea id="storeAliasText" style="width:100%; height:80px; font-family:monospace; font-size:12px;"></textarea>
-        <button class="btn btn-primary btn-sm" onclick="saveStoreAliases()">묶음 저장</button> <span id="storeAliasStatus"></span>
-      </details>
-      <details style="margin-top:8px;"><summary style="cursor:pointer; font-size:13px;">제외 매장(테스트용·교육장) — 업로드·집계·조회에서 모두 뺍니다</summary>
-        <div class="note">한 줄에 "코드 매장명"(코드만, 매장명만 적어도 됨). 일별 대조(합본·이상 항목 포함), 재분류, 발주(입고) 원장, 판매 소진, 분류 수량, 채널 합본, 모든 추출에서 빠집니다.</div>
-        <textarea id="excludedStoreText" style="width:100%; height:110px; font-family:monospace; font-size:12px;"></textarea>
-        <button class="btn btn-primary btn-sm" onclick="saveExcludedStores()">제외 매장 저장</button> <span id="excludedStoreStatus"></span>
-      </details>
-      <div class="drop-zone" id="storeInfoDropZone" style="margin-top:12px;">
-        <div class="dz-icon">🏬</div>
-        <div class="dz-text">매장운영현황 엑셀(맘스터치매장정보rawdata 시트)을 여기로 드래그하거나 클릭</div>
-        <div class="dz-hint">E점포코드 · 피자점포코드 · 매장명 · 가맹그룹 · 팀 · 담당 AC 사용 (예전 가맹점현황 양식도 가능) · 첫 번째 시트를 읽습니다</div>
-      </div>
-      <input type="file" id="storeInfoFileInput" accept=".xlsx,.xls,.xlsb">
-      <div id="storeInfoStatus" class="status-line" style="margin-top:10px;"></div>
-    </div>
-
-    <div class="card">
-      <h2>매장운영현황 변경 이력 (팀·담당자·그룹 등)</h2>
-      <div class="card-sub">매장운영현황을 올릴 때마다 <strong>직전 현황과 비교</strong>해서 바뀐 항목(팀, 담당 AC, 가맹그룹, 매장명, 피자 런칭일, 신규·제외 매장)을 적용일과 함께 기록합니다. ⑧ 피자 판매현황은 <strong>일자 기준으로 그때의 팀·담당자</strong>를 보여줍니다. (적용일 = 위 "적용일", 비우면 업로드한 날)</div>
-      <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:8px;">
-        <input type="text" id="siLogSearch" class="search-input" placeholder="매장명·코드·담당자 검색" oninput="renderStoreInfoLog()" style="flex:1 1 200px;">
-        <select id="siLogField" autocomplete="off" class="search-input" style="flex:none;" onchange="renderStoreInfoLog()"><option value="">전체 항목</option><option>팀</option><option>담당 AC</option><option>가맹그룹</option><option>매장명</option><option>피자 런칭일</option><option>신규</option><option>제외</option></select>
-        <button class="btn btn-ghost btn-sm" onclick="renderStoreInfoLog(true)">이력 불러오기</button>
-        <button class="btn btn-ghost btn-sm" onclick="downloadStoreInfoLog()">엑셀 다운로드</button>
-      </div>
-      <div id="siLogWrap" style="margin-top:8px;"><div class="note">"이력 불러오기"를 누르세요.</div></div>
-    </div>
-
-    <div class="card">
       <h2>매장별 일자별 데이터 추출</h2>
       <div class="card-sub">저장된 일별 대조 이력에서, 분류(버거/치킨/피자/비프)별 매장×날짜 판매수량(판매수량 × 보정값 — 예: "싸이버거 3개" 2건 = 6개)을 지금 쓰시는 엑셀과 같은 레이아웃(행=매장, 열=날짜)으로 뽑아드립니다. 원본 파일을 다시 올릴 필요 없이, 이미 저장된 데이터에서 바로 만듭니다.</div>
       <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-top:10px;">
@@ -610,6 +570,20 @@
       <button class="btn btn-primary btn-sm" style="margin-top:8px;" onclick="downloadDailySold()">📥 일자별 판매 추출</button>
       <div class="status-line" id="soldExStatus" style="margin-top:8px;"></div>
     </div>
+
+    <!-- 피자 판매현황 추출 (예전 ⑧ 탭에서 이동) -->
+    <div class="card">
+      <h2>피자 판매현황 추출 (가맹점 기준)</h2>
+      <div class="card-sub">저장된 <strong>일별 대조</strong> 수량으로 피자 판매를 추적합니다. <strong>취급점</strong>은 매장운영현황 G열 "피자 여부(런칭일)"가 있고 런칭일이 지난 매장, 구분은 J열 가맹그룹(<strong>가맹1·2그룹 → 가맹점</strong>, <strong>직영사업그룹 → 직영팀</strong>)입니다. 피자 수량은 분류 "피자"만이고 <strong>조각피자는 제외</strong>합니다(싱글 = 싱글피자, 홀피자 = 피자 − 싱글). 런칭일은 월별 가맹점현황을 올릴 때 함께 저장되니, 새 매장운영현황 엑셀을 한 번 올려주세요.</div>
+      <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:8px;">
+        <label style="font-size:13px;">기간 <input type="date" id="pzStart" class="search-input" style="flex:none;"> ~ <input type="date" id="pzEnd" class="search-input" style="flex:none;"></label>
+        <button class="btn btn-primary btn-sm" onclick="makePizzaTracking()">현황 만들기</button>
+        <button class="btn btn-ghost btn-sm" onclick="downloadPizzaTracking()">엑셀 다운로드</button>
+      </div>
+      <div class="status-line" id="pzStatus" style="margin:8px 0;"></div>
+    </div>
+    <div id="pzWrap"></div>
+
 </section>
 
   <!-- ===================== TAB 6: 프로모션 ===================== -->
@@ -667,18 +641,49 @@
   </section>
 
 
-  <section class="panel" id="panel-pizza">
+
+  <!-- ===================== TAB 8: 가맹점 현황 (매장운영현황 입력·변경 이력) ===================== -->
+  <section class="panel" id="panel-storeinfo">
     <div class="card">
-      <h2>피자 판매현황 (가맹점 기준)</h2>
-      <div class="card-sub">저장된 <strong>일별 대조</strong> 수량으로 피자 판매를 추적합니다. <strong>취급점</strong>은 매장운영현황 G열 "피자 여부(런칭일)"가 있고 런칭일이 지난 매장, 구분은 J열 가맹그룹(<strong>가맹1·2그룹 → 가맹점</strong>, <strong>직영사업그룹 → 직영팀</strong>)입니다. 피자 수량은 분류 "피자"만이고 <strong>조각피자는 제외</strong>합니다(싱글 = 싱글피자, 홀피자 = 피자 − 싱글). 런칭일은 월별 가맹점현황을 올릴 때 함께 저장되니, 새 매장운영현황 엑셀을 한 번 올려주세요.</div>
-      <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:8px;">
-        <label style="font-size:13px;">기간 <input type="date" id="pzStart" class="search-input" style="flex:none;"> ~ <input type="date" id="pzEnd" class="search-input" style="flex:none;"></label>
-        <button class="btn btn-primary btn-sm" onclick="makePizzaTracking()">현황 만들기</button>
-        <button class="btn btn-ghost btn-sm" onclick="downloadPizzaTracking()">엑셀 다운로드</button>
+      <h2>가맹점현황</h2>
+      <div class="card-sub">매장코드(E코드) → 매장명/팀 매핑표입니다. <strong>월별로 따로 보관</strong>합니다 — 적용 월을 고르고 그 달 매장운영현황을 올리세요. 추출할 때는 기간에 해당하는 달의 현황을 씁니다(그 달 현황이 없으면 가장 가까운 이전 달 현황). 가장 최근 달 현황은 권장 발주·재고 화면의 "가맹점현황 매장" 기준으로도 쓰입니다.</div>
+      <div class="toolbar" style="gap:8px; margin-top:10px; flex-wrap:wrap;">
+        <label style="font-size:13px;">적용 월 <input type="month" id="storeInfoMonth" class="search-input" style="flex:none; width:150px;"></label>
+        <label style="font-size:13px;" title="이 날짜부터 새 팀·담당자가 적용된 것으로 기록합니다">적용일 <input type="date" id="storeInfoEffective" class="search-input" style="flex:none; width:150px;"></label>
+        <label style="font-size:13px;">입력자(선택) <input type="text" id="storeInfoWho" class="search-input" style="flex:none; width:110px;" placeholder="예: Ethan"></label>
+        <span class="note" id="storeInfoMonths"></span>
       </div>
-      <div class="status-line" id="pzStatus" style="margin:8px 0;"></div>
+      <details style="margin-top:8px;"><summary style="cursor:pointer; font-size:13px;">매장 묶음(보조 코드 → 대표 매장) — 추출 때 보조 코드 판매를 대표 매장 행에 합치고 B열에 표시</summary>
+        <div class="note">매장운영현황의 피자점포코드(예: E01824 한남대점 ↔ D00050)는 자동으로 묶입니다. 그 외 묶음은 한 줄에 "보조코드 대표코드"로 적고 저장하세요(예: E10322 E10300).</div>
+        <textarea id="storeAliasText" style="width:100%; height:80px; font-family:monospace; font-size:12px;"></textarea>
+        <button class="btn btn-primary btn-sm" onclick="saveStoreAliases()">묶음 저장</button> <span id="storeAliasStatus"></span>
+      </details>
+      <details style="margin-top:8px;"><summary style="cursor:pointer; font-size:13px;">제외 매장(테스트용·교육장) — 업로드·집계·조회에서 모두 뺍니다</summary>
+        <div class="note">한 줄에 "코드 매장명"(코드만, 매장명만 적어도 됨). 일별 대조(합본·이상 항목 포함), 재분류, 발주(입고) 원장, 판매 소진, 분류 수량, 채널 합본, 모든 추출에서 빠집니다.</div>
+        <textarea id="excludedStoreText" style="width:100%; height:110px; font-family:monospace; font-size:12px;"></textarea>
+        <button class="btn btn-primary btn-sm" onclick="saveExcludedStores()">제외 매장 저장</button> <span id="excludedStoreStatus"></span>
+      </details>
+      <div class="drop-zone" id="storeInfoDropZone" style="margin-top:12px;">
+        <div class="dz-icon">🏬</div>
+        <div class="dz-text">매장운영현황 엑셀(맘스터치매장정보rawdata 시트)을 여기로 드래그하거나 클릭</div>
+        <div class="dz-hint">E점포코드 · 피자점포코드 · 매장명 · 가맹그룹 · 팀 · 담당 AC 사용 (예전 가맹점현황 양식도 가능) · 첫 번째 시트를 읽습니다</div>
+      </div>
+      <input type="file" id="storeInfoFileInput" accept=".xlsx,.xls,.xlsb">
+      <div id="storeInfoStatus" class="status-line" style="margin-top:10px;"></div>
     </div>
-    <div id="pzWrap"></div>
+
+    <div class="card">
+      <h2>매장운영현황 변경 이력 (팀·담당자·그룹 등)</h2>
+      <div class="card-sub">매장운영현황을 올릴 때마다 <strong>직전 현황과 비교</strong>해서 바뀐 항목(팀, 담당 AC, 가맹그룹, 매장명, 피자 런칭일, 신규·제외 매장)을 적용일과 함께 기록합니다. ⑤ 데이터 추출의 피자 판매현황은 <strong>일자 기준으로 그때의 팀·담당자</strong>를 보여줍니다. (적용일 = 위 "적용일", 비우면 업로드한 날)</div>
+      <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:8px;">
+        <input type="text" id="siLogSearch" class="search-input" placeholder="매장명·코드·담당자 검색" oninput="renderStoreInfoLog()" style="flex:1 1 200px;">
+        <select id="siLogField" autocomplete="off" class="search-input" style="flex:none;" onchange="renderStoreInfoLog()"><option value="">전체 항목</option><option>팀</option><option>담당 AC</option><option>가맹그룹</option><option>매장명</option><option>피자 런칭일</option><option>신규</option><option>제외</option></select>
+        <button class="btn btn-ghost btn-sm" onclick="renderStoreInfoLog(true)">이력 불러오기</button>
+        <button class="btn btn-ghost btn-sm" onclick="downloadStoreInfoLog()">엑셀 다운로드</button>
+      </div>
+      <div id="siLogWrap" style="margin-top:8px;"><div class="note">"이력 불러오기"를 누르세요.</div></div>
+    </div>
+
   </section>
 
   <div class="footer-note">POS 엑셀 합치기 툴의 결과 파일과 함께 사용하도록 설계되었습니다.</div>
@@ -998,7 +1003,8 @@ function unwrapDoc(data) {
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     if (btn.dataset.tab === 'trend') setTimeout(() => { try { initTrendTab(); } catch (e) { /* 아직 준비 전 */ } }, 0);
-    if (btn.dataset.tab === 'pizza') setTimeout(() => { try { initPizzaTab(); } catch (e) { /* 아직 준비 전 */ } }, 0);
+    if (btn.dataset.tab === 'extract') setTimeout(() => { try { initPizzaTab(); } catch (e) { /* 아직 준비 전 */ } }, 0);
+    if (btn.dataset.tab === 'storeinfo') setTimeout(() => { try { renderStoreInfoLog(); } catch (e) { /* 아직 준비 전 */ } }, 0);
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
@@ -1975,7 +1981,7 @@ const dsMk = () => ({ rev: 0, bySales: {}, byCat: {}, items: {}, stores: new Set
 const dsFin = o => ({ rev: Math.round(o.rev), stores: o.stores.size, bySales: dsR0(o.bySales), byCat: dsR1(o.byCat), items: dsR1(o.items) });
 // 직영 집합이 있으면 v2(합계 + direct 분리분), 없으면 v1(합계만). 트렌드 브리핑은 합계 − direct로 가맹점 기준 값을 만든다.
 function dsDone(date, T, Dd, pzRev) { const o = Dd ? { v: 2, date, ...dsFin(T), direct: dsFin(Dd) } : { v: 1, date, ...dsFin(T) }; if (pzRev) Object.defineProperty(o, 'pzRev', { value: pzRev, enumerable: false }); return o; }
-// 매장별 [총매출, 피자매출(매출분류 "피자")] — ⑧ 피자 판매현황의 P.mix(= 피자매출 ÷ 총매출)용. 금액은 부가세 포함 그대로, 계산할 때 ÷1.1.
+// 매장별 [총매출, 피자매출(매출분류 "피자")] — ⑤ 피자 판매현황의 P.mix(= 피자매출 ÷ 총매출)용. 금액은 부가세 포함 그대로, 계산할 때 ÷1.1.
 function pzRevAdd(m, store, rev, sc) { if (!store || !rev) return; const a = m[store] || (m[store] = [0, 0, 0]); a[0] += rev; if (sc === '피자') a[1] += rev; else if (sc === '조각피자') a[2] += rev; }
 function buildDaySum(date, items, catEntries, consEntries, directSet) {
   const dset = directSet && directSet.size ? directSet : null, T = dsMk(), Dd = dset ? dsMk() : null, PZ = {};
@@ -2047,7 +2053,7 @@ async function backfillDaySums(maxDays = 70) {
   st.innerHTML = '<span class="pill pill-neutral">저장된 요약 확인 중...</span>';
   await loadDaySums(dates);
   const dir = await ensureDirectCodes();
-  if (!dir.size) { st.innerHTML = '<span class="pill pill-warn">직영점을 판별할 가맹점현황이 없습니다 — ⑤ 탭에서 매장운영현황을 먼저 올려주세요(직영사업그룹·직영팀 기준).</span>'; return; }
+  if (!dir.size) { st.innerHTML = '<span class="pill pill-warn">직영점을 판별할 가맹점현황이 없습니다 — ⑧ 가맹점 현황 탭에서 매장운영현황을 먼저 올려주세요(직영사업그룹·직영팀 기준).</span>'; return; }
   // 없는 날짜 + 직영 제외 형식(v2)이 아닌 예전 요약(v1)은 다시 만든다
   const pzMiss = await pzMissingDates(dates);
   const todo = dates.filter(d => !daySumCache[d] || !(daySumCache[d].v >= 2) || pzMiss.has(d)).reverse(); // 최근 날짜부터
@@ -4132,7 +4138,7 @@ function renderStoreInfoStatus() {
 // 둘 다 있어서 이름만으론 완전히 안전하진 않지만, 실제로는 "코드"라는 이름이 아니라
 // "E코드"/"D코드"로 구분되어 있어 문제없다).
 // ── 제외 매장(테스트용·교육장): 업로드·집계·조회 어디서나 빼는 매장 ───────────────────────
-// 기본 5곳 + ⑤ 탭 "제외 매장"에서 추가·삭제(meta:excludedStores에 저장). 코드(6자리 숫자는 앞자리 0 보정)나
+// 기본 5곳 + ⑧ 탭 "제외 매장"에서 추가·삭제(meta:excludedStores에 저장). 코드(6자리 숫자는 앞자리 0 보정)나
 // 매장명(공백 무시)이 같으면 제외한다. 일별 대조·재분류·발주(입고) 원장·판매 소진 원장·분류 수량·채널 합본·추출 모두 해당.
 const DEFAULT_EXCLUDED_STORES = [
   { code: '000008', name: '마케팅전용매장' },
@@ -4484,7 +4490,7 @@ async function downloadCategoryExtract() {
 // - merge 저장이라 같은 날짜를 다시 올리면 그 날짜 값만 덮어씀(읽기 없이 빠름)
 // - 재고 화면은 선택한 매장의 문서만 읽음(보통 1~3개)
 const LEDGER_RECV = 'recv_m', LEDGER_SOLD = 'sold_m';
-// 가맹점현황(⑤ 탭에서 등록)에 있는 매장만 운영 매장으로 본다 — 폐점((폐)…), 교육장·마케팅
+// 가맹점현황(⑧ 탭에서 등록)에 있는 매장만 운영 매장으로 본다 — 폐점((폐)…), 교육장·마케팅
 // 전용 매장, 내부 직영 계정 등은 판매·입고 원장에 남아 있어도 권장발주·회차 현황에서 뺀다.
 // 가맹점현황이 아직 등록되지 않았으면(빈 목록) 거르지 않는다.
 function isActiveStore(code) { if (isTestStore(code)) return false; return !Object.keys(storeInfoMap).length || !!storeInfoMap[code]; }
@@ -8496,7 +8502,7 @@ async function downloadStoreInfoLog() {
 }
 
 // ==========================================================================
-// ⑧ 피자 판매현황 — 저장된 일별 대조(catqty)로 가맹점 기준 피자 판매를 추적한다.
+// ⑤ 피자 판매현황 — 저장된 일별 대조(catqty)로 가맹점 기준 피자 판매를 추적한다.
 //   · 취급점 = 매장운영현황 G열 "피자 여부(런칭일)"가 있고 런칭일 ≤ 해당 일자인 매장
 //   · 가맹점/직영팀 = J열 가맹그룹(가맹1·2그룹 → 가맹점, 직영사업그룹 → 직영팀)
 //   · 피자 수량 = 분류 "피자"만(조각피자는 별도 분류라 제외). 싱글 = 세부구분1 "싱글피자", 홀피자 = 피자 − 싱글
@@ -8577,7 +8583,7 @@ async function makePizzaTracking() {
   st.innerHTML = '<span class="pill pill-neutral">저장된 일별 대조 읽는 중...</span>'; wrap.innerHTML = '';
   try {
     const info = await storeInfoForRange(start, end);
-    if (!info.order.length) throw new Error('가맹점현황(매장운영현황)이 없습니다. ⑤ 데이터 추출 탭에서 먼저 올려주세요.');
+    if (!info.order.length) throw new Error('가맹점현황(매장운영현황)이 없습니다. ⑧ 가맹점 현황 탭에서 먼저 올려주세요.');
     const { dates, byDate } = await loadCategoryQtyForRange(start, end);
     const have = dates.filter(d => byDate[d] && byDate[d].length).sort();
     if (!have.length) throw new Error('이 기간에 저장된 일별 대조가 없습니다.');
@@ -8598,7 +8604,7 @@ async function makePizzaTracking() {
     pizzaLast = { c, start, end };
     const anyLaunch = Object.values(info.map).some(v => v.pizzaLaunch);
     let html = '';
-    if (!anyLaunch) html += '<div class="card"><span class="pill pill-bad">피자 런칭일 없음</span> 올려둔 가맹점현황에 G열 "피자 여부(런칭일)"가 없습니다. 새 매장운영현황 엑셀을 ⑤ 탭 "가맹점현황"에 다시 올려주세요(월 선택 후 저장).</div>';
+    if (!anyLaunch) html += '<div class="card"><span class="pill pill-bad">피자 런칭일 없음</span> 올려둔 가맹점현황에 G열 "피자 여부(런칭일)"가 없습니다. 새 매장운영현황 엑셀을 ⑧ 가맹점 현황 탭에 다시 올려주세요(월 선택 후 저장).</div>';
     PZ_SEGS.forEach(seg => { html += pzSegCard(c, seg); });
     [false, true].forEach(only => { const t = pzTypeView(c, '가맹점', only); if (c.rows.some(r => r.seg === '가맹점' && !!r.only === only)) html += pzSegCard(t.view, t.label); });
     PZ_SEGS.forEach(seg => { html += pzStoreCard(c, seg); });
