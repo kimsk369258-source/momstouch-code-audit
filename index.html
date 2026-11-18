@@ -8090,11 +8090,12 @@ function downloadClosures() {
     add('휴무 일자별', [['매장코드', '매장명', '팀', '담당 AC', '유형', '휴무일수', ...cd], ...res.patterns.map(p => { const r = o(p.code); return [p.code, name(p.code), teamOf(p.code), ac(p.code), p.type, r.filter(x => x === '휴무').length, ...r]; }), ...res.longIdle.map(x => { const r = o(x.code); return [x.code, name(x.code), teamOf(x.code), ac(x.code), '장기 미판매', r.filter(v => v === '휴무').length, ...r]; })]);
     add('자체POS 입고 일자별', [['매장코드', '매장명', '팀', '담당 AC', '입고일수', ...cd], ...selfPos.map(c => { const r = cd.map(d => (rv.get(c)?.has(d) ? '입고' : '')); return [c, name(c), teamOf(c), ac(c), r.filter(Boolean).length, ...r]; })]); }
   { // 전체 가맹점(가맹점현황 ∪ POS 판매, 직영 제외)을 구분과 함께 일자별로 — 맨 앞 시트
-    const cd = closureLast.calDays, sd = new Set(closureLast.salesDays), op = closureLast.opens, rows = closureAllRows(closureLast).map(r => {
+    const cd = closureLast.calDays, sd = new Set(closureLast.salesDays), op = closureLast.opens, patBy = new Map(res.patterns.map(p => [p.code, p])), rows = closureAllRows(closureLast).map(r => {
       const r2 = op.has(r.code) ? cd.map(d => (sd.has(d) ? (op.get(r.code).has(d) ? '영업' : '휴무') : '')) : cd.map(() => '');
-      return [r.code, nameOf(r.code), teamOf(r.code), ac(r.code), r.inInfo ? '있음' : '없음', r.kind, op.has(r.code) ? r2.filter(x => x === '휴무').length : '', ...r2];
+      const pt = patBy.get(r.code);
+      return [r.code, nameOf(r.code), teamOf(r.code), ac(r.code), r.inInfo ? '있음' : '없음', r.kind, pt ? pt.type : '', pt ? desc(pt) : '', op.has(r.code) ? r2.filter(x => x === '휴무').length : '', ...r2];
     });
-    add('전체 매장 일자별', [['매장코드', '매장명', '팀', '담당 AC', '가맹점현황', '구분', '휴무일수', ...cd], ...rows]);
+    add('전체 매장 일자별', [['매장코드', '매장명', '팀', '담당 AC', '가맹점현황', '구분', '유형', '휴무 내용', '휴무일수', ...cd], ...rows]);
     wb.SheetNames.unshift(wb.SheetNames.pop()); }
   add('다음 7일 예상 휴무', [['날짜', '요일', '예상 휴무 매장 수'], ...fc.map(x => [x.d, DW[x.w], x.n])]);
   XLSX.writeFile(wb, `매장_휴무패턴_${closureLast.from}_${E}.xlsx`);
