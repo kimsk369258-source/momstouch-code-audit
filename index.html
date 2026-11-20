@@ -4460,7 +4460,7 @@ function extractOptionLists() {
 function extractPickBuild(pre) {
   const box = document.getElementById(pre + 'Pick'); if (!box) return;
   const was = new Set([...box.querySelectorAll('input[data-ex]:checked')].map(i => i.dataset.label));
-  const cats = extractOptionLists(), names = [...cats.keys()].sort((a, b) => a.localeCompare(b, 'ko'));
+  const cats = extractOptionLists(), names = [...cats.keys()].sort((a, b) => { const o = ['버거', '치킨', '비프', '피자', '조각피자', '스파쿨', '모닝'], ia = o.indexOf(a), ib = o.indexOf(b); return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b, 'ko'); });
   const items = []; let catHtml = '', detHtml = '';
   const mk = (cat, detail, text, label) => {
     const i = items.length; items.push({ cat, detail, label });
