@@ -4421,20 +4421,25 @@ const EX_PICK = { catEx: [], chanEx: [] };
 const EX_MAX_ITEMS = { catEx: 20, chanEx: 10 };
 const EX_MAX_SHEETS = { catEx: 80, chanEx: 150 }; // 중분류 시트까지 합친 최대 시트 수 // 시트 수 = 항목 수 (채널별은 항목 × 3)
 // 기준표가 비어 있어도 저장된 판매 데이터(최근 날짜)에서 분류/세부구분1 목록을 수집
-const EX_DATA_OPTS = new Map(); let exDataOptsLoading = false;
+const EX_DATA_OPTS = new Map(), EX_DATA_STATE = { done: false }; let exDataOptsLoading = false;
 async function extractLoadDataOptions() {
   if (exDataOptsLoading) return; exDataOptsLoading = true;
   try {
-    const keys = dailyIndex.map(d => d.date).filter(dt => !isMonthKey(dt)).sort().slice(-3);
-    if (!keys.length) return;
-    const { byDate } = await loadCategoryQtyForRange(null, null, keys);
-    let n = 0;
-    Object.values(byDate).forEach(list => (list || []).forEach(e => {
-      const c = String(e.cat || '').trim(); if (!c || c === '제외') return;
-      const d = String(e.detail1 || '').trim(); let st = EX_DATA_OPTS.get(c); if (!st) EX_DATA_OPTS.set(c, st = new Set());
-      const v = d && d !== '제외' ? d : EX_NO_DETAIL; if (!st.has(v)) { st.add(v); n++; }
-    }));
-    if (n) { extractPickBuild('catEx'); extractPickBuild('chanEx'); }
+    const all = dailyIndex.map(d => d.date).filter(dt => !isMonthKey(dt)).sort();
+    if (!all.length) { EX_DATA_STATE.done = true; extractPickBuild('catEx'); extractPickBuild('chanEx'); return; }
+    // 가장 최근 날짜 1일치로 먼저 빠르게 채우고, 이어서 이전 2일치로 보강
+    for (const keys of [all.slice(-1), all.slice(-3, -1)]) {
+      if (!keys.length) continue;
+      const { byDate } = await loadCategoryQtyForRange(null, null, keys);
+      let n = 0;
+      Object.values(byDate).forEach(list => (list || []).forEach(e => {
+        const c = String(e.cat || '').trim(); if (!c || c === '제외') return;
+        const d = String(e.detail1 || '').trim(); let st = EX_DATA_OPTS.get(c); if (!st) EX_DATA_OPTS.set(c, st = new Set());
+        const v = d && d !== '제외' ? d : EX_NO_DETAIL; if (!st.has(v)) { st.add(v); n++; }
+      }));
+      if (n) { extractPickBuild('catEx'); extractPickBuild('chanEx'); }
+    }
+    EX_DATA_STATE.done = true; extractPickBuild('catEx'); extractPickBuild('chanEx');
   } catch (e) { console.warn('세부구분1 목록 수집 실패', e); } finally { exDataOptsLoading = false; }
 }
 function extractOptionLists() {
@@ -4471,7 +4476,7 @@ function extractPickBuild(pre) {
   EX_PICK[pre] = items;
   const dt = (id, title, inner, extra) => `<details open style="border:1px solid #d1d5db; border-radius:8px; background:#fff; width:100%;"><summary style="cursor:pointer; padding:6px 10px; font-size:13px;"><strong>${title}</strong> </summary><div style="padding:8px 10px; border-top:1px solid #e5e7eb; max-height:320px; overflow:auto; min-width:300px;">${inner}</div></details>`;
   box.innerHTML = `<div style="flex:1 1 300px; min-width:260px;">` + dt('SumA', '기준표 분류 (여러 개 선택)', catHtml) + `</div>`
-    + `<div id="${pre}PickB" style="flex:1 1 360px; min-width:300px;">` + dt('SumB', '세부구분1 · 중분류 (여러 개 선택)', detHtml || '<div style="font-size:12px; color:#6b7280;">세부구분1 목록이 없습니다. 저장된 판매 데이터에서 불러오는 중이거나, 저장된 날짜가 없습니다.</div>') + `</div>`;
+    + `<div id="${pre}PickB" style="flex:1 1 360px; min-width:300px;">` + dt('SumB', '세부구분1 · 중분류 (여러 개 선택)', detHtml || '<div style="font-size:12px; color:#6b7280;">세부구분1 목록이 없습니다. ' + (EX_DATA_STATE.done ? '저장된 판매 데이터에 세부구분1이 없습니다(② 일별 대조에서 저장한 날짜가 있어야 합니다).' : '저장된 판매 데이터에서 불러오는 중입니다… 잠시만 기다려주세요.') + '</div>') + `</div>`;
   extractPickChange(pre);
 }
 function extractPickChange(pre) {
