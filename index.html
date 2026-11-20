@@ -4420,6 +4420,23 @@ const EX_NO_DETAIL = '\u0000none'; // 세부구분1이 비어 있는 항목
 const EX_PICK = { catEx: [], chanEx: [] };
 const EX_MAX_ITEMS = { catEx: 20, chanEx: 10 };
 const EX_MAX_SHEETS = { catEx: 80, chanEx: 150 }; // 중분류 시트까지 합친 최대 시트 수 // 시트 수 = 항목 수 (채널별은 항목 × 3)
+// 기준표가 비어 있어도 저장된 판매 데이터(최근 날짜)에서 분류/세부구분1 목록을 수집
+const EX_DATA_OPTS = new Map(); let exDataOptsLoading = false;
+async function extractLoadDataOptions() {
+  if (exDataOptsLoading) return; exDataOptsLoading = true;
+  try {
+    const keys = dailyIndex.map(d => d.date).filter(dt => !isMonthKey(dt)).sort().slice(-3);
+    if (!keys.length) return;
+    const { byDate } = await loadCategoryQtyForRange(null, null, keys);
+    let n = 0;
+    Object.values(byDate).forEach(list => (list || []).forEach(e => {
+      const c = String(e.cat || '').trim(); if (!c || c === '제외') return;
+      const d = String(e.detail1 || '').trim(); let st = EX_DATA_OPTS.get(c); if (!st) EX_DATA_OPTS.set(c, st = new Set());
+      const v = d && d !== '제외' ? d : EX_NO_DETAIL; if (!st.has(v)) { st.add(v); n++; }
+    }));
+    if (n) { extractPickBuild('catEx'); extractPickBuild('chanEx'); }
+  } catch (e) { console.warn('세부구분1 목록 수집 실패', e); } finally { exDataOptsLoading = false; }
+}
 function extractOptionLists() {
   const cats = new Map(); // 분류 -> Set(세부구분1) (빈 값은 EX_NO_DETAIL)
   (masterRawSnapshot?.rows || []).forEach(r => {
@@ -4431,6 +4448,7 @@ function extractOptionLists() {
   // 원본 스냅샷이 없을 때를 대비해 기준표 계산 결과(masterMap 등)에서도 수집
   const add = v => { if (!v) return; const c = String(v.cat ?? '').trim(); if (!c || c === '제외') return; const d = String(v.detail1 ?? '').trim(); if (!cats.has(c)) cats.set(c, new Set()); cats.get(c).add(d && d !== '제외' ? d : EX_NO_DETAIL); };
   try { Object.values(masterMap || {}).forEach(add); Object.values(masterProductOverrides || {}).forEach(add); Object.values(masterProductCodeOverrides || {}).forEach(add); } catch (e) {}
+  EX_DATA_OPTS.forEach((set, c) => { if (!cats.has(c)) cats.set(c, new Set()); set.forEach(d => cats.get(c).add(d)); });
   ['버거', '치킨', '비프', '피자'].forEach(c => { if (!cats.has(c)) cats.set(c, new Set()); });
   return cats;
 }
@@ -4453,7 +4471,7 @@ function extractPickBuild(pre) {
   EX_PICK[pre] = items;
   const dt = (id, title, inner, extra) => `<details open style="border:1px solid #d1d5db; border-radius:8px; background:#fff; width:100%;"><summary style="cursor:pointer; padding:6px 10px; font-size:13px;"><strong>${title}</strong> </summary><div style="padding:8px 10px; border-top:1px solid #e5e7eb; max-height:320px; overflow:auto; min-width:300px;">${inner}</div></details>`;
   box.innerHTML = `<div style="flex:1 1 300px; min-width:260px;">` + dt('SumA', '기준표 분류 (여러 개 선택)', catHtml) + `</div>`
-    + `<div id="${pre}PickB" style="flex:1 1 360px; min-width:300px;">` + dt('SumB', '세부구분1 · 중분류 (여러 개 선택)', detHtml || '<div style="font-size:12px; color:#6b7280;">세부구분1 목록이 없습니다. 기준표(마스터)를 불러온 뒤 이 탭을 다시 열어주세요.</div>') + `</div>`;
+    + `<div id="${pre}PickB" style="flex:1 1 360px; min-width:300px;">` + dt('SumB', '세부구분1 · 중분류 (여러 개 선택)', detHtml || '<div style="font-size:12px; color:#6b7280;">세부구분1 목록이 없습니다. 저장된 판매 데이터에서 불러오는 중이거나, 저장된 날짜가 없습니다.</div>') + `</div>`;
   extractPickChange(pre);
 }
 function extractPickChange(pre) {
@@ -4473,7 +4491,7 @@ function extractPickSearch(pre, q) {
   box.querySelectorAll('label[data-t]').forEach(l => { l.style.display = !t || l.dataset.t.includes(t) ? 'inline-flex' : 'none'; });
   box.querySelectorAll('div[data-g]').forEach(g => { g.style.display = !t || [...g.querySelectorAll('label[data-t]')].some(l => l.style.display !== 'none') ? '' : 'none'; });
 }
-function extractFilterInit() { extractPickBuild('catEx'); extractPickBuild('chanEx'); }
+function extractFilterInit() { extractPickBuild('catEx'); extractPickBuild('chanEx'); extractLoadDataOptions(); }
 // 선택값 → [{ cat, detail, label, match }] (아무것도 고르지 않으면 null = 기본 전체 묶음)
 function extractFilterRead(pre) {
   const box = document.getElementById(pre + 'Pick'); if (!box) return null;
