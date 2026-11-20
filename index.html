@@ -536,22 +536,22 @@
             <option value="month">월별 (열 = 월)</option>
           </select>
         </div>
-        <div style="min-width:260px;"><div id="catExPick"></div><label style="font-size:12px; display:flex; align-items:center; gap:4px; margin-top:4px;"><input type="checkbox" id="catExSub" autocomplete="off"> 중분류(세부구분1)별 시트도 함께 만들기</label></div>
+        <div style="min-width:260px;"><div id="catExPick"></div><label style="font-size:12px; display:flex; align-items:center; gap:4px; margin-top:4px;"><input type="checkbox" id="catExSub" autocomplete="off"> 선택한 분류의 중분류(세부구분1) 전체도 함께 만들기</label></div>
         <label style="font-size:12px; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="catExActive" autocomplete="off"> 가맹점현황 매장만</label>
         <button class="btn btn-primary btn-sm" onclick="downloadCategoryExtract()">📥 다운로드</button>
       </div>
-      <div class="note" style="margin-top:6px;"><strong>"항목 선택"에서 기준표 분류·세부구분1을 여러 개 고를 수 있고</strong>, 고른 항목마다 시트 1장씩 만들어집니다(분류 "○○ 전체"를 고르면 그 분류 합계, 세부구분1을 고르면 그 항목만). <strong>"중분류(세부구분1)별 시트도 함께"</strong>를 체크하면, 선택한 분류(아무것도 안 고르면 버거·치킨·비프·피자)마다 대분류 시트 뒤에 그 분류의 세부구분1별 시트(예: 버거 수량(싸이패티), 치킨 수량(뼈치킨), 피자 수량(싱글)·(홀피자))가 이어서 만들어집니다(기간에 판매가 있는 세부구분1만). 아무것도 고르지 않고 체크도 하지 않으면 아래 6개 시트 묶음이 만들어집니다.<br>버거/치킨/비프/피자/피자(싱글)/피자(홀피자) 총 6개 시트가 한 엑셀 파일로 만들어집니다. "피자 수량"은 기준표 분류가 "피자"인 전체이고, 그중 세부구분1이 <strong>"싱글피자"</strong>인 것이 싱글, 나머지가 홀피자입니다(<strong>피자 수량 = 싱글 + 홀피자</strong>). 분류가 "조각피자"인 상품은 P.mix 집계처럼 세 피자 시트에 넣지 않습니다. 기간을 비워두면 저장된 전체 기간이 포함됩니다. 월별로 뽑으면 월합계로 올린 달은 그 값을, 월합계가 없는 달은 저장된 일별 데이터를 합산해서 채웁니다(해당 월의 시작~종료일이 기간에 걸리면 포함).</div>
+      <div class="note" style="margin-top:6px;"><strong>"기준표 분류"와 "세부구분1·중분류"를 각각 여러 개 고를 수 있고</strong>, 고른 분류는 대분류 시트(합계), 고른 세부구분1은 중분류 시트로 1장씩 만들어집니다(분류 없이 세부구분1만 골라도 됩니다). <strong>"선택한 분류의 중분류 전체도 함께"</strong>를 체크하면, 선택한 분류(아무것도 안 고르면 버거·치킨·비프·피자)마다 대분류 시트 뒤에 그 분류의 세부구분1별 시트(예: 버거 수량(싸이패티), 치킨 수량(뼈치킨), 피자 수량(싱글)·(홀피자))가 이어서 만들어집니다(기간에 판매가 있는 세부구분1만). 아무것도 고르지 않고 체크도 하지 않으면 아래 6개 시트 묶음이 만들어집니다.<br>버거/치킨/비프/피자/피자(싱글)/피자(홀피자) 총 6개 시트가 한 엑셀 파일로 만들어집니다. "피자 수량"은 기준표 분류가 "피자"인 전체이고, 그중 세부구분1이 <strong>"싱글피자"</strong>인 것이 싱글, 나머지가 홀피자입니다(<strong>피자 수량 = 싱글 + 홀피자</strong>). 분류가 "조각피자"인 상품은 P.mix 집계처럼 세 피자 시트에 넣지 않습니다. 기간을 비워두면 저장된 전체 기간이 포함됩니다. 월별로 뽑으면 월합계로 올린 달은 그 값을, 월합계가 없는 달은 저장된 일별 데이터를 합산해서 채웁니다(해당 월의 시작~종료일이 기간에 걸리면 포함).</div>
       <div class="note">※ 이 기능을 새로 추가하기 전에 저장된 날짜는 매장×분류별 판매건수가 따로 저장되어 있지 않아 추출에 포함되지 않습니다. "③ 이력" 탭의 "🔄 전체 재분류"를 한 번 실행하면 과거 날짜도 포함됩니다.</div>
       <div id="extractStatus" style="margin-top:8px;"></div>
     </div>
       <div class="card">
       <h2>매장별, 일자별 채널(내점·포장·배달) 상품 데이터 추출</h2>
       <div class="card-sub">② 일별 대조의 "채널별 매출분석 파일"을 처리하고 "채널별 수량 저장"한 날짜로 만듭니다. 위 "매장별 분류 판매건수"와 같은 양식(행 = 매장, 열 = 날짜, 판매수량 × 보정값)이며 시트는 버거·치킨·비프·피자 × 내점/포장/배달(12개)이고, 기간의 모든 날짜가 열로 들어갑니다(저장 안 된 날은 0).</div>
-      <div class="note">"항목 선택"에서 기준표 분류·세부구분1을 <strong>여러 개</strong> 고르면 고른 항목마다 내점·포장·배달 3개 시트씩 만들어집니다(아무것도 안 고르면 12개 시트 묶음). <strong>"중분류(세부구분1)별 시트도 함께"</strong>를 체크하면 선택한 분류(안 고르면 버거·치킨·비프·피자)의 세부구분1별 시트가 채널마다 추가됩니다.</div>
+      <div class="note">"기준표 분류"와 "세부구분1·중분류"를 각각 <strong>여러 개</strong> 고르면 고른 항목마다 내점·포장·배달 3개 시트씩 만들어집니다(아무것도 안 고르면 12개 시트 묶음). <strong>"선택한 분류의 중분류 전체도 함께"</strong>를 체크하면 선택한 분류(안 고르면 버거·치킨·비프·피자)의 세부구분1별 시트가 채널마다 추가됩니다.</div>
       <div class="note" id="chanSavedInfo" style="margin-top:6px;"></div>
       <div class="toolbar" style="gap:8px; margin-top:8px; flex-wrap:wrap;">
         <input type="date" id="chanExStart" class="search-input" style="flex:none;"> ~ <input type="date" id="chanExEnd" class="search-input" style="flex:none;">
-        <div style="min-width:260px;"><div id="chanExPick"></div><label style="font-size:12px; display:flex; align-items:center; gap:4px; margin-top:4px;"><input type="checkbox" id="chanExSub" autocomplete="off"> 중분류(세부구분1)별 시트도 함께 만들기</label></div>
+        <div style="min-width:260px;"><div id="chanExPick"></div><label style="font-size:12px; display:flex; align-items:center; gap:4px; margin-top:4px;"><input type="checkbox" id="chanExSub" autocomplete="off"> 선택한 분류의 중분류(세부구분1) 전체도 함께 만들기</label></div>
         <label style="font-size:12px; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="chanExActive" autocomplete="off"> 가맹점현황 매장만</label>
         <button class="btn btn-primary btn-sm" onclick="downloadChannelExtract()">📥 채널별 엑셀 추출</button>
       </div>
@@ -4435,34 +4435,38 @@ function extractPickBuild(pre) {
   const box = document.getElementById(pre + 'Pick'); if (!box) return;
   const was = new Set([...box.querySelectorAll('input[data-ex]:checked')].map(i => i.dataset.label));
   const cats = extractOptionLists(), names = [...cats.keys()].sort((a, b) => a.localeCompare(b, 'ko'));
-  const items = [];
-  const groups = names.map(cat => {
+  const items = []; let catHtml = '', detHtml = '';
+  const mk = (cat, detail, text, label) => {
+    const i = items.length; items.push({ cat, detail, label });
+    return `<label data-t="${esc((cat + ' ' + text).toLowerCase())}" style="display:inline-flex; align-items:center; gap:3px; margin:2px 10px 2px 0; font-size:12px; white-space:nowrap;"><input type="checkbox" data-ex="1" data-i="${i}" data-label="${esc(label)}"${was.has(label) ? ' checked' : ''} onchange="extractPickChange('${pre}')">${esc(text)}</label>`;
+  };
+  names.forEach(cat => { catHtml += mk(cat, '', cat, cat); });
+  names.forEach(cat => {
     const set = cats.get(cat), dets = [...set].filter(v => v !== EX_NO_DETAIL).sort((a, b) => a.localeCompare(b, 'ko'));
     if (set.has(EX_NO_DETAIL) && dets.length) dets.push(EX_NO_DETAIL);
-    const mk = (detail, text) => {
-      const label = detail ? `${cat}_${detail === EX_NO_DETAIL ? '세부구분없음' : detail}` : cat, i = items.length;
-      items.push({ cat, detail, label });
-      return `<label data-t="${esc((cat + ' ' + text).toLowerCase())}" style="display:inline-flex; align-items:center; gap:3px; margin:2px 10px 2px 0; font-size:12px; white-space:nowrap;"><input type="checkbox" data-ex="1" data-i="${i}" data-label="${esc(label)}"${was.has(label) ? ' checked' : ''} onchange="extractPickChange('${pre}')">${esc(text)}</label>`;
-    };
-    return `<div data-g="1" style="margin:6px 0; padding-top:6px; border-top:1px solid #f1f5f9;"><div style="font-size:12px; font-weight:700; margin-bottom:2px;">${esc(cat)}</div>${mk('', cat + ' 전체')}${dets.map(d => mk(d, d === EX_NO_DETAIL ? '(세부구분1 없음)' : d)).join('')}</div>`;
-  }).join('');
+    if (!dets.length) return;
+    detHtml += `<div data-g="1" style="margin:6px 0; padding-top:6px; border-top:1px solid #f1f5f9;"><div style="font-size:12px; font-weight:700; margin-bottom:2px;">${esc(cat)}</div>${dets.map(d => mk(cat, d, d === EX_NO_DETAIL ? '(세부구분1 없음)' : d, `${cat}_${d === EX_NO_DETAIL ? '세부구분없음' : d}`)).join('')}</div>`;
+  });
   EX_PICK[pre] = items;
-  box.innerHTML = `<label style="display:block; font-size:12px; color:#6b7280; margin-bottom:4px;">기준표 분류·세부구분1 (여러 개 선택)</label>
-    <details style="border:1px solid #d1d5db; border-radius:8px; background:#fff;"><summary style="cursor:pointer; padding:6px 10px; font-size:13px;" id="${pre}PickSum"></summary>
-      <div style="padding:8px 10px; border-top:1px solid #e5e7eb; max-height:320px; overflow:auto; min-width:300px;">
-        <div style="display:flex; gap:6px; align-items:center; margin-bottom:4px;"><input type="text" class="search-input" style="flex:1; min-width:120px;" placeholder="항목 검색(예: 뼈치킨)" autocomplete="off" oninput="extractPickSearch('${pre}', this.value)"><button type="button" class="btn btn-ghost btn-sm" onclick="extractPickClear('${pre}')">선택 해제</button></div>
-        ${groups}
-      </div></details>`;
+  const dt = (id, title, inner, extra) => `<details style="border:1px solid #d1d5db; border-radius:8px; background:#fff; margin-bottom:6px;"><summary style="cursor:pointer; padding:6px 10px; font-size:13px;"><strong>${title}</strong> <span id="${pre}${id}" style="color:#6b7280;"></span></summary><div style="padding:8px 10px; border-top:1px solid #e5e7eb; max-height:320px; overflow:auto; min-width:300px;">${inner}</div></details>`;
+  box.innerHTML = dt('SumA', '기준표 분류 (여러 개 선택)', catHtml + `<div style="margin-top:6px;"><button type="button" class="btn btn-ghost btn-sm" onclick="extractPickClear('${pre}','A')">분류 선택 해제</button></div>`)
+    + `<div id="${pre}PickB">` + dt('SumB', '세부구분1 · 중분류 (여러 개 선택)', `<div style="display:flex; gap:6px; align-items:center; margin-bottom:4px;"><input type="text" class="search-input" style="flex:1; min-width:120px;" placeholder="세부구분1 검색(예: 뼈치킨)" autocomplete="off" oninput="extractPickSearch('${pre}', this.value)"><button type="button" class="btn btn-ghost btn-sm" onclick="extractPickClear('${pre}','B')">세부구분1 선택 해제</button></div>${detHtml}`) + `</div>`;
   extractPickChange(pre);
 }
 function extractPickChange(pre) {
-  const box = document.getElementById(pre + 'Pick'), sum = document.getElementById(pre + 'PickSum'); if (!box || !sum) return;
-  const on = [...box.querySelectorAll('input[data-ex]:checked')].map(i => i.dataset.label);
-  sum.textContent = on.length ? `${on.length}개 선택: ${on.slice(0, 3).join(', ')}${on.length > 3 ? ' 외' : ''}` : (pre === 'chanEx' ? '선택 없음 (분류 전체 · 12개 시트)' : '선택 없음 (전체 · 6개 시트)');
+  const box = document.getElementById(pre + 'Pick'); if (!box) return;
+  const on = [...box.querySelectorAll('input[data-ex]:checked')], cats = on.filter(i => !EX_PICK[pre][Number(i.dataset.i)]?.detail), dets = on.filter(i => EX_PICK[pre][Number(i.dataset.i)]?.detail);
+  const txt = (list, empty) => list.length ? `${list.length}개: ${list.slice(0, 3).map(i => i.dataset.label.replace(/^[^_]*_/, m => EX_PICK[pre][Number(i.dataset.i)]?.detail ? m : '')).join(', ')}${list.length > 3 ? ' 외' : ''}` : empty;
+  const A = document.getElementById(pre + 'SumA'), B = document.getElementById(pre + 'SumB');
+  if (A) A.textContent = txt(cats, '선택 없음');
+  if (B) B.textContent = txt(dets, '선택 없음');
 }
-function extractPickClear(pre) { document.getElementById(pre + 'Pick')?.querySelectorAll('input[data-ex]').forEach(i => { i.checked = false; }); extractPickChange(pre); }
+function extractPickClear(pre, part) {
+  document.getElementById(pre + 'Pick')?.querySelectorAll('input[data-ex]').forEach(i => { const it = EX_PICK[pre][Number(i.dataset.i)]; if (!part || (part === 'A' ? !it?.detail : !!it?.detail)) i.checked = false; });
+  extractPickChange(pre);
+}
 function extractPickSearch(pre, q) {
-  const box = document.getElementById(pre + 'Pick'); if (!box) return; const t = String(q || '').trim().toLowerCase();
+  const box = document.getElementById(pre + 'PickB'); if (!box) return; const t = String(q || '').trim().toLowerCase();
   box.querySelectorAll('label[data-t]').forEach(l => { l.style.display = !t || l.dataset.t.includes(t) ? 'inline-flex' : 'none'; });
   box.querySelectorAll('div[data-g]').forEach(g => { g.style.display = !t || [...g.querySelectorAll('label[data-t]')].some(l => l.style.display !== 'none') ? '' : 'none'; });
 }
@@ -4480,24 +4484,25 @@ function exUniqueNames(names) { const seen = new Map(); return names.map(n => { 
 // 시트 정의 만들기. sel = 선택 항목 배열 | null(= 버거·치킨·비프·피자), subOn = 중분류(세부구분1)별 시트 추가 여부, entries = 기간의 판매 항목 목록
 // 반환: [{ cat, sub, label, match }]  — sub가 있으면 중분류 시트. 피자는 기존 양식대로 싱글 / 홀피자(싱글이 아닌 전부)로 나눈다(피자 = 싱글 + 홀피자).
 function exBuildSheetDefs(sel, subOn, entries) {
-  const base = sel || ['버거', '치킨', '비프', '피자'].map(cat => ({ cat, detail: '', label: cat, match: e => e.cat === cat }));
+  // 선택 항목: 분류 전체(detail 없음) → 대분류 시트, 세부구분1(detail 있음) → 중분류 시트. 아무것도 안 고르면 버거·치킨·비프·피자.
+  const items = sel || ['버거', '치킨', '비프', '피자'].map(cat => ({ cat, detail: '', label: cat, match: e => e.cat === cat }));
   const defs = [], seen = new Set();
-  const push = d => { const k = d.cat + '\u0001' + (d.sub ?? d.detail ?? '') + '\u0001' + d.label; if (seen.has(k)) return; seen.add(k); defs.push(d); };
-  base.forEach(f => push({ cat: f.cat, sub: '', detail: f.detail, label: f.label, match: f.match }));
+  const push = d => { const k = d.cat + '\u0001' + d.sub; if (seen.has(k)) return; seen.add(k); defs.push(d); };
+  // 피자는 기존 양식대로 싱글 / 홀피자(싱글이 아닌 전부)
+  const subDef = (cat, d) => {
+    if (cat === '피자' && d === '싱글피자') return { cat, sub: '싱글', label: '피자(싱글)', match: e => e.cat === '피자' && e.detail1 === '싱글피자' };
+    if (cat === '피자' && d === '피자') return { cat, sub: '홀피자', label: '피자(홀피자)', match: e => e.cat === '피자' && e.detail1 !== '싱글피자' };
+    const nm = d === EX_NO_DETAIL || d === '' ? '세부구분없음' : d;
+    return { cat, sub: nm, label: `${cat}(${nm})`, match: e => e.cat === cat && (d === EX_NO_DETAIL || d === '' ? !e.detail1 : e.detail1 === d) };
+  };
+  items.filter(f => !f.detail).forEach(f => push({ cat: f.cat, sub: '', label: f.label, match: f.match }));
+  items.filter(f => f.detail).forEach(f => push(subDef(f.cat, f.detail)));
   if (subOn) {
     const present = new Map();
     (entries || []).forEach(e => { if (!e.qty) return; let st = present.get(e.cat); if (!st) present.set(e.cat, st = new Set()); st.add(e.detail1 || ''); });
-    const picked = new Set(base.filter(f => f.detail).map(f => f.cat + '\u0001' + (f.detail === EX_NO_DETAIL ? '' : f.detail)));
-    base.filter(f => !f.detail).forEach(f => {
-      if (f.cat === '피자') {
-        push({ cat: '피자', sub: '싱글', label: '피자(싱글)', match: e => e.cat === '피자' && e.detail1 === '싱글피자' });
-        push({ cat: '피자', sub: '홀피자', label: '피자(홀피자)', match: e => e.cat === '피자' && e.detail1 !== '싱글피자' });
-        return;
-      }
-      [...(present.get(f.cat) || [])].sort((a, b) => a.localeCompare(b, 'ko')).forEach(d => {
-        if (picked.has(f.cat + '\u0001' + d)) return;
-        push({ cat: f.cat, sub: d || '세부구분없음', label: `${f.cat}(${d || '세부구분없음'})`, match: e => e.cat === f.cat && (e.detail1 || '') === d });
-      });
+    items.filter(f => !f.detail).forEach(f => {
+      if (f.cat === '피자') { push(subDef('피자', '싱글피자')); push(subDef('피자', '피자')); return; }
+      [...(present.get(f.cat) || [])].sort((a, b) => a.localeCompare(b, 'ko')).forEach(d => push(subDef(f.cat, d)));
     });
   }
   return defs;
