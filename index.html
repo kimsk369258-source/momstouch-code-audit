@@ -536,22 +536,22 @@
             <option value="month">월별 (열 = 월)</option>
           </select>
         </div>
-        <div id="catExPick" style="min-width:260px;"></div>
+        <div style="min-width:260px;"><div id="catExPick"></div><label style="font-size:12px; display:flex; align-items:center; gap:4px; margin-top:4px;"><input type="checkbox" id="catExSub" autocomplete="off"> 중분류(세부구분1)별 시트도 함께 만들기</label></div>
         <label style="font-size:12px; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="catExActive" autocomplete="off"> 가맹점현황 매장만</label>
         <button class="btn btn-primary btn-sm" onclick="downloadCategoryExtract()">📥 다운로드</button>
       </div>
-      <div class="note" style="margin-top:6px;"><strong>"항목 선택"에서 기준표 분류·세부구분1을 여러 개 고를 수 있고</strong>, 고른 항목마다 시트 1장씩 만들어집니다(분류 "○○ 전체"를 고르면 그 분류 합계, 세부구분1을 고르면 그 항목만). 아무것도 고르지 않으면 아래 6개 시트 묶음이 만들어집니다.<br>버거/치킨/비프/피자/피자(싱글)/피자(홀피자) 총 6개 시트가 한 엑셀 파일로 만들어집니다. "피자 수량"은 기준표 분류가 "피자"인 전체이고, 그중 세부구분1이 <strong>"싱글피자"</strong>인 것이 싱글, 나머지가 홀피자입니다(<strong>피자 수량 = 싱글 + 홀피자</strong>). 분류가 "조각피자"인 상품은 P.mix 집계처럼 세 피자 시트에 넣지 않습니다. 기간을 비워두면 저장된 전체 기간이 포함됩니다. 월별로 뽑으면 월합계로 올린 달은 그 값을, 월합계가 없는 달은 저장된 일별 데이터를 합산해서 채웁니다(해당 월의 시작~종료일이 기간에 걸리면 포함).</div>
+      <div class="note" style="margin-top:6px;"><strong>"항목 선택"에서 기준표 분류·세부구분1을 여러 개 고를 수 있고</strong>, 고른 항목마다 시트 1장씩 만들어집니다(분류 "○○ 전체"를 고르면 그 분류 합계, 세부구분1을 고르면 그 항목만). <strong>"중분류(세부구분1)별 시트도 함께"</strong>를 체크하면, 선택한 분류(아무것도 안 고르면 버거·치킨·비프·피자)마다 대분류 시트 뒤에 그 분류의 세부구분1별 시트(예: 버거 수량(싸이패티), 치킨 수량(뼈치킨), 피자 수량(싱글)·(홀피자))가 이어서 만들어집니다(기간에 판매가 있는 세부구분1만). 아무것도 고르지 않고 체크도 하지 않으면 아래 6개 시트 묶음이 만들어집니다.<br>버거/치킨/비프/피자/피자(싱글)/피자(홀피자) 총 6개 시트가 한 엑셀 파일로 만들어집니다. "피자 수량"은 기준표 분류가 "피자"인 전체이고, 그중 세부구분1이 <strong>"싱글피자"</strong>인 것이 싱글, 나머지가 홀피자입니다(<strong>피자 수량 = 싱글 + 홀피자</strong>). 분류가 "조각피자"인 상품은 P.mix 집계처럼 세 피자 시트에 넣지 않습니다. 기간을 비워두면 저장된 전체 기간이 포함됩니다. 월별로 뽑으면 월합계로 올린 달은 그 값을, 월합계가 없는 달은 저장된 일별 데이터를 합산해서 채웁니다(해당 월의 시작~종료일이 기간에 걸리면 포함).</div>
       <div class="note">※ 이 기능을 새로 추가하기 전에 저장된 날짜는 매장×분류별 판매건수가 따로 저장되어 있지 않아 추출에 포함되지 않습니다. "③ 이력" 탭의 "🔄 전체 재분류"를 한 번 실행하면 과거 날짜도 포함됩니다.</div>
       <div id="extractStatus" style="margin-top:8px;"></div>
     </div>
       <div class="card">
       <h2>매장별, 일자별 채널(내점·포장·배달) 상품 데이터 추출</h2>
       <div class="card-sub">② 일별 대조의 "채널별 매출분석 파일"을 처리하고 "채널별 수량 저장"한 날짜로 만듭니다. 위 "매장별 분류 판매건수"와 같은 양식(행 = 매장, 열 = 날짜, 판매수량 × 보정값)이며 시트는 버거·치킨·비프·피자 × 내점/포장/배달(12개)이고, 기간의 모든 날짜가 열로 들어갑니다(저장 안 된 날은 0).</div>
-      <div class="note">"항목 선택"에서 기준표 분류·세부구분1을 <strong>여러 개</strong> 고르면 고른 항목마다 내점·포장·배달 3개 시트씩 만들어집니다(아무것도 안 고르면 12개 시트 묶음).</div>
+      <div class="note">"항목 선택"에서 기준표 분류·세부구분1을 <strong>여러 개</strong> 고르면 고른 항목마다 내점·포장·배달 3개 시트씩 만들어집니다(아무것도 안 고르면 12개 시트 묶음). <strong>"중분류(세부구분1)별 시트도 함께"</strong>를 체크하면 선택한 분류(안 고르면 버거·치킨·비프·피자)의 세부구분1별 시트가 채널마다 추가됩니다.</div>
       <div class="note" id="chanSavedInfo" style="margin-top:6px;"></div>
       <div class="toolbar" style="gap:8px; margin-top:8px; flex-wrap:wrap;">
         <input type="date" id="chanExStart" class="search-input" style="flex:none;"> ~ <input type="date" id="chanExEnd" class="search-input" style="flex:none;">
-        <div id="chanExPick" style="min-width:260px;"></div>
+        <div style="min-width:260px;"><div id="chanExPick"></div><label style="font-size:12px; display:flex; align-items:center; gap:4px; margin-top:4px;"><input type="checkbox" id="chanExSub" autocomplete="off"> 중분류(세부구분1)별 시트도 함께 만들기</label></div>
         <label style="font-size:12px; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="chanExActive" autocomplete="off"> 가맹점현황 매장만</label>
         <button class="btn btn-primary btn-sm" onclick="downloadChannelExtract()">📥 채널별 엑셀 추출</button>
       </div>
@@ -4418,7 +4418,8 @@ function buildPivotSheet(dates, byDate, matchFn, extra, info) {
 // 선택 목록은 기준표(masterRawSnapshot)의 분류(r[11])·세부구분1(r[12])에서 만든다. "제외"는 뺀다. 기준표가 아직 없으면 기본 4분류만 보인다.
 const EX_NO_DETAIL = '\u0000none'; // 세부구분1이 비어 있는 항목
 const EX_PICK = { catEx: [], chanEx: [] };
-const EX_MAX_ITEMS = { catEx: 20, chanEx: 10 }; // 시트 수 = 항목 수 (채널별은 항목 × 3)
+const EX_MAX_ITEMS = { catEx: 20, chanEx: 10 };
+const EX_MAX_SHEETS = { catEx: 80, chanEx: 150 }; // 중분류 시트까지 합친 최대 시트 수 // 시트 수 = 항목 수 (채널별은 항목 × 3)
 function extractOptionLists() {
   const cats = new Map(); // 분류 -> Set(세부구분1) (빈 값은 EX_NO_DETAIL)
   (masterRawSnapshot?.rows || []).forEach(r => {
@@ -4476,6 +4477,36 @@ const exSheetName = (n) => String(n).replace(/[\[\]:*?\/\\]/g, '_').slice(0, 31)
 const exFileName = (n) => String(n).replace(/[\\/:*?"<>|]/g, '_');
 // 시트 이름이 31자 제한으로 겹치면 뒤에 번호를 붙인다
 function exUniqueNames(names) { const seen = new Map(); return names.map(n => { const k = n.toLowerCase(), c = (seen.get(k) || 0) + 1; seen.set(k, c); return c === 1 ? n : n.slice(0, 28) + '_' + c; }); }
+// 시트 정의 만들기. sel = 선택 항목 배열 | null(= 버거·치킨·비프·피자), subOn = 중분류(세부구분1)별 시트 추가 여부, entries = 기간의 판매 항목 목록
+// 반환: [{ cat, sub, label, match }]  — sub가 있으면 중분류 시트. 피자는 기존 양식대로 싱글 / 홀피자(싱글이 아닌 전부)로 나눈다(피자 = 싱글 + 홀피자).
+function exBuildSheetDefs(sel, subOn, entries) {
+  const base = sel || ['버거', '치킨', '비프', '피자'].map(cat => ({ cat, detail: '', label: cat, match: e => e.cat === cat }));
+  const defs = [], seen = new Set();
+  const push = d => { const k = d.cat + '\u0001' + (d.sub ?? d.detail ?? '') + '\u0001' + d.label; if (seen.has(k)) return; seen.add(k); defs.push(d); };
+  base.forEach(f => push({ cat: f.cat, sub: '', detail: f.detail, label: f.label, match: f.match }));
+  if (subOn) {
+    const present = new Map();
+    (entries || []).forEach(e => { if (!e.qty) return; let st = present.get(e.cat); if (!st) present.set(e.cat, st = new Set()); st.add(e.detail1 || ''); });
+    const picked = new Set(base.filter(f => f.detail).map(f => f.cat + '\u0001' + (f.detail === EX_NO_DETAIL ? '' : f.detail)));
+    base.filter(f => !f.detail).forEach(f => {
+      if (f.cat === '피자') {
+        push({ cat: '피자', sub: '싱글', label: '피자(싱글)', match: e => e.cat === '피자' && e.detail1 === '싱글피자' });
+        push({ cat: '피자', sub: '홀피자', label: '피자(홀피자)', match: e => e.cat === '피자' && e.detail1 !== '싱글피자' });
+        return;
+      }
+      [...(present.get(f.cat) || [])].sort((a, b) => a.localeCompare(b, 'ko')).forEach(d => {
+        if (picked.has(f.cat + '\u0001' + d)) return;
+        push({ cat: f.cat, sub: d || '세부구분없음', label: `${f.cat}(${d || '세부구분없음'})`, match: e => e.cat === f.cat && (e.detail1 || '') === d });
+      });
+    });
+  }
+  return defs;
+}
+// 매장별 시트 이름: 대분류 "버거 수량", 중분류 "버거 수량(싸이패티)", 선택 항목 "버거_싸이패티 수량"
+function exCatSheetName(d) { if (!d.sub) return exSheetName(`${d.label.slice(0, 27)} 수량`); const head = `${d.cat} 수량(`; return exSheetName(head + d.sub.slice(0, 30 - head.length) + ')'); }
+// 채널별 시트 이름: "버거 수량_2611(내점)" · 중분류 "버거(싸이패티) 수량_2611(내점)"
+function exChanSheetName(d, yymm, tag) { const tail = ` 수량_${yymm}(${tag})`; return exSheetName(d.label.slice(0, 31 - tail.length) + tail); }
+
 const exFileTag = (sel) => sel.length === 1 ? exFileName(sel[0].label) : `선택${sel.length}개`;
 
 const CATEGORY_EXTRACT_SHEETS = [
@@ -4527,8 +4558,14 @@ async function downloadCategoryExtract() {
 
     const fsel = extractFilterRead('catEx');
     if (fsel && fsel.length > EX_MAX_ITEMS.catEx) { statusEl.innerHTML = `<span class="pill pill-warn">⚠ 항목은 한 번에 ${EX_MAX_ITEMS.catEx}개까지 선택할 수 있습니다(현재 ${fsel.length}개).</span>`; return; }
-    const selNames = fsel ? exUniqueNames(fsel.map(f => exSheetName(`${f.label.slice(0, 27)} 수량`))) : null;
-    const sheets = fsel ? fsel.map((f, i) => ({ name: selNames[i], match: f.match })) : CATEGORY_EXTRACT_SHEETS;
+    const subOn = document.getElementById('catExSub')?.checked === true;
+    let sheets = CATEGORY_EXTRACT_SHEETS;
+    if (fsel || subOn) {
+      const defs = exBuildSheetDefs(fsel, subOn, Object.values(byDate).flat());
+      if (defs.length > EX_MAX_SHEETS.catEx) { statusEl.innerHTML = `<span class="pill pill-warn">⚠ 시트가 ${defs.length}개가 됩니다(최대 ${EX_MAX_SHEETS.catEx}개). 분류를 줄여서 선택해주세요.</span>`; return; }
+      const nm = exUniqueNames(defs.map(exCatSheetName));
+      sheets = defs.map((d, i) => ({ name: nm[i], match: d.match }));
+    }
 
     const wb = XLSX.utils.book_new();
     // 가맹점현황에 없는 매장도 넣을지(체크 해제 시 표 아래에 "가맹점현황 없음"으로 붙임)
@@ -4544,8 +4581,8 @@ async function downloadCategoryExtract() {
     });
 
     const dateStr = nowISO().slice(0, 10);
-    XLSX.writeFile(wb, `매장별_${fsel ? exFileTag(fsel) : '분류'}_판매건수${unit === 'month' ? '_월별' : ''}_${dateStr}.xlsx`);
-    statusEl.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${dates.length}개 ${unit === 'month' ? '월' : '날짜'}(${dates[0]} ~ ${dates[dates.length-1]}) · ${storeInfoOrder.length}개 매장 · ${fsel ? `선택 ${fsel.length}개 항목(${esc(fsel.slice(0, 3).map(f => f.label).join(', '))}${fsel.length > 3 ? ' 외' : ''}) · ${fsel.length}개 시트` : '6개 시트'} 다운로드했습니다.${esc(monthNote)}</span>`;
+    XLSX.writeFile(wb, `매장별_${fsel ? exFileTag(fsel) : '분류'}${subOn ? '_중분류' : ''}_판매건수${unit === 'month' ? '_월별' : ''}_${dateStr}.xlsx`);
+    statusEl.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${dates.length}개 ${unit === 'month' ? '월' : '날짜'}(${dates[0]} ~ ${dates[dates.length-1]}) · ${storeInfoOrder.length}개 매장 · ${fsel || subOn ? `${sheets.length}개 시트(${esc(sheets.slice(0, 4).map(x => x.name).join(', '))}${sheets.length > 4 ? ' 외' : ''})` : '6개 시트'} 다운로드했습니다.${esc(monthNote)}</span>`;
   } catch (err) {
     statusEl.innerHTML = `<span class="pill pill-bad">✗ 실패</span><span>${esc(err.message)}</span>`;
   }
@@ -6605,9 +6642,14 @@ async function downloadChannelExtract() {
     const extraCodes = [...new Set(Object.values(byDate).flatMap(l => l.filter(e => !rangeInfo.map[e.storeCode] && !alC[e.storeCode] && e.qty).map(e => e.storeCode)))].sort();
     const chanExtra = onlyActive ? null : extraCodes.map(code => ({ code, name: nameMap[code] || '' }));
     const yymm = dates[0].slice(2, 4) + dates[0].slice(5, 7);
-    const fselC = extractFilterRead('chanEx');
+    const fselC = extractFilterRead('chanEx'), subC = document.getElementById('chanExSub')?.checked === true;
     if (fselC && fselC.length > EX_MAX_ITEMS.chanEx) { st.innerHTML = `<span class="pill pill-warn">⚠ 항목은 한 번에 ${EX_MAX_ITEMS.chanEx}개까지(항목마다 시트 3장) 선택할 수 있습니다(현재 ${fselC.length}개).</span>`; return; }
-    const S = fselC ? fselC.flatMap(f => ['내점', '포장', '배달'].map(ch => [`${f.label.slice(0, 24)} 수량`, ch, e => f.match(e) && e.ch === ch])) : [
+    let S;
+    if (fselC || subC) {
+      const defs = exBuildSheetDefs(fselC, subC, Object.values(byDate).flat());
+      if (defs.length * 3 > EX_MAX_SHEETS.chanEx) { st.innerHTML = `<span class="pill pill-warn">⚠ 시트가 ${defs.length * 3}개(${defs.length}개 항목 × 3채널)가 됩니다(최대 ${EX_MAX_SHEETS.chanEx}개). 분류를 줄여서 선택해주세요.</span>`; return; }
+      S = defs.flatMap(d => ['내점', '포장', '배달'].map(ch => [d, ch, e => d.match(e) && e.ch === ch]));
+    } else S = [
       ['버거 수량', '내점', e => e.cat === '버거' && e.ch === '내점'], ['버거 수량', '포장', e => e.cat === '버거' && e.ch === '포장'], ['버거 수량', '배달', e => e.cat === '버거' && e.ch === '배달'],
       ['치킨 수량', '내점', e => e.cat === '치킨' && e.ch === '내점'], ['치킨 수량', '포장', e => e.cat === '치킨' && e.ch === '포장'], ['치킨 수량', '배달', e => e.cat === '치킨' && e.ch === '배달'],
       ['비프 수량', '내점', e => e.cat === '비프' && e.ch === '내점'], ['비프 수량', '포장', e => e.cat === '비프' && e.ch === '포장'], ['비프 수량', '배달', e => e.cat === '비프' && e.ch === '배달'],
@@ -6615,13 +6657,13 @@ async function downloadChannelExtract() {
       ['피자 수량', '포장', e => e.cat === '피자' && e.ch === '포장'], ['피자 수량', '배달', e => e.cat === '피자' && e.ch === '배달'],
     ];
     const wb = XLSX.utils.book_new();
-    const chanNames = fselC ? exUniqueNames(S.map(([nm, tag]) => exSheetName(`${nm}(${tag})`))) : null;
+    const chanNames = (fselC || subC) ? exUniqueNames(S.map(([d, tag]) => exChanSheetName(d, yymm, tag))) : null;
     S.forEach(([nm, tag, fn], si) => {
       const ws = buildPivotSheet(dates, byDate, fn, chanExtra, rangeInfo);
       ws['A1'] = { t: 's', v: tag }; // 1행 A열 = 채널
-      XLSX.utils.book_append_sheet(wb, ws, fselC ? chanNames[si] : exSheetName(`${nm}_${yymm}(${tag})`));
+      XLSX.utils.book_append_sheet(wb, ws, (fselC || subC) ? chanNames[si] : exSheetName(`${nm}_${yymm}(${tag})`));
     });
-    XLSX.writeFile(wb, `매장별_채널별_${fselC ? exFileTag(fselC) : '분류수량'}_${dates[0]}_${dates[dates.length - 1]}.xlsx`);
+    XLSX.writeFile(wb, `매장별_채널별_${fselC ? exFileTag(fselC) : '분류수량'}${subC ? '_중분류' : ''}_${dates[0]}_${dates[dates.length - 1]}.xlsx`);
     const missing = dates.filter(d => !savedIn.includes(d));
     st.innerHTML = `<span class="pill pill-ok">✓ 완료</span><span>${dates[0]} ~ ${dates[dates.length - 1]} · ${S.length}개 시트 · 가맹점현황 ${esc(rangeInfo.months.join('·'))} 기준 · ${onlyActive ? `가맹점현황 매장만(현황에 없는 매장 ${extraCodes.length}곳 제외)` : `가맹점현황에 없는 매장 ${extraCodes.length}곳 포함(표 아래, 팀 = "가맹점현황 없음")`}${missing.length ? ` · 저장 안 된 날 ${missing.length}일은 0(${missing.slice(0, 5).map(d => d.slice(5)).join(', ')}${missing.length > 5 ? ' 외' : ''})` : ''}</span>`;
     // 저장된 날짜 중 채널이 일부만 있는 날 알려주기
