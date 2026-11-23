@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>방문 동선 거리 확인 (네이버 지도)</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --ink:#1a1a2e; --muted:#6b7280; --line:#e5e7eb;
+    --accent:#2f6fed; --pin:#3d5a80; --warn:#b45309; --warnbg:#fef3c7; --ok:#047857; --okbg:#d1fae5; --bad:#b91c1c;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:'Pretendard','Malgun Gothic',-apple-system,BlinkMacSystemFont,sans-serif;background:var(--bg);color:var(--ink);font-size:14px}
+  button{font:inherit;cursor:pointer}
+  input,select{font:inherit}
+  header.top{background:var(--card);border-bottom:1px solid var(--line);padding:14px 20px;display:flex;flex-wrap:wrap;gap:12px 20px;align-items:center}
+  header.top h1{font-size:18px;font-weight:800;margin-right:8px}
+  .drop{display:flex;align-items:center;gap:8px;border:1.5px dashed #c7ccd6;border-radius:10px;padding:8px 12px;background:#fafbfc;cursor:pointer;min-width:230px}
+  .drop:hover,.drop.over{border-color:var(--accent);background:#f0f5ff}
+  .drop b{font-size:13px}
+  .drop small{color:var(--muted);display:block;font-size:11.5px}
+  .drop.done{border-style:solid;border-color:#9ad4bd;background:#f1faf6}
+  .drop input{display:none}
+  .btn{border:1px solid var(--line);background:#fff;border-radius:8px;padding:8px 12px;font-weight:600}
+  .btn:hover{border-color:var(--accent);color:var(--accent)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.primary:hover{color:#fff;opacity:.92}
+  .btn:disabled{opacity:.45;cursor:default}
+  .spacer{flex:1}
+  .notice{margin:12px 20px 0;padding:10px 14px;border-radius:10px;background:var(--warnbg);color:#78350f;font-size:13px;line-height:1.55}
+  .notice.info{background:#eaf1ff;color:#1e3a8a}
+  .notice b{font-weight:700}
+  .progress{margin:10px 20px 0;display:none}
+  .progress .bar{height:6px;background:#e5e7eb;border-radius:4px;overflow:hidden}
+  .progress .bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+  .progress span{font-size:12px;color:var(--muted)}
+  main{display:grid;grid-template-columns:290px 1fr;gap:16px;padding:16px 20px 40px;align-items:start}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px}
+  .side{max-height:calc(100vh - 150px);overflow:auto;position:sticky;top:12px}
+  .side h2{font-size:13px;padding:12px 14px 6px;color:var(--muted);font-weight:700;display:flex;justify-content:space-between;align-items:center}
+  .sup{padding:10px 14px;border-top:1px solid #f0f1f4;cursor:pointer;display:flex;justify-content:space-between;gap:8px;align-items:center}
+  .sup:hover{background:#f7f9ff}
+  .sup.sel{background:#eaf1ff}
+  .sup .n{font-weight:700}
+  .sup .t{font-size:11.5px;color:var(--muted)}
+  .sup .km{font-weight:800;text-align:right;white-space:nowrap}
+  .sup .km small{display:block;font-weight:500;color:var(--muted);font-size:11px}
+  .detail .head{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .detail .head .who{font-size:17px;font-weight:800}
+  .datenav{display:flex;align-items:center;gap:10px;margin:0 auto}
+  .datenav button{border:none;background:none;font-size:20px;padding:2px 10px;color:var(--ink)}
+  .datenav button:disabled{opacity:.25;cursor:default}
+  .datenav span{font-size:17px;font-weight:800}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-bottom:1px solid var(--line)}
+  .stats div{padding:14px 18px;border-right:1px solid var(--line)}
+  .stats div:last-child{border-right:none}
+  .stats small{display:block;color:var(--muted);font-size:12px;margin-bottom:4px}
+  .stats strong{font-size:24px;font-weight:800}
+  .stats strong.blue{color:var(--accent)}
+  .stats em{font-style:normal;font-size:12px;color:var(--muted);font-weight:500;margin-left:3px}
+  .body{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(320px,1fr)}
+  #map{height:560px;background:#e8ecf1;border-bottom-left-radius:14px}
+  .list{padding:14px 16px;max-height:560px;overflow:auto}
+  .opts{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding:10px 18px;border-bottom:1px solid var(--line);background:#fafbfc;font-size:13px}
+  .opts input[type=text],.opts input[type=number]{border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+  .opts input[type=text]{width:260px}
+  .opts input[type=number]{width:84px}
+  .visit{display:flex;gap:10px;background:#f6f7f9;border-radius:12px;padding:12px 14px}
+  .visit .no{flex:none;width:26px;height:26px;border-radius:50%;background:var(--pin);color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;font-size:13px}
+  .visit .no.home{background:#6b7280}
+  .visit .info{flex:1;min-width:0}
+  .visit .tm{font-weight:700;margin-bottom:3px}
+  .visit .nm{font-weight:700}
+  .visit .nm small{font-weight:500;color:var(--muted)}
+  .visit .ad{color:var(--muted);font-size:12.5px;margin-top:3px;word-break:keep-all}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:99px;margin-left:6px;font-weight:600}
+  .tag.ex{background:var(--okbg);color:var(--ok)}
+  .tag.ap{background:var(--warnbg);color:var(--warn)}
+  .tag.no{background:#fee2e2;color:var(--bad)}
+  .tag.un{background:#e0e7ff;color:#3730a3}
+  .seg{margin:0 0 0 12px;padding:6px 0 6px 24px;border-left:3px solid #bcd0f7;font-size:13px;color:#1e40af;font-weight:700}
+  .seg small{color:var(--muted);font-weight:500}
+  .seg.bad{color:var(--bad);border-left-color:#fca5a5}
+  .addr-edit{margin-top:6px;display:flex;gap:6px}
+  .addr-edit input{flex:1;border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12.5px}
+  .addr-edit button{padding:4px 10px;border:1px solid var(--line);background:#fff;border-radius:6px;font-size:12px}
+  .link{background:none;border:none;color:var(--accent);font-size:12px;padding:0;margin-left:6px;text-decoration:underline}
+  .empty{padding:60px 20px;text-align:center;color:var(--muted);line-height:1.8}
+  .marker{background:var(--pin);color:#fff;width:28px;height:28px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35)}
+  .marker span{transform:rotate(45deg);font-weight:700;font-size:12px}
+  .marker.home{background:#6b7280}
+  .marker.miss{background:#dc2626}
+  details.settings{margin:12px 20px 0}
+  details.settings summary{cursor:pointer;font-weight:700;font-size:13px;color:var(--muted)}
+  details.settings .in{margin-top:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:13px}
+  details.settings input{border:1px solid var(--line);border-radius:6px;padding:5px 8px;width:300px}
+  @media(max-width:1000px){main{grid-template-columns:1fr}.side{position:static;max-height:260px}.body{grid-template-columns:1fr}#map{height:380px;border-radius:0}.stats{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>방문 동선 거리 확인</h1>
+  <label class="drop" id="dzVisit"><span>📋</span><span><b>① 방문 일정 엑셀</b><small id="visitStat">Journey_Plan_Report.xlsx 올리기</small></span><input type="file" accept=".xlsx,.xls" id="fVisit"></label>
+  <label class="drop" id="dzMaster"><span>🏪</span><span><b>② 매장운영현황 엑셀</b><small id="masterStat">가맹점현황(⑧탭)에 올린 파일 · M열 주소</small></span><input type="file" accept=".xlsx,.xls,.xlsb" id="fMaster"></label>
+  <span class="spacer"></span>
+  <button class="btn primary" id="btnAll" disabled>전체 거리 계산</button>
+  <button class="btn" id="btnExport" disabled>엑셀로 내려받기</button>
+</header>
+
+<details class="settings" id="setBox">
+  <summary>⚙ 네이버 지도 설정 · 연비/유가</summary>
+  <div class="in">
+    <label>네이버 Client ID <input type="text" id="nId" placeholder="NCP Maps 애플리케이션의 Client ID (지도 표시용)"></label>
+    <label>중계 서버 주소 <input type="text" id="nProxy" placeholder="https://xxxx.workers.dev (주소 변환·거리 계산용)"></label>
+  </div>
+  <div class="in">
+    <label>연비(km/L) <input type="number" id="effi" style="width:80px" step="0.1" min="1"></label>
+    <label>유가(원/L) <input type="number" id="oil" style="width:90px" min="0"></label>
+    <span style="color:var(--muted);font-size:12px">설정·주소·자택정보는 이 PC 브라우저에만 저장됩니다.</span>
+  </div>
+</details>
+
+<div class="notice info" id="howto">
+  <b>사용 순서</b> ① 방문 일정 엑셀(방문 일정 시트의 A·F·G·O·P열 사용)과 ② 매장운영현황 엑셀(코드 → M열 주소)을 올립니다 → 슈퍼바이저를 고르면 방문 완료 건을 방문시각 순으로 이어서 <b>실제 도로 기준 km</b>를 계산합니다.
+  거리는 <b>네이버 길찾기(Directions)</b> 기준의 추천 경로 거리이며, 실시간 교통에 따라 같은 구간도 조금 달라질 수 있습니다.
+</div>
+<div class="notice" id="warnBox" style="display:none"></div>
+<div class="progress" id="prog"><div class="bar"><i id="progBar"></i></div><span id="progTxt"></span></div>
+
+<main>
+  <aside class="card side"><h2><span>슈퍼바이저</span><span id="supCount"></span></h2><div id="supList"><div class="empty" style="padding:30px 14px">엑셀을 올려주세요</div></div></aside>
+  <section class="card detail" id="detail"><div class="empty">왼쪽에서 슈퍼바이저를 선택하세요.<br>방문 일정과 매장운영현황 엑셀을 먼저 올려야 합니다.</div></section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const LS = {
+  get(k, d){ try{ const v = localStorage.getItem(k); return v==null ? d : JSON.parse(v); }catch(e){ return d; } },
+  set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+};
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/* ───────── 상태 ───────── */
+let visits = [];            // {date,name,team,seq,store,code,assigned,visited,time,reason}
+let master = {};            // code -> {name, addr}
+let geoCache   = LS.get('vn_geo', {});     // 주소(정제) -> {lat,lon,level,src}
+let routeCache = LS.get('vn_route', {});   // "lat,lon>lat,lon" -> km
+let manualAddr = LS.get('vn_manual', {});  // 코드 -> 직접 입력한 주소
+let homeInfo   = LS.get('vn_home', {});    // 이름 -> {addr, out:true, back:true}
+let settings   = LS.get('vn_settings', {nid:'', proxy:'', effi:'', oil:''});
+let selName = null, selDate = null;
+let map = null, mapObjs = [];
+let naverState = "idle";   // idle | loading | ready | fail
+const geomCache = new Map();               // 경로 지오메트리(메모리)
+let busy = false;
+
+/* ───────── 엑셀 읽기 ───────── */
+function readSheets(file){
+  return new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onerror = () => rej(new Error('파일을 읽지 못했습니다'));
+    fr.onload = () => { try{ res(XLSX.read(new Uint8Array(fr.result), {type:'array', cellDates:false})); }catch(e){ rej(e); } };
+    fr.readAsArrayBuffer(file);
+  });
+}
+const rows = (wb, name) => XLSX.utils.sheet_to_json(wb.Sheets[name], {header:1, defval:null, raw:false});
+const norm = v => String(v ?? '').replace(/\s/g, '');
+const normCode = v => String(v ?? '').trim().toUpperCase();
+
+function parseVisitWorkbook(wb){
+  // 날짜 컬럼이 있는 v2 시트를 우선, 없으면 '방문 일정'
+  const names = wb.SheetNames;
+  const sheet = names.find(n => n.includes('방문 일정') && n.includes('v2')) || names.find(n => n.trim() === '방문 일정') || names.find(n => n.includes('방문 일정'));
+  if(!sheet) throw new Error('"방문 일정" 시트를 찾을 수 없습니다');
+  const r = rows(wb, sheet);
+  let hdr = -1;
+  for(let i=0;i<Math.min(r.length,15);i++){ const t=(r[i]||[]).map(norm); if(t.includes('근무지') && t.includes('방문여부')){ hdr=i; break; } }
+  if(hdr<0) throw new Error('머리글(근무지·방문여부)을 찾을 수 없습니다');
+  const h = r[hdr].map(norm);
+  const col = n => h.indexOf(n);
+  const cName=0, cTeam=2, cSeq=Math.max(col('일정번호'),4);
+  let cDate=-1;
+  for(let i=0;i<hdr;i++){ const t=(r[i]||[]).map(norm); const k=t.indexOf('날짜'); if(k>=0) cDate=k; }
+  const cStore=col('근무지'), cCode=col('코드'), cAsg=col('배정여부'), cVis=col('방문여부'), cTime=col('방문시각'), cWhy=col('미방문사유');
+  // 제목 행의 날짜 (날짜 컬럼이 없는 시트용)
+  let titleDate='';
+  for(let i=0;i<4;i++){ const m=String((r[i]||[])[0]??'').match(/(\d{4})\.(\d{2})\.(\d{2})/); if(m){ titleDate=`${m[1]}-${m[2]}-${m[3]}`; break; } }
+  const out=[]; let lastName='', lastTeam='';
+  for(let i=hdr+1;i<r.length;i++){
+    const x=r[i]||[];
+    const name=String(x[cName]??'').trim()||lastName; if(!String(x[cName]??'').trim() && !x[cStore]) continue;
+    lastName=name; lastTeam=String(x[cTeam]??'').trim()||lastTeam;
+    const code=normCode(x[cCode]); if(!code && !x[cStore]) continue;
+    let date=titleDate;
+    if(cDate>=0){ const m=String(x[cDate]??'').match(/(\d{4})\.(\d{2})\.(\d{2})/); if(m) date=`${m[1]}-${m[2]}-${m[3]}`; }
+    out.push({
+      date, name, team:lastTeam, seq:Number(x[cSeq])||0, store:String(x[cStore]??'').trim(), code,
+      assigned:String(x[cAsg]??'').trim().toUpperCase()==='O',
+      visited:String(x[cVis]??'').trim().toUpperCase()==='O',
+      time:String(x[cTime]??'').trim(), reason:String(x[cWhy]??'').trim()
+    });
+  }
+  return {sheet, data:out};
+}
+
+function parseMasterWorkbook(wb){
+  const sheet = wb.SheetNames.find(n => n.includes('rawdata')) || wb.SheetNames[0];
+  const r = rows(wb, sheet);
+  let hdr=-1, cE=-1;
+  for(let i=0;i<Math.min(r.length,15);i++){ const t=(r[i]||[]).map(norm); const k=t.indexOf('E점포코드'); if(k>=0){ hdr=i; cE=k; break; } }
+  if(hdr<0){ // 예전 가맹점현황 양식
+    for(let i=0;i<Math.min(r.length,15);i++){ const t=(r[i]||[]).map(norm); const k=t.indexOf('E코드'); if(k>=0){ hdr=i; cE=k; break; } }
+  }
+  if(hdr<0) throw new Error('"E점포코드" 머리글을 찾을 수 없습니다');
+  const h=(r[hdr]||[]).map(norm);
+  const cP = h.indexOf('피자점포코드'), cN = h.indexOf('매장명')>=0 ? h.indexOf('매장명') : 7;
+  const cA = 12; // M열
+  const m={}; let withAddr=0, total=0;
+  for(let i=hdr+1;i<r.length;i++){
+    const x=r[i]||[];
+    const addr=String(x[cA]??'').trim();
+    const entry={name:String(x[cN]??'').trim(), addr};
+    [normCode(x[cE]), cP>=0?normCode(x[cP]):''].forEach(c=>{ if(/^[A-Z]\d{4,}$/.test(c)){ m[c]=entry; } });
+    if(/^[A-Z]\d{4,}$/.test(normCode(x[cE]))){ total++; if(addr) withAddr++; }
+  }
+  return {sheet, map:m, total, withAddr, headerM:String(r[hdr]?.[cA]??'').trim()};
+}
+
+/* ───────── 주소 → 좌표 ───────── */
+function cleanAddr(a){
+  let s=String(a||'').replace(/\([^)]*\)/g,' ').replace(/,.*$/,' ').replace(/\s+/g,' ').trim();
+  const t=s.split(' ');
+  for(let i=1;i<t.length;i++){
+    if(/^\d+(-\d+)?(번지)?$/.test(t[i]) && /(동|리|가|로|길|읍|면)$/.test(t[i-1])) return t.slice(0,i+1).join(' ');
+    if(/^\d+번?길$/.test(t[i]) && /(로|길)$/.test(t[i-1])){ // 흑석로 12번길 5
+      const n=t[i+1]; return t.slice(0,i+(n&&/^\d+(-\d+)?$/.test(n)?2:1)).join(' ');
+    }
+  }
+  return s;
+}
+function dongLevel(a){
+  const t=cleanAddr(a).split(' ');
+  for(let i=1;i<t.length;i++) if(/(동|리|읍|면|가)$/.test(t[i]) && i>=2) return t.slice(0,i+1).join(' ');
+  return t.slice(0,3).join(' ');
+}
+function proxyBase(){ return String(settings.proxy||'').trim().replace(/\/+$/,''); }
+let apiLast=0;
+async function callProxy(path, params){
+  const base=proxyBase(); if(!base) throw new Error('중계 서버 주소가 설정되지 않았습니다');
+  const wait=Math.max(0,180-(Date.now()-apiLast)); if(wait) await sleep(wait); apiLast=Date.now();
+  const url=base+path+'?'+new URLSearchParams(params).toString();
+  let lastErr;
+  for(let t=0;t<3;t++){
+    try{
+      const r=await fetch(url);
+      if(r.status===429){ await sleep(800*(t+1)); lastErr=new Error('요청 한도(429)'); continue; }
+      const j=await r.json().catch(()=>null);
+      if(!r.ok){ const em=j&&(typeof j.error==='object'&&j.error ? (j.error.message||j.error.errorCode) : (j.error||j.message)); throw new Error(em||('중계 서버 '+r.status)); }
+      return j;
+    }catch(e){ lastErr=e; if(/설정되지/.test(e.message)) throw e; await sleep(500*(t+1)); }
+  }
+  throw lastErr;
+}
+async function geocode(addr){
+  const full=String(addr||'').replace(/\s+/g,' ').trim(); if(!full) return {level:'fail'};
+  const key=cleanAddr(full);
+  if(geoCache[key] && geoCache[key].level!=='fail') return geoCache[key];
+  const pick=j=>{ const a=j&&j.addresses&&j.addresses[0]; return a&&a.x&&a.y ? {lat:+a.y, lon:+a.x} : null; };
+  let res=null;
+  try{
+    const tries=[cleanAddr(full)]; if(!tries.includes(full)) tries.push(full);
+    for(const q of tries){ const g=pick(await callProxy('/geocode',{query:q})); if(g){ res={...g, level:'exact', src:'naver'}; break; } }
+    if(!res){ const g=pick(await callProxy('/geocode',{query:dongLevel(full)})); if(g) res={...g, level:'dong', src:'naver'}; }
+  }catch(e){ return {level:'fail', err:e.message}; }
+  if(!res) return {level:'fail'};
+  geoCache[key]=res; LS.set('vn_geo', geoCache); return res;
+}
+
+/* ───────── 거리 계산 ───────── */
+const rad = d => d*Math.PI/180;
+function straightKm(a,b){
+  const R=6371, dLat=rad(b.lat-a.lat), dLon=rad(b.lon-a.lon);
+  const h=Math.sin(dLat/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h));
+}
+async function roadRoute(a,b,needGeom){
+  const key=`${a.lat.toFixed(5)},${a.lon.toFixed(5)}>${b.lat.toFixed(5)},${b.lon.toFixed(5)}`;
+  if(routeCache[key]!=null && (!needGeom || geomCache.has(key))) return {km:routeCache[key], geom:geomCache.get(key)};
+  const j=await callProxy('/directions',{start:`${a.lon},${a.lat}`, goal:`${b.lon},${b.lat}`});
+  if(j.code===1) { routeCache[key]=0; LS.set('vn_route',routeCache); return {km:0, geom:null}; }
+  if(j.code!==0 && j.code!==undefined) throw new Error(({2:'출발/도착지가 도로 근처가 아님',3:'자동차 경로 제공 불가',4:'경유지 오류',5:'거리 초과'}[j.code])||('Directions 코드 '+j.code)+(j.message?' · '+j.message:''));
+  const rt=j.route && (j.route.traoptimal||j.route.trafast||j.route.tracomfort||Object.values(j.route)[0]);
+  const r0=rt&&rt[0]; if(!r0) throw new Error('경로 없음');
+  const km=r0.summary.distance/1000; routeCache[key]=km; LS.set('vn_route', routeCache);
+  if(r0.path) geomCache.set(key, r0.path.map(c=>[c[1],c[0]]));
+  return {km, geom:geomCache.get(key)};
+}
+
+/* ───────── 데이터 구성 ───────── */
+const supers = () => [...new Set(visits.map(v=>v.name))].sort((a,b)=>a.localeCompare(b,'ko'));
+const datesOf = n => [...new Set(visits.filter(v=>v.name===n).map(v=>v.date))].sort();
+const addrOf = code => manualAddr[code] || (master[code]?.addr) || '';
+function visitedList(name,date){
+  return visits.filter(v=>v.name===name && v.date===date && v.visited)
+    .sort((a,b)=> (a.time||'99:99').localeCompare(b.time||'99:99') || a.seq-b.seq);
+}
+function planCounts(name,date){
+  const all=visits.filter(v=>v.name===name && v.date===date);
+  return {plan:all.filter(v=>v.assigned).length, done:all.filter(v=>v.visited).length, unplanned:all.filter(v=>v.visited&&!v.assigned).length, missed:all.filter(v=>v.assigned&&!v.visited).length};
+}
+function pointsFor(name,date){
+  const list=visitedList(name,date); const h=homeInfo[name]||{};
+  const pts=[];
+  if(h.addr && h.out!==false) pts.push({kind:'home', label:'자택(출근)', addr:h.addr, time:''});
+  list.forEach(v=>pts.push({kind:'visit', v, label:v.store, code:v.code, addr:addrOf(v.code), time:v.time}));
+  if(h.addr && h.back!==false) pts.push({kind:'home', label:'자택(퇴근)', addr:h.addr, time:''});
+  return pts;
+}
+async function resolvePoints(pts, force){
+  for(const p of pts){
+    if(!p.addr){ p.geo={level:'fail', why:'주소 없음'}; continue; }
+    p.geo = await geocode(p.addr);
+  }
+}
+async function computeSegments(pts, needGeom){
+  const segs=[];
+  for(let i=0;i<pts.length-1;i++){
+    const a=pts[i].geo, b=pts[i+1].geo;
+    if(a?.level==='fail'||b?.level==='fail'||!a||!b){ segs.push({ok:false}); continue; }
+    try{ const r=await roadRoute(a,b,needGeom); segs.push({ok:true, km:r.km, straight:straightKm(a,b), geom:r.geom, rough:(a.level==='dong'||b.level==='dong')}); }
+    catch(e){ segs.push({ok:false, err:e.message}); }
+  }
+  return segs;
+}
+const summary = {}; // `${name}|${date}` -> {road,straight,visits,missing,rough}
+function sumSegs(segs){
+  const ok=segs.filter(s=>s.ok);
+  return {road:ok.reduce((a,s)=>a+s.km,0), straight:ok.reduce((a,s)=>a+s.straight,0), missing:segs.filter(s=>!s.ok).length, rough:ok.some(s=>s.rough)};
+}
+
+/* ───────── 화면 ───────── */
+const fmt = (n,d=1) => n==null||isNaN(n) ? '-' : Number(n).toFixed(d);
+function setProg(p, txt){ $('prog').style.display = p==null ? 'none':'block'; if(p!=null){ $('progBar').style.width=Math.round(p*100)+'%'; $('progTxt').textContent=txt||''; } }
+
+function renderSupers(){
+  const L=supers(); $('supCount').textContent = L.length ? L.length+'명' : '';
+  if(!L.length){ $('supList').innerHTML='<div class="empty" style="padding:30px 14px">엑셀을 올려주세요</div>'; return; }
+  $('supList').innerHTML = L.map(n=>{
+    const dates=datesOf(n); const d=(n===selName?selDate:dates[0]);
+    const pc=planCounts(n,d); const s=summary[n+'|'+d];
+    const team=visits.find(v=>v.name===n)?.team||'';
+    return `<div class="sup ${n===selName?'sel':''}" data-n="${esc(n)}"><div><div class="n">${esc(n)}</div><div class="t">${esc(team)} · 방문 ${pc.done}건</div></div>
+      <div class="km">${s? fmt(s.road)+' km' : '<span style="color:#9ca3af">-</span>'}<small>${s? (s.missing?'일부 미계산':'직선 '+fmt(s.straight)) : ''}</small></div></div>`;
+  }).join('');
+  document.querySelectorAll('.sup').forEach(el=>el.onclick=()=>selectSup(el.dataset.n));
+}
+
+async function selectSup(name, date){
+  selName=name; const dates=datesOf(name); selDate = date && dates.includes(date) ? date : (selDate && dates.includes(selDate) ? selDate : dates[0]);
+  renderSupers(); await renderDetail();
+}
+
+function mapMsg(t){ const m=$('map'); if(m) m.innerHTML=`<div class="empty" style="padding:40px 20px">${t}</div>`; }
+function loadNaver(){
+  const id=(settings.nid||'').trim();
+  if(!id){ naverState='idle'; return Promise.resolve(false); }
+  if(window.naver && window.naver.maps){ naverState='ready'; return Promise.resolve(true); }
+  if(naverState==='loading' && loadNaver._p) return loadNaver._p;
+  naverState='loading';
+  window.navermaps_authFailure=()=>{ naverState='fail'; mapMsg('네이버 지도 인증에 실패했습니다.<br>Web 서비스 URL에 이 페이지 주소가 등록되어 있는지, Client ID가 맞는지 확인해 주세요.<br>(파일로 직접 연 경우 인증이 안 됩니다. 등록한 주소로 접속하세요)'); };
+  loadNaver._p=new Promise(res=>{
+    const sc=document.createElement('script');
+    sc.src='https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId='+encodeURIComponent(id);
+    sc.onload=()=>{ naverState=(window.naver&&window.naver.maps)?'ready':'fail'; res(naverState==='ready'); };
+    sc.onerror=()=>{ naverState='fail'; res(false); };
+    document.head.appendChild(sc);
+  });
+  return loadNaver._p;
+}
+async function ensureMap(){
+  if(map){ try{ map.destroy(); }catch(e){} map=null; }
+  mapObjs=[];
+  const ok=await loadNaver();
+  if(!ok){ mapMsg(naverState==='fail' ? '네이버 지도를 불러오지 못했습니다. Client ID와 등록된 접속 주소를 확인해 주세요.' : '설정에서 네이버 Client ID를 입력하면 지도가 표시됩니다.<br>(거리 계산은 지도 없이도 동작합니다)'); return false; }
+  $('map').innerHTML='';
+  map=new naver.maps.Map('map',{center:new naver.maps.LatLng(37.5,127), zoom:11, zoomControl:true, zoomControlOptions:{position:naver.maps.Position.TOP_RIGHT}});
+  return true;
+}
+
+let renderToken=0;
+async function renderDetail(){
+  const token=++renderToken;
+  const name=selName, date=selDate; const dates=datesOf(name); const di=dates.indexOf(date);
+  const pc=planCounts(name,date); const h=homeInfo[name]||{};
+  const pts=pointsFor(name,date);
+  const dstr=date? date.replace(/-/g,'.')+' ('+'일월화수목금토'[new Date(date+'T00:00:00').getDay()]+')' : '';
+  $('detail').innerHTML = `
+    <div class="head"><div class="who">${esc(name)}</div><span style="color:var(--muted)">${esc(visits.find(v=>v.name===name)?.team||'')}</span>
+      <div class="datenav"><button id="dPrev" ${di<=0?'disabled':''}>‹</button><span>${dstr}</span><button id="dNext" ${di>=dates.length-1?'disabled':''}>›</button></div></div>
+    <div class="opts">
+      <label><input type="checkbox" id="hOut" ${h.out!==false?'checked':''}> 자택 출근</label>
+      <label><input type="checkbox" id="hBack" ${h.back!==false?'checked':''}> 자택 퇴근</label>
+      <label>자택 주소 <input type="text" id="hAddr" value="${esc(h.addr||'')}" placeholder="예: 서울 ○○구 ○○동 (아파트명도 가능)"></label>
+      <button class="btn" id="hSave">적용</button>
+      <span style="color:var(--muted);font-size:12px">비워두면 방문지 사이 거리만 계산</span>
+    </div>
+    <div class="stats" id="stats">
+      <div><small>방문 계획</small><strong>${pc.plan}</strong></div>
+      <div><small>방문 완료</small><strong class="blue">${pc.done}</strong></div>
+      <div><small>미지정 방문</small><strong>${pc.unplanned}</strong></div>
+      <div><small>미방문</small><strong style="color:var(--bad)">${pc.missed}</strong></div>
+    </div>
+    <div class="stats" id="kmStats"><div><small>도로 기준 총 거리</small><strong class="blue" id="kmRoad">계산 중…</strong></div>
+      <div><small>직선거리 합계</small><strong id="kmStr">-</strong></div><div><small>직선 대비</small><strong id="kmRatio">-</strong></div><div><small>예상 유류비</small><strong id="kmFuel">-</strong></div></div>
+    <div class="body"><div id="map"></div><div class="list" id="vlist"></div></div>`;
+  $('dPrev').onclick=()=>selectSup(name,dates[di-1]); $('dNext').onclick=()=>selectSup(name,dates[di+1]);
+  $('hSave').onclick=()=>{ homeInfo[name]={addr:$('hAddr').value.trim(), out:$('hOut').checked, back:$('hBack').checked}; LS.set('vn_home',homeInfo); delete summary[name+'|'+date]; renderDetail(); };
+  const mapReady = ensureMap();
+  if(pts.filter(p=>p.kind==='visit').length===0){ $('vlist').innerHTML='<div class="empty">방문 완료 건이 없습니다.</div>'; $('kmRoad').textContent='-'; return; }
+
+  // 목록(주소 확인 전 1차 표시)
+  drawList(pts, []);
+  await resolvePoints(pts);
+  if(token!==renderToken) return;
+  drawList(pts, []);
+  const segs=await computeSegments(pts, true);
+  if(token!==renderToken) return;
+  drawList(pts, segs); await mapReady; drawMap(pts, segs);
+  const s=sumSegs(segs); summary[name+'|'+date]={...s, visits:pc.done};
+  const eff=parseFloat(settings.effi), oil=parseFloat(settings.oil);
+  $('kmRoad').innerHTML = fmt(s.road)+'<em>km'+(s.missing?' · 일부 제외':'')+'</em>';
+  $('kmStr').innerHTML = fmt(s.straight)+'<em>km</em>';
+  $('kmRatio').innerHTML = s.straight>0 ? '×'+fmt(s.road/s.straight,2) : '-';
+  $('kmFuel').innerHTML = (eff>0 && oil>0) ? Math.round(s.road/eff*oil).toLocaleString()+'<em>원</em>' : '<em>연비·유가 입력 시</em>';
+  renderSupers(); updateButtons();
+}
+
+function geoTag(p){
+  if(!p.addr) return '<span class="tag no">주소 없음</span>';
+  if(!p.geo) return '';
+  if(p.geo.level==='exact') return '<span class="tag ex">위치 확인</span>';
+  if(p.geo.level==='dong') return '<span class="tag ap">동 단위 근사</span>';
+  return '<span class="tag no">위치 못 찾음</span>';
+}
+function drawList(pts, segs){
+  let html=''; let n=0;
+  pts.forEach((p,i)=>{
+    if(p.kind==='visit') n++;
+    const unp = p.kind==='visit' && !p.v.assigned ? '<span class="tag un">미지정 방문</span>' : '';
+    const editable = p.kind==='visit';
+    html+=`<div class="visit"><div class="no ${p.kind==='home'?'home':''}">${p.kind==='home'?'H':n}</div><div class="info">
+      <div class="tm">${esc(p.time||'')}${p.kind==='home'?'<span style="color:var(--muted);font-weight:500">'+esc(p.label)+'</span>':''}</div>
+      <div class="nm">${esc(p.label)}${p.kind==='visit'?` <small>(${esc(p.code)})</small>`:''}${unp}${geoTag(p)}</div>
+      <div class="ad">${esc(p.addr||'')}${editable?`<button class="link" data-edit="${i}">주소 입력/수정</button>`:''}</div>
+      <div class="addr-edit" id="ed${i}" style="display:none"><input type="text" value="${esc(p.addr||'')}" placeholder="도로명 또는 지번 주소"><button data-save="${i}">저장</button></div></div></div>`;
+    const sg=segs[i];
+    if(i<pts.length-1){
+      if(sg && sg.ok) html+=`<div class="seg">↓ ${fmt(sg.km)} km <small>(직선 ${fmt(sg.straight)}km${sg.rough?' · 근사':''})</small></div>`;
+      else if(sg) html+=`<div class="seg bad">↓ 계산 불가 <small>${esc(sg.err||'주소/위치 확인 필요')}</small></div>`;
+      else html+=`<div class="seg">↓ <small>…</small></div>`;
+    }
+  });
+  $('vlist').innerHTML=html;
+  document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>{ const e=$('ed'+b.dataset.edit); e.style.display=e.style.display==='none'?'flex':'none'; });
+  document.querySelectorAll('[data-save]').forEach(b=>b.onclick=()=>{
+    const p=pts[+b.dataset.save]; const v=$('ed'+b.dataset.save).querySelector('input').value.trim();
+    if(p.code){ manualAddr[p.code]=v; LS.set('vn_manual',manualAddr); }
+    delete summary[selName+'|'+selDate]; renderDetail();
+  });
+}
+function drawMap(pts, segs){
+  if(!map || !window.naver) return;
+  const N=naver.maps, bounds=new N.LatLngBounds(); let n=0;
+  segs.forEach(sg=>{ if(sg.ok && sg.geom){ const path=sg.geom.map(c=>new N.LatLng(c[0],c[1]));
+      mapObjs.push(new N.Polyline({map, path, strokeColor:'#2f6fed', strokeWeight:5, strokeOpacity:.85})); path.forEach(c=>bounds.extend(c)); } });
+  pts.forEach(p=>{
+    if(p.kind==='visit') n++;
+    if(!p.geo || p.geo.level==='fail') return;
+    const pos=new N.LatLng(p.geo.lat,p.geo.lon);
+    mapObjs.push(new N.Marker({position:pos, map, title:p.label, icon:{content:`<div class="marker ${p.kind==='home'?'home':''}"><span>${p.kind==='home'?'H':n}</span></div>`, anchor:new N.Point(14,28)}}));
+    bounds.extend(pos);
+  });
+  try{ map.fitBounds(bounds,{top:40,right:40,bottom:40,left:40}); }catch(e){}
+}
+
+/* ───────── 전체 계산 · 내보내기 ───────── */
+function updateButtons(){
+  const ready = visits.length && Object.keys(master).length;
+  $('btnAll').disabled = !ready || busy;
+  $('btnExport').disabled = !Object.keys(summary).length;
+}
+function warnMissing(){
+  const box=$('warnBox'); if(!visits.length || !Object.keys(master).length){ box.style.display='none'; return; }
+  const codes=[...new Set(visits.filter(v=>v.visited).map(v=>v.code))];
+  const miss=codes.filter(c=>!addrOf(c));
+  if(!miss.length){ box.style.display='none'; return; }
+  const nm=miss.map(c=>{ const v=visits.find(x=>x.code===c); return `${esc(v?.store||c)}(${esc(c)})`; });
+  box.style.display='block';
+  box.innerHTML=`<b>주소를 찾지 못한 방문지 ${miss.length}곳</b> — 사무실(M코드) 등은 매장운영현황에 주소가 없을 수 있습니다. 방문 목록의 "주소 입력/수정"에서 직접 넣으면 계산에 반영됩니다.<br>${nm.slice(0,12).join(', ')}${nm.length>12?' 외 '+(nm.length-12)+'곳':''}`;
+}
+$('btnAll').onclick = async () => {
+  busy=true; updateButtons();
+  const jobs=[]; supers().forEach(n=>datesOf(n).forEach(d=>{ if(visitedList(n,d).length) jobs.push([n,d]); }));
+  for(let i=0;i<jobs.length;i++){
+    const [n,d]=jobs[i]; setProg(i/jobs.length, `${n} ${d} 계산 중 (${i+1}/${jobs.length})`);
+    const pts=pointsFor(n,d); await resolvePoints(pts); const segs=await computeSegments(pts,false);
+    summary[n+'|'+d]={...sumSegs(segs), visits:visitedList(n,d).length}; renderSupers();
+  }
+  setProg(null); busy=false; updateButtons(); renderSupers();
+};
+$('btnExport').onclick = async () => {
+  const eff=parseFloat(settings.effi), oil=parseFloat(settings.oil);
+  const A=[['이름','팀','날짜','방문 완료 건수','도로 기준 총 km','직선거리 합계 km','직선 대비 배수','예상 유류비(원)','비고']];
+  const B=[['이름','날짜','순번','출발','도착','도착 시각','도로 km','직선 km','비고']];
+  for(const n of supers()) for(const d of datesOf(n)){
+    const key=n+'|'+d; const s=summary[key]; if(!s) continue;
+    const team=visits.find(v=>v.name===n)?.team||'';
+    A.push([n,team,d,s.visits,+s.road.toFixed(1),+s.straight.toFixed(1), s.straight>0?+(s.road/s.straight).toFixed(2):'', (eff>0&&oil>0)?Math.round(s.road/eff*oil):'', [s.missing?'일부 구간 계산 불가':'', s.rough?'동 단위 근사 포함':''].filter(Boolean).join(' / ')]);
+    const pts=pointsFor(n,d); await resolvePoints(pts); const segs=await computeSegments(pts,false);
+    segs.forEach((sg,i)=>B.push([n,d,i+1,pts[i].label,pts[i+1].label,pts[i+1].time||'', sg.ok?+sg.km.toFixed(1):'', sg.ok?+sg.straight.toFixed(1):'', sg.ok?(sg.rough?'근사':''):'계산 불가']));
+  }
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(A), '요약');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(B), '구간별 상세');
+  XLSX.writeFile(wb, '방문동선_거리확인.xlsx');
+};
+
+/* ───────── 파일 / 설정 ───────── */
+function bindDrop(labelId, inputId, handler){
+  const dz=$(labelId), inp=$(inputId);
+  inp.onchange=()=>{ if(inp.files[0]) handler(inp.files[0]); };
+  ['dragenter','dragover'].forEach(e=>dz.addEventListener(e,ev=>{ev.preventDefault();dz.classList.add('over');}));
+  ['dragleave','drop'].forEach(e=>dz.addEventListener(e,ev=>{ev.preventDefault();dz.classList.remove('over');}));
+  dz.addEventListener('drop',ev=>{ const f=ev.dataTransfer.files[0]; if(f) handler(f); });
+}
+bindDrop('dzVisit','fVisit', async f=>{
+  try{
+    const wb=await readSheets(f); const r=parseVisitWorkbook(wb); visits=r.data;
+    const done=visits.filter(v=>v.visited).length;
+    $('visitStat').textContent=`${f.name} · ${supers().length}명 · 방문 완료 ${done}건`; $('dzVisit').classList.add('done');
+    selName=null; selDate=null; renderSupers(); warnMissing(); updateButtons();
+  }catch(e){ $('visitStat').textContent='오류: '+e.message; }
+});
+bindDrop('dzMaster','fMaster', async f=>{
+  try{
+    const wb=await readSheets(f); const r=parseMasterWorkbook(wb); master=r.map;
+    $('masterStat').textContent=`${f.name} · 매장 ${r.total}곳 중 주소 ${r.withAddr}곳 (M열)`; $('dzMaster').classList.add('done');
+    if(r.withAddr<r.total*0.5) $('masterStat').textContent+=' · M열 머리글: "'+(r.headerM||'없음')+'" 확인 필요';
+    warnMissing(); updateButtons(); if(selName) renderDetail();
+  }catch(e){ $('masterStat').textContent='오류: '+e.message; }
+});
+$('nId').value=settings.nid||''; $('nProxy').value=settings.proxy||''; $('effi').value=settings.effi||''; $('oil').value=settings.oil||'';
+['nId','nProxy','effi','oil'].forEach(id=>$(id).onchange=()=>{
+  const idChanged = $('nId').value.trim()!==(settings.nid||'');
+  settings={nid:$('nId').value.trim(), proxy:$('nProxy').value.trim(), effi:$('effi').value, oil:$('oil').value}; LS.set('vn_settings',settings);
+  if(idChanged && !(window.naver&&window.naver.maps)){ naverState='idle'; loadNaver._p=null; }
+  if(selName) renderDetail();
+});
+if(!settings.proxy||!settings.nid) $('setBox').open=true;
+</script>
+</body>
+</html>
