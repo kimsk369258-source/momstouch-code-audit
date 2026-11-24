@@ -1082,7 +1082,8 @@ function buildMasterMapFromRows(json) {
     const code = normCode(rawMinor);
     const productCode = cols.productCode >= 0 ? normCode(r[cols.productCode]) : '';
     const sideProductCode = cols.sideProductCode >= 0 ? normCode(r[cols.sideProductCode]) : '';
-    const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '').trim() : '';
+    // 엑셀이 "-후라이드…"처럼 -·=·+로 시작하는 상품명을 수식으로 읽어 만든 오류값(#NAME? 등)은 빈 이름으로 취급
+    const productName = cols.productName >= 0 ? String(r[cols.productName] ?? '').trim().replace(/^#(NAME|REF|VALUE|DIV\/0|N\/A|NUM|NULL)[?!]?$/i, '') : '';
     const cat = cols.cat >= 0 ? String(r[cols.cat] ?? '').trim() : '';
     const detail1 = cols.detail1 >= 0 ? String(r[cols.detail1] ?? '').trim() : '';
     const detail2 = cols.detail2 >= 0 ? String(r[cols.detail2] ?? '').trim() : '';
