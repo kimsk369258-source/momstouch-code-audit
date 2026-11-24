@@ -853,6 +853,13 @@ function readWorkbook(file) {
           const data = new Uint8Array(e.target.result);
           const wb = XLSX.read(data, { type:'array', cellDates:true });
           const ws = wb.Sheets[wb.SheetNames[0]];
+          // 서식만 끝까지 칠해진 파일(사용 범위가 수십만 행)은 빈 칸을 전부 채우다 멈추므로, 실제 값이 있는 범위로 줄인다.
+          try {
+            let mr = 0, mc = 0;
+            for (const k in ws) { if (k.charCodeAt(0) === 33) continue; const c = ws[k]; if (c == null || c.v === undefined || c.v === '') continue; const a = XLSX.utils.decode_cell(k); if (a.r > mr) mr = a.r; if (a.c > mc) mc = a.c; }
+            const full = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+            if (full.e.r > mr + 50 || full.e.c > mc + 5) ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: mr, c: mc } });
+          } catch (e) { /* 범위 조정 실패 시 원래대로 */ }
           json = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' });
         }
         resolve(json);
@@ -4275,7 +4282,10 @@ setupDropZone('storeInfoDropZone', 'storeInfoFileInput', async (file) => {
   statusEl.innerHTML = `<span class="pill pill-neutral">읽는 중...</span>`;
   try {
     const json = await readWorkbook(file);
+    statusEl.innerHTML = `<span class="pill pill-neutral">파일 해석 중... (${fmtNum(json.length)}행)</span>`;
+    await new Promise(r => setTimeout(r, 0));
     const { map, order } = buildStoreInfoMapFromRows(json);
+    statusEl.innerHTML = `<span class="pill pill-neutral">${fmtNum(order.length)}개 매장 저장 중...</span>`;
     const ym = document.getElementById('storeInfoMonth')?.value || formatDate(new Date()).slice(0, 7);
     const prevCurrent = storeInfoMap, hadPrev = Object.keys(prevCurrent || {}).length > 0; // 변경 비교용 직전 현황
     // 그 달 현황으로 저장
@@ -4289,7 +4299,7 @@ setupDropZone('storeInfoDropZone', 'storeInfoFileInput', async (file) => {
     // 가장 최근 달이면 "현재" 현황도 갱신(권장 발주·재고·추출 기본값에 사용)
     const latest = storeInfoMonths.map(x => x.ym).sort().pop();
     if (ym === latest) await saveStoreInfoMap(map, order);
-    statusEl.innerHTML += `<div class="note">${ym} 가맹점현황 ${fmtNum(order.length)}개 매장으로 저장${ym === latest ? ' · 현재 현황으로도 적용' : ' (과거 달 — 현재 현황은 그대로)'}</div>`;
+    statusEl.innerHTML = `<span class="pill pill-ok">✓ 저장 완료</span><div class="note">${ym} 가맹점현황 ${fmtNum(order.length)}개 매장으로 저장${ym === latest ? ' · 현재 현황으로도 적용' : ' (과거 달 — 현재 현황은 그대로)'}</div>`;
     // 직전 "현재 현황"과 비교해 팀·담당자 등 변경을 적용일과 함께 기록(최신 달 업로드일 때만)
     if (ym === latest) {
       if (!hadPrev) statusEl.innerHTML += '<div class="note">첫 업로드라 비교할 직전 현황이 없습니다 — 이 현황을 기준으로 다음 업로드부터 변경을 기록합니다.</div>';
