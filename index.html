@@ -663,6 +663,11 @@
         <textarea id="storeAliasText" style="width:100%; height:80px; font-family:monospace; font-size:12px;"></textarea>
         <button class="btn btn-primary btn-sm" onclick="saveStoreAliases()">묶음 저장</button> <span id="storeAliasStatus"></span>
       </details>
+      <details style="margin-top:8px;"><summary style="cursor:pointer; font-size:13px;">직영↔가맹 전환일 등록 — 월중에 바뀐 매장을 날짜별로 나눠 추출합니다</summary>
+        <div class="note">한 줄에 "E코드 날짜 상태" — 그 날짜부터 직영이면 <strong>직영</strong>, 가맹이면 <strong>가맹</strong>(예: <code>E09999 2025-12-15 직영</code> = 12/15부터 직영, 그 전은 가맹). ⑤ 추출에서 이 매장의 가맹 기간 판매는 가맹점 블록에, 직영 기간 판매는 직영점 블록에 각각 행으로 나뉘어 들어갑니다(이름 뒤에 "(가맹 기간)"/"(직영 기간)" 표시). 등록하지 않으면 그 달 가맹점현황의 팀·가맹그룹으로 판정합니다.</div>
+        <textarea id="storeTransText" style="width:100%; height:90px; font-family:monospace; font-size:12px;" placeholder="E09999 2025-12-15 직영"></textarea>
+        <button class="btn btn-primary btn-sm" onclick="saveStoreTransitions()">전환일 저장</button> <span id="storeTransStatus"></span>
+      </details>
       <details style="margin-top:8px;"><summary style="cursor:pointer; font-size:13px;">제외 매장(테스트용·교육장) — 업로드·집계·조회에서 모두 뺍니다</summary>
         <div class="note">한 줄에 "코드 매장명"(코드만, 매장명만 적어도 됨). 일별 대조(합본·이상 항목 포함), 재분류, 발주(입고) 원장, 판매 소진, 분류 수량, 채널 합본, 모든 추출에서 빠집니다.</div>
         <textarea id="excludedStoreText" style="width:100%; height:110px; font-family:monospace; font-size:12px;"></textarea>
@@ -4133,7 +4138,26 @@ async function storeInfoForRange(start, end) {
   for (const u of used) { const o = u ? await loadStoreInfoForMonth(u) : null; snaps.push(o || { map: storeInfoMap, order: storeInfoOrder }); }
   const map = {}, order = [];
   snaps.slice().reverse().forEach(o => (o.order || Object.keys(o.map || {})).forEach(c => { if (!map[c] && o.map?.[c]) { map[c] = o.map[c]; order.push(c); } }));
-  return { map, order, months: used.map(u => u || '현재') };
+  const monthMaps = {}; ms.forEach(m => { const u = pick(m), i = used.indexOf(u); if (i >= 0 && snaps[i]?.map) monthMaps[m] = snaps[i].map; }); // 달별로 그 달 현황(직영/가맹 판정용)
+  return { map, order, months: used.map(u => u || '현재'), monthMaps };
+}
+// 그 기간 현황에 없는 매장(예: 월중에 폐점·양도양수된 직영점)이 판매 데이터에 있으면, 다른 달에 보관된 현황에서 찾아 넣는다.
+// 못 찾을 때만 "가맹점현황 없음"이 되므로, 직영 매장이 가맹점 블록으로 잘못 들어가는 일을 막는다. (판매가 있는 코드만 추가)
+async function augmentInfoFromOtherMonths(info, codes) {
+  try {
+    const al = buildAliasMap(info);
+    let missing = [...new Set(codes)].filter(c => c && !info.map[c] && !al[c]);
+    if (!missing.length || !storeInfoMonths.length) return info;
+    const ref = (info.months && info.months.length ? info.months[info.months.length - 1] : '') ; const refN = /^\d{4}-\d{2}$/.test(ref) ? (+ref.slice(0, 4)) * 12 + (+ref.slice(5, 7)) : 0;
+    const yms = storeInfoMonths.map(x => x.ym).sort((a, b) => Math.abs(((+a.slice(0, 4)) * 12 + (+a.slice(5, 7))) - refN) - Math.abs(((+b.slice(0, 4)) * 12 + (+b.slice(5, 7))) - refN));
+    const map = { ...info.map }, order = [...info.order], used = new Set();
+    for (const ym of yms) {
+      if (!missing.length) break;
+      const o = await loadStoreInfoForMonth(ym); if (!o) continue;
+      missing = missing.filter(c => { const v = o.map?.[c]; if (!v) return true; map[c] = v; order.push(c); used.add(ym); return false; });
+    }
+    return used.size ? { ...info, map, order, fallbackMonths: [...used] } : info;
+  } catch (e) { console.warn('다른 달 현황 보강 실패', e); return info; }
 }
 async function loadStoreInfoMap() {
   loadStoreInfoMonths();
@@ -4236,6 +4260,35 @@ function buildAliasMap(info) {
   Object.entries(IM).forEach(([code, v]) => { const pz = String(v?.pizza || '').trim(); if (pz && pz !== code && !IM[pz]) alias[pz] = code; });
   manualStoreAliases.forEach(({ from, to }) => { if (from && to && from !== to) alias[from] = to; });
   return alias;
+}
+// ── 직영↔가맹 전환일: 같은 코드가 월중에 직영/가맹으로 바뀐 매장은 "이 날부터 ○○"로 등록해 두면, 추출할 때 날짜별로 해당 블록에 담는다.
+let storeTransitions = []; // [{code, date:'YYYY-MM-DD', to:'직영'|'가맹'}]
+function renderStoreTransitions() {
+  const ta = document.getElementById('storeTransText'); if (ta) ta.value = storeTransitions.map(t => `${t.code} ${t.date} ${t.to}`).join('\n');
+}
+async function loadStoreTransitions() {
+  try { const raw = await storageGet('meta:storeTransitions'); const a = raw ? JSON.parse(raw) : []; if (Array.isArray(a)) storeTransitions = a; } catch (e) { /* 없음 */ }
+  renderStoreTransitions();
+}
+async function saveStoreTransitions() {
+  const el = document.getElementById('storeTransStatus'), bad = [], out = [];
+  (document.getElementById('storeTransText').value || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean).forEach(l => {
+    const m = l.match(/^([A-Za-z]\d+)\s+(\d{4}-\d{2}-\d{2})\s+(직영|가맹)/);
+    if (m) out.push({ code: m[1].toUpperCase(), date: m[2], to: m[3] }); else bad.push(l);
+  });
+  if (bad.length) { if (el) el.innerHTML = `<span class="pill pill-bad">✗ 형식 오류</span><span>${esc(bad[0])}${bad.length > 1 ? ` 외 ${bad.length - 1}줄` : ''} — "E09993 2025-12-15 가맹" 형식으로 적어주세요.</span>`; return; }
+  const ok = await storageSet('meta:storeTransitions', JSON.stringify(out));
+  if (ok) storeTransitions = out;
+  directCodesCache = null;
+  if (el) el.innerHTML = ok ? `<span class="pill pill-ok">✓ ${out.length}건 저장</span>` : '<span class="pill pill-bad">✗ 저장 실패</span>';
+}
+// 일자(dk: YYYY-MM-DD 또는 월 YYYY-MM)에 그 매장이 직영이었는지. 등록한 전환일이 있으면 그걸 따르고, 없으면 그 달 현황(없으면 기간 합본)의 팀·가맹그룹으로 본다.
+function storeDirectAt(code, dk, info) {
+  const d = /^\d{4}-\d{2}$/.test(dk) ? dk + '-28' : dk;
+  const tr = storeTransitions.filter(t => t.code === code).sort((a, b) => a.date.localeCompare(b.date));
+  if (tr.length) { let st = null; tr.forEach(t => { if (t.date <= d) st = t.to; }); if (st === null) st = tr[0].to === '직영' ? '가맹' : '직영'; return st === '직영'; }
+  const inf = info?.monthMaps?.[d.slice(0, 7)]?.[code] || info?.map?.[code] || storeInfoMap[code];
+  return isDirectStore(inf);
 }
 // 직영 매장 판정(추출 표 맨 아래로 보냄)
 function isDirectStore(info) { return !!info && (/직영/.test(info.group || '') || /직영/.test(info.team || '')); }
@@ -4392,8 +4445,7 @@ function buildPivotSheet(dates, byDate, matchFn, extra, info) {
   const IM = info?.map || storeInfoMap, IO = info?.order || storeInfoOrder;
   const listed = IO.filter(c => IM[c]);
   // 가맹점 블록(가맹점 + 가맹점현황 없는 매장) → 요약 3줄 → 빈 줄 → 직영점 블록 → 요약 3줄
-  const franchise = [...listed.filter(c => !isDirectStore(IM[c])), ...(extra || []).map(x => x.code)];
-  const direct = listed.filter(c => isDirectStore(IM[c]));
+  // 매장마다 날짜별 직영/가맹 상태를 따져, 월중에 전환된 매장은 가맹 기간은 가맹점 블록에, 직영 기간은 직영점 블록에 따로 담는다.
   // A E코드 · B 피자코드 · C 매장명 · D 가맹그룹 · E 팀 · F 담당 AC · G 빈칸 · H~ 날짜 (매장운영현황 D·E·H·J·K·L열)
   const header = ['E코드', '피자코드', '매장명', '가맹그룹', '팀', '담당 AC', null, ...dates.map(k => isMonthKey(k) ? k : toExcelSerialDate(k))];
   const rows = [new Array(header.length).fill(null), header]; // 1행: 빈 줄, 2행: 헤더
@@ -4402,10 +4454,24 @@ function buildPivotSheet(dates, byDate, matchFn, extra, info) {
   const alias = buildAliasMap({ map: IM });
   const secondaries = {}; Object.entries(alias).forEach(([from, to]) => { (secondaries[to] = secondaries[to] || []).push(from); });
   const qty = {}; dates.forEach(dk => { const m = qty[dk] = {}; (byDate[dk] || []).forEach(e => { if (matchFn(e)) { const k = alias[e.storeCode] || e.storeCode; m[k] = (m[k] || 0) + e.qty; } }); });
-  const storeRow = code => {
+  const allCodes = [...listed, ...(extra || []).map(x => x.code)];
+  const dirAt = {}; // code -> dk -> 직영 여부
+  allCodes.forEach(c => { const o = dirAt[c] = {}; dates.forEach(dk => { o[dk] = storeDirectAt(c, dk, info); }); });
+  const lastDk = dates[dates.length - 1];
+  const franchise = [], direct = []; // {code, mode: 'all'|'F'|'D'}
+  allCodes.forEach(c => {
+    let hasF = false, hasD = false;
+    dates.forEach(dk => { if ((qty[dk][c] || 0) !== 0) { if (dirAt[c][dk]) hasD = true; else hasF = true; } });
+    if (hasF && hasD) { franchise.push({ code: c, mode: 'F' }); direct.push({ code: c, mode: 'D' }); }
+    else (hasD || (!hasF && dirAt[c][lastDk]) ? direct : franchise).push({ code: c, mode: 'all' });
+  });
+  const storeRow = ({ code, mode }) => {
     const sInfo = IM[code] || extraInfo[code] || {};
     const bCol = [...new Set([sInfo.pizza, ...(secondaries[code] || [])].filter(Boolean))].join(', ') || null; // B열: 묶인 보조 코드
-    return [code, bCol, sInfo.name || '', sInfo.group || null, sInfo.team || '', sInfo.ac || null, null, ...dates.map(dk => qty[dk][code] || 0)];
+    const name = (sInfo.name || '') + (mode === 'F' ? ' (가맹 기간)' : mode === 'D' ? ' (직영 기간)' : '');
+    const team = mode === 'D' && !isDirectStore(sInfo) ? '직영팀' : (mode === 'F' && isDirectStore(sInfo) ? '' : (sInfo.team || ''));
+    const grp = mode === 'D' && !isDirectStore(sInfo) ? '직영사업그룹' : (mode === 'F' && isDirectStore(sInfo) ? null : (sInfo.group || null));
+    return [code, bCol, name, grp, team, mode === 'D' && !isDirectStore(sInfo) ? '직영팀' : (sInfo.ac || null), null, ...dates.map(dk => (mode === 'F' && dirAt[code][dk]) || (mode === 'D' && !dirAt[code][dk]) ? 0 : (qty[dk][code] || 0))];
   };
   const blocks = []; // {start, end, label}
   const addBlock = (codes, label) => {
@@ -4629,7 +4695,8 @@ async function downloadCategoryExtract() {
 
     const wb = XLSX.utils.book_new();
     // 가맹점현황에 없는 매장도 넣을지(체크 해제 시 표 아래에 "가맹점현황 없음"으로 붙임)
-    const rangeInfo = await storeInfoForRange(dates[0].length === 7 ? dates[0] + '-01' : dates[0], dates[dates.length - 1].length === 7 ? dates[dates.length - 1] + '-28' : dates[dates.length - 1]);
+    let rangeInfo = await storeInfoForRange(dates[0].length === 7 ? dates[0] + '-01' : dates[0], dates[dates.length - 1].length === 7 ? dates[dates.length - 1] + '-28' : dates[dates.length - 1]);
+    rangeInfo = await augmentInfoFromOtherMonths(rangeInfo, Object.values(byDate).flatMap(l => (l || []).filter(e => e.qty).map(e => e.storeCode)));
     const catExtra = document.getElementById('catExActive')?.checked === false ? (() => {
       const al = buildAliasMap(rangeInfo);
       const m = new Map(); Object.values(byDate).forEach(list => (list || []).forEach(e => { if (!rangeInfo.map[e.storeCode] && !al[e.storeCode] && e.qty) m.set(e.storeCode, e.storeName || m.get(e.storeCode) || ''); }));
@@ -6375,7 +6442,8 @@ async function downloadDailySold() {
     const missing = dates.filter(d => !salesDays.has(d));
     const pack = packInfoMap();
     const conv = item => unit === 'pack' ? (pack[item]?.unitsPerPack || 1) : 1;
-    const rInfo = await storeInfoForRange(start, end);
+    let rInfo = await storeInfoForRange(start, end);
+    rInfo = await augmentInfoFromOtherMonths(rInfo, Object.keys(S));
     const inInfo = storeOrderWithDirectLast(rInfo.order.filter(c => S[c]), rInfo.map);
     const extraC = Object.keys(S).filter(c => !rInfo.map[c]).sort();
     const codes = onlyActive ? inInfo : [...inInfo, ...extraC];
@@ -6697,7 +6765,8 @@ async function downloadChannelExtract() {
     const nameMap = {};
     for (const d of savedIn) { const o = await loadChannelQty(d); Object.assign(nameMap, o?.names || {}); byDate[d] = (o?.rows || []).map(([storeCode, cat, detail1, ch, qty]) => ({ storeCode, cat, detail1, ch, qty })); }
     const onlyActive = document.getElementById('chanExActive')?.checked !== false;
-    const rangeInfo = await storeInfoForRange(dates[0], dates[dates.length - 1]);
+    let rangeInfo = await storeInfoForRange(dates[0], dates[dates.length - 1]);
+    rangeInfo = await augmentInfoFromOtherMonths(rangeInfo, Object.values(byDate).flatMap(l => l.filter(e => e.qty).map(e => e.storeCode)));
     const alC = buildAliasMap(rangeInfo);
     const extraCodes = [...new Set(Object.values(byDate).flatMap(l => l.filter(e => !rangeInfo.map[e.storeCode] && !alC[e.storeCode] && e.qty).map(e => e.storeCode)))].sort();
     const chanExtra = onlyActive ? null : extraCodes.map(code => ({ code, name: nameMap[code] || '' }));
@@ -8781,6 +8850,7 @@ if (!isConfigured) {
       await loadOrderCodeMap();
       await loadOrdersIndex();
       await loadExcludedStores();
+      await loadStoreTransitions();
       loadProdLimits();
       await loadStoreInfoMap();
       loadStoreAliases();
@@ -9081,7 +9151,7 @@ function downloadPizzaTracking() {
   XLSX.writeFile(wb, `피자판매현황_${start}_${end}.xlsx`);
 }
 
-Object.assign(window, { extractPickChange, extractPickClear, extractPickSearch, extractFilterInit,
+Object.assign(window, { saveStoreTransitions, extractPickChange, extractPickClear, extractPickSearch, extractFilterInit,
   closureShowAll, makePizzaTracking, downloadPizzaTracking, renderStoreInfoLog, downloadStoreInfoLog,
   doLogin, doLogout,
   manualAddCode, toggleDay, toggleAddForm, addAnomalyToMaster, updateMasterName,
