@@ -688,7 +688,6 @@
         <span class="note" id="storeInfoMonths"></span>
       </div>
       <div class="note" style="margin-top:6px;"><strong>월초·월말·월중 변경을 모두 올리세요.</strong> 올릴 때마다 <strong>적용일</strong>(월초 파일 = 1일, 월말 파일 = 말일, 중간에 바뀐 건 그 날짜)을 넣으면 버전으로 쌓이고, 직전 버전과 비교해 팀·담당 AC·가맹그룹·매장명·신규·제외가 아래 "변경 이력"에 적용일과 함께 기록됩니다. 추출할 때는 날짜마다 그 날짜에 유효한 버전으로 직영/가맹을 판정합니다.</div>
-      <details open style="margin-top:8px;"><summary style="cursor:pointer; font-size:13px;"><strong>현황 버전 이력</strong> (올린 파일 목록)</summary><div class="table-wrap" style="margin-top:6px;"><table id="siVerTable"><thead></thead><tbody></tbody></table></div></details>
       <details style="margin-top:8px;"><summary style="cursor:pointer; font-size:13px;">매장 묶음(보조 코드 → 대표 매장) — 추출 때 보조 코드 판매를 대표 매장 행에 합치고 B열에 표시</summary>
         <div class="note">매장운영현황의 피자점포코드(예: E01824 한남대점 ↔ D00050)는 자동으로 묶입니다. 그 외 묶음은 한 줄에 "보조코드 대표코드"로 적고 저장하세요(예: E10322 E10300).</div>
         <textarea id="storeAliasText" style="width:100%; height:80px; font-family:monospace; font-size:12px;"></textarea>
@@ -711,6 +710,7 @@
       </div>
       <input type="file" id="storeInfoFileInput" accept=".xlsx,.xls,.xlsb">
       <div id="storeInfoStatus" class="status-line" style="margin-top:10px;"></div>
+      <details id="siVerDetails" style="margin-top:12px;"><summary style="cursor:pointer; font-size:13px;"><strong>현황 버전 이력</strong> <span id="siVerCount" class="note"></span> — 눌러서 펼치기/접기</summary><div class="table-wrap" style="margin-top:6px;"><table id="siVerTable"><thead></thead><tbody></tbody></table></div></details>
     </div>
 
     <div class="card">
@@ -730,7 +730,7 @@
       <div class="card-sub">올릴 때마다 직전 현황과 비교해 바뀐 항목을 <strong>적용일별 → 매장별 한 줄</strong>로 묶어 보여줍니다. 월 버튼으로 달을 고르고, 적용일 줄을 눌러 펼치세요. ⑤ 피자 판매현황은 일자 기준으로 그때의 팀·담당자를 씁니다.</div>
       <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:8px;">
         <input type="text" id="siLogSearch" class="search-input" placeholder="매장명·코드·담당자 검색" oninput="renderStoreInfoLog()" style="flex:1 1 200px;">
-        <select id="siLogField" autocomplete="off" class="search-input" style="flex:none;" onchange="renderStoreInfoLog()"><option value="">전체 항목</option><option>팀</option><option>담당 AC</option><option>가맹그룹</option><option>매장명</option><option>피자 런칭일</option><option>신규</option><option>제외</option></select>
+        <select id="siLogField" autocomplete="off" class="search-input" style="flex:none;" onchange="renderStoreInfoLog()"><option value="">전체 항목</option><option>팀</option><option>담당 AC</option><option>가맹그룹</option><option>매장명</option><option>피자 런칭일</option><option>비프 런칭일</option><option>신규</option><option>제외</option></select>
         <button class="btn btn-ghost btn-sm" onclick="renderStoreInfoLog(true)">이력 불러오기</button>
         <button class="btn btn-ghost btn-sm" onclick="downloadStoreInfoLog()">엑셀 다운로드</button>
       </div>
@@ -4246,6 +4246,7 @@ function renderStoreInfoVers() {
   try { renderStoreInfoMatrix(); } catch (e) { /* 아직 준비 전 */ }
   const t = document.getElementById('siVerTable'); if (!t) return;
   const list = storeInfoVers.slice().sort((a, b) => b.date.localeCompare(a.date));
+  const vc = document.getElementById('siVerCount'); if (vc) vc.textContent = `(${list.length}개)`;
   t.innerHTML = '<thead><tr><th>적용일</th><th>파일</th><th class="num">매장 수</th><th>올린 시각</th><th></th></tr></thead><tbody>' + (list.map(v => `<tr><td><strong>${esc(v.date)}</strong></td><td>${esc(v.fileName || '-')}</td><td class="num">${fmtNum(v.count)}</td><td>${esc(v.uploadedAt ? new Date(v.uploadedAt).toLocaleString('ko-KR') : '-')}</td><td><button class="btn btn-ghost btn-sm" onclick="deleteStoreInfoVer('${v.date}')">삭제</button></td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">아직 버전으로 올린 현황이 없습니다(이전에 월별로 올린 현황은 위 "등록된 월"에 있습니다).</div></td></tr>') + '</tbody>';
 }
 async function deleteStoreInfoVer(date) {
@@ -4470,6 +4471,7 @@ function buildStoreInfoMapFromRows(json) {
     const col = (name, fallback) => { const k = r.indexOf(name); return k >= 0 ? k : fallback; };
     const cP = col('피자점포코드', 4), cN = col('매장명', 7), cG = col('가맹그룹', 9), cT = col('팀', 10), cA = col('담당AC', 11);
     const cL = col('피자여부', -1); // G열 "피자 여부(런칭일)"
+    const cB = col('BEEF여부', col('비프여부', -1)); // F열 "BEEF 여부(런칭일)"
     const map = {}, order = [];
     for (let j = i + 1; j < json.length; j++) {
       const row = json[j] || [];
@@ -4479,6 +4481,7 @@ function buildStoreInfoMapFromRows(json) {
       if (!(code in map)) order.push(code);
       map[code] = { name: String(row[cN] ?? '').trim(), team: String(row[cT] ?? '').trim(), pizza: String(row[cP] ?? '').trim(), group: String(row[cG] ?? '').trim(), ac: String(row[cA] ?? '').trim() };
       { const pl = cL >= 0 ? pzLaunchStr(row[cL]) : ''; if (pl) map[code].pizzaLaunch = pl; }
+      { const bl = cB >= 0 ? pzLaunchStr(row[cB]) : ''; if (bl) map[code].beefLaunch = bl; }
     }
     if (order.length) return { map, order: storeOrderWithDirectLast(order, map) };
   }
@@ -9022,7 +9025,7 @@ if (!isConfigured) {
 // 매장운영현황 변경 이력 — 올릴 때마다 직전 현황과 비교해 팀·담당자 등의 변경을 적용일과 함께 기록한다.
 // 기록 한 줄: [적용일, 코드, 매장명, 항목, 이전, 이후, 파일명, 입력자, 기록시각]
 // ==========================================================================
-const SI_FIELDS = [['team', '팀'], ['ac', '담당 AC'], ['group', '가맹그룹'], ['name', '매장명'], ['pizzaLaunch', '피자 런칭일']];
+const SI_FIELDS = [['team', '팀'], ['ac', '담당 AC'], ['group', '가맹그룹'], ['name', '매장명'], ['pizzaLaunch', '피자 런칭일'], ['beefLaunch', '비프 런칭일']];
 let storeInfoLog = null;
 async function loadStoreInfoLog(force) {
   if (storeInfoLog && !force) return storeInfoLog;
@@ -9031,11 +9034,11 @@ async function loadStoreInfoLog(force) {
 }
 // 두 현황의 차이 → 변경 목록(적용일·파일명·입력자는 호출하는 쪽에서 채움)
 function storeInfoDiff(oldMap, newMap) {
-  const out = [], oldHasLaunch = Object.values(oldMap).some(v => v && v.pizzaLaunch); // 예전 양식·런칭일 저장 전 현황이면 없던 항목은 "변경"으로 보지 않는다
+  const out = [], oldHas = { pizzaLaunch: Object.values(oldMap).some(v => v && v.pizzaLaunch), beefLaunch: Object.values(oldMap).some(v => v && v.beefLaunch) }; // 예전 양식·런칭일 저장 전 현황이면 없던 항목은 "변경"으로 보지 않는다
   Object.keys(newMap).forEach(code => {
     const n = newMap[code], o = oldMap[code];
     if (!o) { out.push({ code, name: n.name, field: '신규', from: '', to: [n.group, n.team, n.ac].filter(Boolean).join(' / ') }); return; }
-    SI_FIELDS.forEach(([k, label]) => { if (k === 'pizzaLaunch' ? !oldHasLaunch : !(k in o)) return; const a = String(o[k] ?? '').trim(), b = String(n[k] ?? '').trim(); if (a !== b) out.push({ code, name: n.name || o.name, field: label, from: a, to: b }); });
+    SI_FIELDS.forEach(([k, label]) => { if (k in oldHas ? !oldHas[k] : !(k in o)) return; const a = String(o[k] ?? '').trim(), b = String(n[k] ?? '').trim(); if (a !== b) out.push({ code, name: n.name || o.name, field: label, from: a, to: b }); });
   });
   Object.keys(oldMap).forEach(code => { if (!newMap[code]) out.push({ code, name: oldMap[code].name, field: '제외', from: [oldMap[code].group, oldMap[code].team, oldMap[code].ac].filter(Boolean).join(' / '), to: '' }); });
   return out;
@@ -9122,17 +9125,41 @@ function renderStoreInfoMatrix() {
 }
 function siSnapAoa(o) {
   const order = (o.order && o.order.length ? o.order : Object.keys(o.map || {})).filter(c => o.map?.[c]);
-  return [['E점포코드', '피자점포코드', '매장명', '가맹그룹', '팀', '담당 AC', '피자 런칭일'], ...order.map(c => { const v = o.map[c]; return [c, v.pizza || '', v.name || '', v.group || '', v.team || '', v.ac || '', v.pizzaLaunch || '']; })];
+  return [['E점포코드', '피자점포코드', '매장명', '가맹그룹', '팀', '담당 AC', '비프 런칭일', '피자 런칭일'], ...order.map(c => { const v = o.map[c]; return [c, v.pizza || '', v.name || '', v.group || '', v.team || '', v.ac || '', v.beefLaunch || '', v.pizzaLaunch || '']; })];
+}
+// 운영점포 판정: 런칭일이 있고 기준일 이하. 피자는 런칭일 정보가 없는 예전 파일이면 피자점포코드가 있는 매장으로 대신한다.
+function siOperating(map, kind, date) {
+  const hasLaunch = Object.values(map).some(v => v && (kind === 'beef' ? v.beefLaunch : v.pizzaLaunch)), set = new Set();
+  Object.entries(map).forEach(([c, v]) => { const l = kind === 'beef' ? v.beefLaunch : v.pizzaLaunch; if (hasLaunch ? (l && l <= date) : (kind === 'pizza' && v.pizza)) set.add(c); });
+  return { set, hasLaunch };
+}
+// 월초/월말 두 현황 → 변동 가맹점, 비프운영점포, 피자운영점포 시트
+function siAddCompareSheets(wb, sMap, eMap, sDate, eDate) {
+  const meta = c => eMap[c] || sMap[c] || {};
+  const ch = storeInfoDiff(sMap, eMap), per = {}; ch.forEach(x => (per[x.code] = per[x.code] || []).push(x));
+  const rows = []; Object.keys(per).forEach(c => per[c].forEach(x => rows.push([c, x.name || meta(c).name || '', x.field, x.from, x.to])));
+  const ord = { '신규': 0, '제외': 1 }; rows.sort((a, b) => (ord[a[2]] ?? 2) - (ord[b[2]] ?? 2) || a[0].localeCompare(b[0]));
+  const sum = {}; ch.forEach(x => { sum[x.field] = (sum[x.field] || 0) + 1; });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([[`월초 ${sDate} → 월말 ${eDate} 변동`, `변동 매장 ${Object.keys(per).length}개`, Object.entries(sum).map(([k, v]) => `${k} ${v}`).join(' · ')], ['E점포코드', '매장명', '항목', `월초(${sDate})`, `월말(${eDate})`], ...rows]), '변동 가맹점');
+  [['beef', '비프운영점포', '비프 런칭일', 'beefLaunch'], ['pizza', '피자운영점포', '피자 런칭일', 'pizzaLaunch']].forEach(([kind, title, lab, key]) => {
+    const A = siOperating(sMap, kind, sDate), B = siOperating(eMap, kind, eDate), codes = [...new Set([...A.set, ...B.set])];
+    const note = (!A.hasLaunch || !B.hasLaunch) ? (kind === 'pizza' ? '※ 런칭일 정보가 없는 현황은 피자점포코드가 있는 매장을 운영점포로 봤습니다.' : '※ 이 현황에는 비프 런칭일이 없습니다 — 비프 여부 열이 있는 매장운영현황을 다시 올려야 채워집니다.') : '';
+    const rr = codes.map(c => { const v = meta(c), a = A.set.has(c), b = B.set.has(c); return [c, v.pizza || '', v.name || '', v.group || '', v.team || '', v.ac || '', v[key] || '', a ? 'O' : '', b ? 'O' : '', a && b ? '유지' : b ? '신규 운영' : '운영 종료']; });
+    const o2 = { '신규 운영': 0, '운영 종료': 1, '유지': 2 }; rr.sort((x, y) => o2[x[9]] - o2[y[9]] || x[0].localeCompare(y[0]));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([[title, `월초 ${A.set.size}개 → 월말 ${B.set.size}개`, note], ['E점포코드', '피자점포코드', '매장명', '가맹그룹', '팀', '담당 AC', lab, `월초(${sDate})`, `월말(${eDate})`, '변동'], ...rr]), title);
+  });
 }
 async function downloadStoreInfoSnap(kind, key) {
   try {
     const wb = XLSX.utils.book_new(), add = (name, o) => { if (o?.map) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(siSnapAoa(o)), name.slice(0, 31)); };
     let fn = '';
-    if (kind === 'v') { add(key, await loadStoreInfoVer(key)); fn = `매장운영현황_${key}.xlsx`; }
+    if (kind === 'v') { const o = await loadStoreInfoVer(key); if (o?.map) { siAddCompareSheets(wb, o.map, o.map, key, key); wb.SheetNames.splice(0, 1); delete wb.Sheets['변동 가맹점']; } add(key, o); fn = `매장운영현황_${key}.xlsx`; }
     else if (kind === 'm') { add(key, await loadStoreInfoForMonth(key)); fn = `매장운영현황_${key}_월별현황.xlsx`; }
     else if (kind === 'pair') {
       const vs = storeInfoVers.filter(v => v.date.startsWith(key)), s = vs.find(v => siMxClass(v, key) === 'start'), e = vs.filter(v => siMxClass(v, key) === 'end').pop();
-      if (s) add('월초_' + s.date, await loadStoreInfoVer(s.date)); if (e) add('월말_' + e.date, await loadStoreInfoVer(e.date)); fn = `매장운영현황_${key}_월초월말.xlsx`;
+      const so = s ? await loadStoreInfoVer(s.date) : null, eo = e ? await loadStoreInfoVer(e.date) : null;
+      if (so?.map && eo?.map) siAddCompareSheets(wb, so.map, eo.map, s.date, e.date);
+      if (so) add('월초_' + s.date, so); if (eo) add('월말_' + e.date, eo); fn = `매장운영현황_${key}_월초월말.xlsx`;
     } else { for (const v of storeInfoVers.slice().sort((a, b) => a.date.localeCompare(b.date))) add(v.date, await loadStoreInfoVer(v.date)); fn = `매장운영현황_저장버전_전체.xlsx`; }
     if (!wb.SheetNames.length) { alert('저장된 현황을 불러오지 못했습니다.'); return; }
     XLSX.writeFile(wb, fn);
