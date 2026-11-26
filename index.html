@@ -555,6 +555,24 @@
       <div class="note">※ 이 기능을 새로 추가하기 전에 저장된 날짜는 매장×분류별 판매건수가 따로 저장되어 있지 않아 추출에 포함되지 않습니다. "③ 이력" 탭의 "🔄 전체 재분류"를 한 번 실행하면 과거 날짜도 포함됩니다.</div>
       <div id="extractStatus" style="margin-top:8px;"></div>
     </div>
+    <div class="card">
+      <h2>SSSG 기준 매장 운영 확인</h2>
+      <div class="card-sub">조회 기간 동안 매장이 <strong>계속 운영되고 있는지</strong> 저장된 판매 데이터로 확인해, 동일점포(SSSG) 비교 대상인지 매장별로 판정합니다. 기준일 = 조회 시점(종료일)의 매장운영현황.</div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-top:10px;">
+        <div><label style="display:block; font-size:12px; color:#6b7280; margin-bottom:4px;">시작일</label><input type="date" id="sssgStart" class="search-input" value="2025-01-01"></div>
+        <div><label style="display:block; font-size:12px; color:#6b7280; margin-bottom:4px;">종료일(조회 시점)</label><input type="date" id="sssgEnd" class="search-input" value="2026-11-25"></div>
+        <div title="기간 시작 후 이 일수 안에 첫 판매가 없으면 신규/재오픈으로 봅니다"><label style="display:block; font-size:12px; color:#6b7280; margin-bottom:4px;">초반 확인일수</label><input type="number" id="sssgHead" class="search-input" value="14" min="1" style="width:80px;"></div>
+        <div title="기간 끝에서 이 일수 이상 판매가 없으면 중단/폐점으로 봅니다"><label style="display:block; font-size:12px; color:#6b7280; margin-bottom:4px;">종료 직전 확인일수</label><input type="number" id="sssgTail" class="search-input" value="14" min="1" style="width:80px;"></div>
+        <div title="기간 중 연속으로 판매가 없던 날이 이보다 길면 장기 휴무로 봅니다"><label style="display:block; font-size:12px; color:#6b7280; margin-bottom:4px;">허용 연속 무판매일</label><input type="number" id="sssgGap" class="search-input" value="7" min="1" style="width:80px;"></div>
+        <div title="명동점1 → 명동점2처럼 이름 끝 숫자만 바뀌며 이어지는 매장(양도양수)을 한 점포로 연결할 때, 앞 매장 마지막 판매~뒤 매장 첫 판매 사이 허용 공백"><label style="display:block; font-size:12px; color:#6b7280; margin-bottom:4px;">양도양수 허용 공백일</label><input type="number" id="sssgXfer" class="search-input" value="30" min="0" style="width:80px;"></div>
+        <label style="font-size:12px; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="sssgNoDirect" checked autocomplete="off"> 직영점 제외</label>
+        <button class="btn btn-primary btn-sm" onclick="runSssgCheck()">🔎 운영 확인</button>
+        <button class="btn btn-ghost btn-sm" onclick="downloadSssg()">📥 엑셀 다운로드</button>
+      </div>
+      <div class="note" style="margin-top:6px;"><strong>판정 기준</strong> — ✅ SSSG 대상: 기간 초반(확인일수 안)부터 판매가 있고, 종료 직전까지 판매가 이어지며, 기간 중 허용 연속 무판매일을 넘는 휴무가 없고, 시작·종료 시점 모두 가맹점(직영↔가맹 전환 없음)이며 종료 시점 현황에 있는 매장. 그 외는 사유와 함께 제외(신규·재오픈 / 중단·폐점 / 장기 휴무 / 직영·전환 / 현황 미등록). 운영 여부는 일별 저장 데이터(매장별 매출 또는 분류 판매건수)가 있는 날 기준으로, 저장 데이터가 없는 날은 휴무로 세지 않습니다.</div>
+      <div id="sssgStatus" style="margin-top:8px;"></div>
+      <div id="sssgResult" style="margin-top:8px;"></div>
+    </div>
       <div class="card">
       <h2>매장별, 일자별 채널(내점·포장·배달) 상품 데이터 추출</h2>
       <div class="card-sub">② 일별 대조의 "채널별 매출분석 파일"을 처리하고 "채널별 수량 저장"한 날짜로 만듭니다. 위 "매장별 분류 판매건수"와 같은 양식(행 = 매장, 열 = 날짜, 판매수량 × 보정값)이며 시트는 버거·치킨·비프·피자 × 내점/포장/배달(12개)이고, 기간의 모든 날짜가 열로 들어갑니다(저장 안 된 날은 0).</div>
@@ -696,14 +714,27 @@
     </div>
 
     <div class="card">
+      <h2>월별 저장 현황 · 월초/월말 다운로드</h2>
+      <div class="card-sub">올려 둔 매장운영현황이 <strong>월마다 월초·월말 기준으로 저장돼 있는지</strong> 한눈에 보고, 저장된 버전을 그대로 엑셀로 내려받습니다. (월초 = 1~7일 적용, 월말 = 25일 이후 적용, 그 사이는 월중 변경분)</div>
+      <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:8px;">
+        <select id="siMxYear" autocomplete="off" class="search-input" style="flex:none;" onchange="renderStoreInfoMatrix()"></select>
+        <button class="btn btn-ghost btn-sm" onclick="renderStoreInfoMatrix()">새로고침</button>
+        <button class="btn btn-ghost btn-sm" onclick="downloadStoreInfoSnap('all','')">📥 저장된 전체 버전 한 파일(시트=적용일)</button>
+      </div>
+      <div id="siMxSummary" class="note" style="margin-top:6px;"></div>
+      <div id="siMxWrap" style="margin-top:6px;"></div>
+    </div>
+
+    <div class="card">
       <h2>매장운영현황 변경 이력 (팀·담당자·그룹 등)</h2>
-      <div class="card-sub">매장운영현황을 올릴 때마다 <strong>직전 현황과 비교</strong>해서 바뀐 항목(팀, 담당 AC, 가맹그룹, 매장명, 피자 런칭일, 신규·제외 매장)을 적용일과 함께 기록합니다. ⑤ 데이터 추출의 피자 판매현황은 <strong>일자 기준으로 그때의 팀·담당자</strong>를 보여줍니다. (적용일 = 위 "적용일", 비우면 업로드한 날)</div>
+      <div class="card-sub">올릴 때마다 직전 현황과 비교해 바뀐 항목을 <strong>적용일별 → 매장별 한 줄</strong>로 묶어 보여줍니다. 월 버튼으로 달을 고르고, 적용일 줄을 눌러 펼치세요. ⑤ 피자 판매현황은 일자 기준으로 그때의 팀·담당자를 씁니다.</div>
       <div class="toolbar" style="gap:8px; flex-wrap:wrap; margin-top:8px;">
         <input type="text" id="siLogSearch" class="search-input" placeholder="매장명·코드·담당자 검색" oninput="renderStoreInfoLog()" style="flex:1 1 200px;">
         <select id="siLogField" autocomplete="off" class="search-input" style="flex:none;" onchange="renderStoreInfoLog()"><option value="">전체 항목</option><option>팀</option><option>담당 AC</option><option>가맹그룹</option><option>매장명</option><option>피자 런칭일</option><option>신규</option><option>제외</option></select>
         <button class="btn btn-ghost btn-sm" onclick="renderStoreInfoLog(true)">이력 불러오기</button>
         <button class="btn btn-ghost btn-sm" onclick="downloadStoreInfoLog()">엑셀 다운로드</button>
       </div>
+      <div id="siLogMonths" style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;"></div>
       <div id="siLogWrap" style="margin-top:8px;"><div class="note">"이력 불러오기"를 누르세요.</div></div>
     </div>
 
@@ -1035,7 +1066,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (btn.dataset.tab === 'trend') setTimeout(() => { try { initTrendTab(); } catch (e) { /* 아직 준비 전 */ } }, 0);
     if (btn.dataset.tab === 'history') setTimeout(() => { try { renderChanHistory(true); } catch (e) { /* 무시 */ } }, 0);
     if (btn.dataset.tab === 'extract') setTimeout(() => { try { extractFilterInit(); } catch (e) { /* 기준표 준비 전 */ } try { initPizzaTab(); } catch (e) { /* 아직 준비 전 */ } }, 0);
-    if (btn.dataset.tab === 'storeinfo') setTimeout(() => { try { renderStoreInfoLog(); } catch (e) { /* 아직 준비 전 */ } }, 0);
+    if (btn.dataset.tab === 'storeinfo') setTimeout(() => { try { renderStoreInfoLog(); renderStoreInfoMatrix(); } catch (e) { /* 아직 준비 전 */ } }, 0);
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
@@ -4160,6 +4191,7 @@ async function loadStoreInfoMonths() {
   renderStoreInfoMonths();
 }
 function renderStoreInfoMonths() {
+  try { renderStoreInfoMatrix(); } catch (e) { /* 아직 준비 전 */ }
   const el = document.getElementById('storeInfoMonths'); if (!el) return;
   el.innerHTML = storeInfoMonths.length ? '등록된 월: ' + storeInfoMonths.slice().sort((x, y) => y.ym.localeCompare(x.ym)).map(m => `${m.ym}(${fmtNum(m.count)})`).join(' · ') : '월별로 등록된 현황이 아직 없습니다(지금은 하나의 현황을 모든 달에 사용).';
   const mi = document.getElementById('storeInfoMonth'); if (mi && !mi.value) mi.value = formatDate(new Date()).slice(0, 7);
@@ -4211,6 +4243,7 @@ async function rebuildVerLog(date, fileName, who) {
   storeInfoLog = out; return { changes, base: base?.label || '' };
 }
 function renderStoreInfoVers() {
+  try { renderStoreInfoMatrix(); } catch (e) { /* 아직 준비 전 */ }
   const t = document.getElementById('siVerTable'); if (!t) return;
   const list = storeInfoVers.slice().sort((a, b) => b.date.localeCompare(a.date));
   t.innerHTML = '<thead><tr><th>적용일</th><th>파일</th><th class="num">매장 수</th><th>올린 시각</th><th></th></tr></thead><tbody>' + (list.map(v => `<tr><td><strong>${esc(v.date)}</strong></td><td>${esc(v.fileName || '-')}</td><td class="num">${fmtNum(v.count)}</td><td>${esc(v.uploadedAt ? new Date(v.uploadedAt).toLocaleString('ko-KR') : '-')}</td><td><button class="btn btn-ghost btn-sm" onclick="deleteStoreInfoVer('${v.date}')">삭제</button></td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">아직 버전으로 올린 현황이 없습니다(이전에 월별로 올린 현황은 위 "등록된 월"에 있습니다).</div></td></tr>') + '</tbody>';
@@ -9024,15 +9057,86 @@ function storeAttrAt(log, code, fieldLabel, cur, d) {
   for (const r of log) if (r[1] === code && r[3] === fieldLabel && r[0] > d && (!best || r[0] < best[0] || (r[0] === best[0] && r[8] < best[8]))) best = r;
   return best ? best[4] : cur;
 }
+let siLogMonth = '';
+function setSiLogMonth(m) { siLogMonth = m; renderStoreInfoLog(); }
 async function renderStoreInfoLog(force) {
   const wrap = document.getElementById('siLogWrap'); if (!wrap) return;
   const log = await loadStoreInfoLog(!!force);
+  const mw = document.getElementById('siLogMonths');
+  if (!log.length) { if (mw) mw.innerHTML = ''; wrap.innerHTML = `<div class="note">기록된 변경이 없습니다. 올린 현황이 직전 현황과 같으면(팀·담당자 등 변화 없음) 아무것도 기록되지 않습니다. 현재 기준 현황: ${esc(storeInfoUpdatedAt ? new Date(storeInfoUpdatedAt).toLocaleString('ko-KR') : '-')}</div>`; return; }
   const q = (document.getElementById('siLogSearch')?.value || '').trim().toLowerCase(), f = document.getElementById('siLogField')?.value || '';
-  const rows = log.filter(r => (!f || r[3] === f) && (!q || r.slice(0, 7).join(' ').toLowerCase().includes(q))).sort((a, b) => b[0].localeCompare(a[0]) || b[8].localeCompare(a[8]));
-  if (!log.length) { wrap.innerHTML = `<div class="note">기록된 변경이 없습니다. 올린 현황이 직전 현황과 같으면(팀·담당자 등 변화 없음) 아무것도 기록되지 않습니다. 현재 기준 현황: ${esc(storeInfoUpdatedAt ? new Date(storeInfoUpdatedAt).toLocaleString('ko-KR') : '없음')} 갱신 · 다음 업로드에서 달라진 항목부터 기록합니다.</div>`; return; }
-  const sum = {}; log.forEach(r => { sum[r[3]] = (sum[r[3]] || 0) + 1; });
-  wrap.innerHTML = `<div class="note" style="margin-bottom:6px;">전체 ${fmtNum(log.length)}건 · ${Object.entries(sum).map(([k, v]) => `${k} ${v}`).join(' · ')} · 표시 ${fmtNum(Math.min(rows.length, 300))}/${fmtNum(rows.length)}건</div>` +
-    tbTable(['적용일', '코드', '매장명', '항목', '이전', '→ 변경 후', '파일', '입력자', '기록 시각'], rows.slice(0, 300).map(r => [r[0], esc(r[1]), esc(r[2]), esc(r[3]), esc(r[4] || '–'), esc(r[5] || '–'), esc(r[6]), esc(r[7] || ''), esc(new Date(r[8]).toLocaleString('ko-KR'))]), 9);
+  const months = [...new Set(log.map(r => r[0].slice(0, 7)))].sort().reverse();
+  if (siLogMonth && !months.includes(siLogMonth)) siLogMonth = '';
+  if (mw) mw.innerHTML = [['', '전체'], ...months.map(m => [m, m.replace('-', '.')])].map(([m, l]) => { const n = log.filter(r => !m || r[0].startsWith(m)).length; const on = m === siLogMonth; return `<button class="btn btn-sm ${on ? 'btn-primary' : 'btn-ghost'}" onclick="setSiLogMonth('${m}')">${l} <span style="opacity:.7">${fmtNum(n)}</span></button>`; }).join('');
+  const rows = log.filter(r => (!siLogMonth || r[0].startsWith(siLogMonth)) && (!f || r[3] === f) && (!q || r.slice(0, 7).join(' ').toLowerCase().includes(q)));
+  const sum = {}; rows.forEach(r => { sum[r[3]] = (sum[r[3]] || 0) + 1; });
+  const chip = (k, n) => `<span class="pill pill-neutral" style="margin-right:4px;">${esc(k)} ${fmtNum(n)}</span>`;
+  const byDate = {}; rows.forEach(r => { (byDate[r[0]] = byDate[r[0]] || []).push(r); });
+  const dates = Object.keys(byDate).sort().reverse();
+  const fcls = { '신규': 'pill-ok', '제외': 'pill-bad' };
+  const fmt = r => r[3] === '신규' || r[3] === '제외' ? `<span class="pill ${fcls[r[3]]}">${esc(r[3])}</span> <span style="color:#6b7280;">${esc(r[3] === '신규' ? r[5] : r[4])}</span>` : `<span class="pill pill-warn">${esc(r[3])}</span> ${esc(r[4] || '–')} <span style="color:#9ca3af;">→</span> <strong>${esc(r[5] || '–')}</strong>`;
+  const open = q || f || dates.length === 1 ? true : false;
+  let html = `<div class="note" style="margin-bottom:6px;">${siLogMonth ? esc(siLogMonth) + ' · ' : ''}${fmtNum(rows.length)}건 · ${Object.entries(sum).map(([k, v]) => chip(k, v)).join('')}</div>`;
+  if (!rows.length) html += '<div class="note">조건에 맞는 변경이 없습니다.</div>';
+  dates.forEach((d, i) => {
+    const rs = byDate[d], per = {}; rs.forEach(r => { (per[r[1]] = per[r[1]] || []).push(r); });
+    const codes = Object.keys(per), fc = {}; rs.forEach(r => { fc[r[3]] = (fc[r[3]] || 0) + 1; });
+    const file = [...new Set(rs.map(r => r[6]).filter(Boolean))].join(', ');
+    const lines = codes.slice(0, 300).map(c => { const g = per[c].sort((a, b) => SI_FIELDS.findIndex(x => x[1] === a[3]) - SI_FIELDS.findIndex(x => x[1] === b[3])); return `<tr><td style="white-space:nowrap;">${esc(c)}</td><td style="white-space:nowrap;">${esc(g[0][2])}</td><td>${g.map(fmt).join(' <span style="color:#d1d5db;">·</span> ')}</td></tr>`; }).join('');
+    html += `<details ${open || i === 0 ? 'open' : ''} style="border:1px solid #e5e7eb; border-radius:8px; margin-bottom:6px; padding:6px 10px;"><summary style="cursor:pointer; font-size:13px;"><strong>${esc(d)}</strong> 적용 · ${fmtNum(codes.length)}개 매장 ${Object.entries(fc).map(([k, v]) => chip(k, v)).join('')}<span style="color:#9ca3af; font-size:11px;">${esc(file)}</span></summary><div class="table-wrap" style="margin-top:6px;"><table><thead><tr><th>코드</th><th>매장명</th><th>변경 내용</th></tr></thead><tbody>${lines}</tbody></table></div>${codes.length > 300 ? `<div class="note">앞 300개 매장만 표시 — 전체는 엑셀 다운로드</div>` : ''}</details>`;
+  });
+  wrap.innerHTML = html;
+}
+// ── 월별 저장 현황(월초/월말) + 저장된 현황 다운로드
+function siMxClass(v, ym) { const dd = +v.date.slice(8, 10); return dd <= 7 ? 'start' : dd >= 25 ? 'end' : 'mid'; }
+function renderStoreInfoMatrix() {
+  const wrap = document.getElementById('siMxWrap'); if (!wrap) return;
+  const nowYm = formatDate(new Date()).slice(0, 7), today = formatDate(new Date());
+  const yms = [...storeInfoVers.map(v => v.ym || v.date.slice(0, 7)), ...storeInfoMonths.map(x => x.ym)];
+  const minYm = [...yms, '2025-01'].sort()[0];
+  const ys = []; for (let y = +minYm.slice(0, 4); y <= +nowYm.slice(0, 4); y++) ys.push(String(y));
+  const ysel = document.getElementById('siMxYear');
+  if (ysel && ysel.dataset.n !== String(ys.length)) { ysel.innerHTML = ys.slice().reverse().map(y => `<option value="${y}">${y}년</option>`).join(''); ysel.dataset.n = String(ys.length); ysel.value = nowYm.slice(0, 4); }
+  const year = ysel?.value || nowYm.slice(0, 4);
+  const all = []; for (let y = +minYm.slice(0, 4); y <= +nowYm.slice(0, 4); y++) for (let m = 1; m <= 12; m++) { const ym = `${y}-${String(m).padStart(2, '0')}`; if (ym >= minYm && ym <= nowYm) all.push(ym); }
+  const info = ym => {
+    const vs = storeInfoVers.filter(v => v.date.startsWith(ym)), r = { start: [], mid: [], end: [], legacy: storeInfoMonths.find(x => x.ym === ym) || null };
+    vs.forEach(v => r[siMxClass(v, ym)].push(v)); return r;
+  };
+  const cell = (vs, ym, kind, due) => {
+    if (vs.length) return vs.map(v => `<div><span class="pill pill-ok">✓ ${esc(v.date.slice(5))}</span> <span style="color:#6b7280; font-size:11px;">${fmtNum(v.count)}개</span> <a href="#" onclick="downloadStoreInfoSnap('v','${v.date}'); return false;">다운로드</a></div>`).join('');
+    return due ? '<span class="pill pill-bad">미저장</span>' : '<span class="pill pill-neutral">대기</span>';
+  };
+  let okM = 0, noS = [], noE = [];
+  const body = all.slice().reverse().filter(ym => ym.startsWith(year)).map(ym => {
+    const r = info(ym), lastDay = addDaysStr(addDaysStr(ym + '-28', 4).slice(0, 7) + '-01', -1);
+    const startDue = today >= ym + '-08', endDue = today >= ym + '-26' || ym < nowYm;
+    const hasS = r.start.length > 0, hasE = r.end.length > 0, leg = !!r.legacy && !r.start.length && !r.mid.length && !r.end.length;
+    let st; if (hasS && hasE) st = '<span class="pill pill-ok">월초·월말 ✓</span>'; else if (leg) st = '<span class="pill pill-warn">월별 현황만</span>'; else if (hasS || hasE || r.mid.length) st = `<span class="pill pill-warn">${hasS ? '월초만' : hasE ? '월말만' : '월중만'}</span>`; else st = ym > nowYm ? '' : '<span class="pill pill-bad">없음</span>';
+    return `<tr><td><strong>${ym.replace('-', '.')}</strong></td><td>${st}</td><td>${cell(r.start, ym, 'start', startDue)}</td><td>${cell(r.end, ym, 'end', endDue)}</td><td>${r.mid.length ? cell(r.mid, ym, 'mid', false) : '<span style="color:#9ca3af;">–</span>'}</td><td>${leg ? `<div><span class="pill pill-warn">월별 현황</span> <span style="color:#6b7280; font-size:11px;">${fmtNum(r.legacy.count)}개 ${esc(r.legacy.fileName || '')}</span> <a href="#" onclick="downloadStoreInfoSnap('m','${ym}'); return false;">다운로드</a></div>` : '<span style="color:#9ca3af;">–</span>'}</td><td>${(r.start.length && r.end.length) ? `<a href="#" onclick="downloadStoreInfoSnap('pair','${ym}'); return false;">월초+월말 한 파일</a>` : ''}</td></tr>`;
+  });
+  all.forEach(ym => { const r = info(ym), leg = !!r.legacy && !r.start.length && !r.mid.length && !r.end.length; if (r.start.length && r.end.length) okM++; if (ym < nowYm || today >= ym + '-08') { if (!r.start.length && !leg) noS.push(ym); } if (ym < nowYm) { if (!r.end.length && !leg) noE.push(ym); } });
+  const brief = a => a.length ? `${a.length}개월 (최근: ${esc(a.slice(-4).map(m => m.slice(2)).join(', '))})` : '없음 ✓';
+  document.getElementById('siMxSummary').innerHTML = `월초·월말 모두 저장된 달 <strong>${okM}</strong>개 · 월초 없음 ${brief(noS)} · 월말 없음 ${brief(noE)} <span style="color:#9ca3af;">(이전 방식 "월별 현황"은 날짜를 몰라 월초/월말로 나눌 수 없어 따로 표시)</span>`;
+  wrap.innerHTML = `<div class="table-wrap"><table><thead><tr><th>월</th><th>상태</th><th>월초(1~7일)</th><th>월말(25일~)</th><th>월중 변경</th><th>이전 방식 월별 현황</th><th></th></tr></thead><tbody>${body.join('') || '<tr><td colspan="7">저장된 현황이 없습니다.</td></tr>'}</tbody></table></div>`;
+}
+function siSnapAoa(o) {
+  const order = (o.order && o.order.length ? o.order : Object.keys(o.map || {})).filter(c => o.map?.[c]);
+  return [['E점포코드', '피자점포코드', '매장명', '가맹그룹', '팀', '담당 AC', '피자 런칭일'], ...order.map(c => { const v = o.map[c]; return [c, v.pizza || '', v.name || '', v.group || '', v.team || '', v.ac || '', v.pizzaLaunch || '']; })];
+}
+async function downloadStoreInfoSnap(kind, key) {
+  try {
+    const wb = XLSX.utils.book_new(), add = (name, o) => { if (o?.map) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(siSnapAoa(o)), name.slice(0, 31)); };
+    let fn = '';
+    if (kind === 'v') { add(key, await loadStoreInfoVer(key)); fn = `매장운영현황_${key}.xlsx`; }
+    else if (kind === 'm') { add(key, await loadStoreInfoForMonth(key)); fn = `매장운영현황_${key}_월별현황.xlsx`; }
+    else if (kind === 'pair') {
+      const vs = storeInfoVers.filter(v => v.date.startsWith(key)), s = vs.find(v => siMxClass(v, key) === 'start'), e = vs.filter(v => siMxClass(v, key) === 'end').pop();
+      if (s) add('월초_' + s.date, await loadStoreInfoVer(s.date)); if (e) add('월말_' + e.date, await loadStoreInfoVer(e.date)); fn = `매장운영현황_${key}_월초월말.xlsx`;
+    } else { for (const v of storeInfoVers.slice().sort((a, b) => a.date.localeCompare(b.date))) add(v.date, await loadStoreInfoVer(v.date)); fn = `매장운영현황_저장버전_전체.xlsx`; }
+    if (!wb.SheetNames.length) { alert('저장된 현황을 불러오지 못했습니다.'); return; }
+    XLSX.writeFile(wb, fn);
+  } catch (e) { alert('다운로드 실패: ' + e.message); }
 }
 async function downloadStoreInfoLog() {
   const log = await loadStoreInfoLog(true);
@@ -9273,7 +9377,125 @@ function downloadPizzaTracking() {
   XLSX.writeFile(wb, `피자판매현황_${start}_${end}.xlsx`);
 }
 
-Object.assign(window, { deleteStoreInfoVer, downloadChanMerged, setChanHistMonth, renderChanHistory, saveStoreTransitions, extractPickChange, extractPickClear, extractPickSearch, extractFilterInit,
+// ==========================================================================
+// ⑤ SSSG 기준 매장 운영 확인 — 저장된 일별 데이터(pzrev 매장별 매출 → 없으면 catqty 판매건수)로 매장×일 판매 유무를 만들어 판정한다
+// ==========================================================================
+let sssgLast = null, sssgCatFilter = '';
+async function runSssgCheck() {
+  const st = document.getElementById('sssgStatus'), out = document.getElementById('sssgResult');
+  if (heavyJob) { st.innerHTML = `<span class="pill pill-warn">다른 작업(${esc(heavyJob)}) 진행 중 — 끝난 뒤 다시 눌러주세요.</span>`; return; }
+  const start = document.getElementById('sssgStart').value, end = document.getElementById('sssgEnd').value;
+  const head = Math.max(1, +document.getElementById('sssgHead').value || 14), tail = Math.max(1, +document.getElementById('sssgTail').value || 14), gapMax = Math.max(1, +document.getElementById('sssgGap').value || 7), xferMax = Math.max(0, +(document.getElementById('sssgXfer')?.value ?? 30)), noDirect = document.getElementById('sssgNoDirect').checked;
+  if (!start || !end || start > end) { st.innerHTML = '<span class="pill pill-warn">시작일·종료일을 확인하세요.</span>'; return; }
+  if (!Object.keys(storeInfoMap).length) { st.innerHTML = '<span class="pill pill-warn">⚠ 매장운영현황을 먼저 업로드해주세요.</span>'; return; }
+  const allDates = dailyIndex.map(d => d.date).filter(d => !isMonthKey(d) && d >= start && d <= end).sort();
+  if (!allDates.length) { st.innerHTML = '<span class="pill pill-warn">이 기간에 저장된 일별 데이터가 없습니다.</span>'; return; }
+  heavyJob = 'SSSG 운영 확인';
+  try {
+    const info = await storeInfoForRange(start, end), alias = buildAliasMap(info);
+    const S = {}; // code -> {first, firstIdx, last, lastIdx, days, maxGap, gapFrom, gapTo, prevIdx}
+    const dataDates = [], missing = [], src = { pzrev: 0, catqty: 0 };
+    const mark = (codes, idx, d) => codes.forEach(c0 => {
+      const c = alias[c0] || c0; let a = S[c];
+      if (!a) a = S[c] = { first: d, firstIdx: idx, last: d, lastIdx: idx, days: 0, maxGap: 0, gapFrom: '', gapTo: '', prevIdx: -1, prevDate: '', idxs: [] };
+      if (a.lastIdx === idx && a.days > 0 && a.last === d) return; // 같은 날 보조코드 중복
+      if (a.prevIdx >= 0 && idx - a.prevIdx - 1 > a.maxGap) { a.maxGap = idx - a.prevIdx - 1; a.gapFrom = a.prevDate; a.gapTo = d; }
+      a.last = d; a.lastIdx = idx; a.days++; a.prevIdx = idx; a.prevDate = d; a.idxs.push(idx);
+    });
+    for (let i = 0; i < allDates.length; i += 8) {
+      const batch = allDates.slice(i, i + 8);
+      st.innerHTML = `<span class="pill pill-neutral">불러오는 중... ${i}/${allDates.length}일</span>`;
+      await loadPzRev(batch);
+      const res = await Promise.all(batch.map(async d => {
+        const pz = pzRevCache[d];
+        if (pz) { src.pzrev++; return Object.entries(pz).filter(([c, a]) => a[0] > 0).map(([c]) => c); }
+        try { const e = await loadCatQtyCompact(d); if (e) { src.catqty++; return [...new Set(e.filter(x => x.qty).map(x => x.storeCode))]; } } catch (_) { /* 무시 */ }
+        return null;
+      }));
+      batch.forEach((d, k) => { const codes = res[k]; if (!codes) { missing.push(d); return; } dataDates.push(d); mark(codes, dataDates.length - 1, d); });
+    }
+    const N = dataDates.length;
+    if (!N) { st.innerHTML = '<span class="pill pill-warn">이 기간에 매장별 판매가 저장된 날이 없습니다.</span>'; return; }
+    // 현황: 종료 시점 / 시작 시점 매장 목록
+    const vers = info.vers || [], endMap = vers.length ? (vers.filter(v => v.date <= end).pop() || vers[vers.length - 1]).map : info.map, startMap = vers.length ? (vers.filter(v => v.date <= start).pop() || vers[0]).map : info.map;
+    const log = await loadStoreInfoLog(false);
+    // 양도양수 연결: 이름 끝 숫자만 다른 매장(명동점1 → 명동점2)이 겹치지 않고 이어지면 한 점포로 합친다
+    const nm = c => (endMap[c] || info.map[c] || startMap[c] || {}).name || '';
+    const baseOf = n => String(n || '').replace(/\s+/g, '').replace(/\d+$/, '');
+    const grp = {}; Object.keys(S).forEach(c => { const b = baseOf(nm(c)); if (b) (grp[b] = grp[b] || []).push(c); });
+    const absorbed = new Set(), chainOf = {};
+    Object.values(grp).forEach(cs => {
+      if (cs.length < 2) return;
+      cs.sort((x, y) => S[x].firstIdx - S[y].firstIdx || S[x].lastIdx - S[y].lastIdx);
+      let cur = null;
+      const flush = () => { if (cur && cur.codes.length > 1) { const rep = cur.codes[cur.codes.length - 1], u = [...cur.idxs].sort((p, q) => p - q); let mg = 0, gf = '', gt = '', xg = 0; const hs = new Set(cur.hand);
+        for (let k = 1; k < u.length; k++) { const g = u[k] - u[k - 1] - 1; if (g <= 0) continue; if (hs.has(u[k - 1] + '|' + u[k])) { if (g > xg) xg = g; } else if (g > mg) { mg = g; gf = dataDates[u[k - 1]]; gt = dataDates[u[k]]; } }
+        const m = { first: dataDates[u[0]], firstIdx: u[0], last: dataDates[u[u.length - 1]], lastIdx: u[u.length - 1], days: u.length, maxGap: mg, gapFrom: gf, gapTo: gt, xferGap: xg, idxs: u };
+        cur.codes.forEach(c => { if (c !== rep) absorbed.add(c); }); S[rep] = m; chainOf[rep] = cur.codes.slice(); } cur = null; };
+      cs.forEach(c => {
+        const a = S[c];
+        if (!cur) { cur = { codes: [c], idxs: [...a.idxs], hand: [], last: a.lastIdx }; return; }
+        const set = new Set(cur.idxs), ov = a.idxs.filter(i => set.has(i)).length;
+        if (ov <= 3 && a.firstIdx >= cur.idxs[0]) { const pl = Math.max(...cur.idxs.filter(i => i < a.firstIdx), -1); if (pl >= 0) cur.hand.push(pl + '|' + a.idxs.find(i => i > pl)); cur.codes.push(c); cur.idxs = [...new Set([...cur.idxs, ...a.idxs])]; }
+        else { flush(); cur = { codes: [c], idxs: [...a.idxs], hand: [], last: a.lastIdx }; }
+      });
+      flush();
+    });
+    const codes = new Set([...Object.keys(S), ...Object.keys(endMap)].filter(c => !absorbed.has(c)));
+    const rows = [], isT = (c, n) => isTestStore(c, n);
+    codes.forEach(code => {
+      const inf = endMap[code] || info.map[code] || {}, name = inf.name || startMap[code]?.name || '';
+      if (isT(code, name)) return;
+      const a = S[code], inEnd = !!endMap[code], chain = chainOf[code];
+      const dEnd = storeDirectAt(code, end, info), dStart = storeDirectAt(code, start, info);
+      const nameCh = log.filter(r => r[1] === code && r[0] > start && r[0] <= end && (r[3] === '매장명' || r[3] === '가맹그룹')).length;
+      let cat, why;
+      if (!a) { cat = inEnd ? '판매 없음' : '기타'; why = inEnd ? '현황에는 있으나 기간 내 판매 데이터 없음(미오픈·휴업·코드 변경 가능)' : ''; if (!inEnd) return; }
+      else {
+        const headGap = a.firstIdx, tailGap = N - 1 - a.lastIdx, ops = a.days / N;
+        if (noDirect && (dEnd || dStart) && dEnd !== dStart) { cat = '직영↔가맹 전환'; why = `${dStart ? '직영' : '가맹'} → ${dEnd ? '직영' : '가맹'} 전환`; }
+        else if (noDirect && dEnd) { cat = '직영점'; why = '직영 — 가맹점 SSSG 제외'; }
+        else if (headGap >= head) { cat = '신규/재오픈'; why = `첫 판매 ${a.first} (기간 시작 후 ${headGap}일째)`; }
+        else if (tailGap >= tail) { cat = inEnd ? '판매 중단' : '폐점'; why = `마지막 판매 ${a.last}` + (inEnd ? ' (현황에는 남아 있음)' : ' (현황에서 제외됨)'); }
+        else if ((a.xferGap || 0) > xferMax) { cat = '장기 휴무'; why = `양도양수 전환 공백 ${a.xferGap}일 (허용 ${xferMax}일 초과)`; }
+        else if (a.maxGap > gapMax) { cat = '장기 휴무'; why = `연속 ${a.maxGap}일 무판매 (${a.gapFrom} ~ ${a.gapTo} 사이)`; }
+        else if (!inEnd) { cat = '현황 미등록'; why = '판매는 있으나 종료 시점 현황에 없음(코드 변경·양도양수 확인)'; }
+        else { cat = 'SSSG 대상'; why = chain ? '기간 내내 운영 (양도양수 연결 포함)' : '기간 내내 운영'; }
+      }
+      rows.push({ code, name, team: inf.team || '', ac: inf.ac || '', group: inf.group || '', first: a?.first || '', last: a?.last || '', days: a?.days || 0, rate: a ? a.days / N : 0, maxGap: a?.maxGap || 0, cat, why, note: (chain ? '양도양수 연결: ' + chain.map(c => `${c}(${nm(c)})`).join(' → ') : '') + (nameCh ? (chain ? ' / ' : '') + `기간 중 매장명·가맹그룹 변경 ${nameCh}건` : '') });
+    });
+    const order = ['SSSG 대상', '신규/재오픈', '장기 휴무', '판매 중단', '폐점', '직영↔가맹 전환', '직영점', '현황 미등록', '판매 없음'];
+    rows.sort((x, y) => order.indexOf(x.cat) - order.indexOf(y.cat) || x.code.localeCompare(y.code));
+    sssgLast = { start, end, head, tail, gapMax, xferMax, chains: Object.keys(chainOf).length, noDirect, rows, missing, dataDates, src, order };
+    sssgCatFilter = '';
+    st.innerHTML = `<span class="pill pill-ok">✓ 확인 완료</span>`;
+    renderSssg();
+  } catch (e) { st.innerHTML = `<span class="pill pill-bad">오류: ${esc(e.message)}</span>`; console.error(e); }
+  finally { heavyJob = null; }
+}
+function sssgFilter(c) { sssgCatFilter = c; renderSssg(); }
+function renderSssg() {
+  const R = sssgLast, out = document.getElementById('sssgResult'); if (!R) return;
+  const cnt = {}; R.rows.forEach(r => { cnt[r.cat] = (cnt[r.cat] || 0) + 1; });
+  const tot = R.rows.length, ok = cnt['SSSG 대상'] || 0;
+  const cls = { 'SSSG 대상': 'pill-ok', '신규/재오픈': 'pill-neutral', '장기 휴무': 'pill-warn', '판매 중단': 'pill-bad', '폐점': 'pill-bad', '직영↔가맹 전환': 'pill-warn', '직영점': 'pill-neutral', '현황 미등록': 'pill-warn', '판매 없음': 'pill-neutral' };
+  const chips = R.order.filter(c => cnt[c]).map(c => `<button class="pill ${cls[c]}" style="cursor:pointer; ${sssgCatFilter === c ? 'outline:2px solid #2563eb;' : ''}" onclick="sssgFilter('${sssgCatFilter === c ? '' : c}')">${c} ${fmtNum(cnt[c])}</button>`).join(' ');
+  const view = R.rows.filter(r => !sssgCatFilter || r.cat === sssgCatFilter);
+  const miss = R.missing.length ? `<div class="note" style="color:#92400e;">⚠ 저장된 매장별 데이터가 없는 날 ${R.missing.length}일 — 휴무로 세지 않고 건너뜀${R.missing.length <= 12 ? ' (' + R.missing.join(', ') + ')' : ''}. ${R.missing.length > R.dataDates.length * 0.1 ? '빠진 날이 많아 판정이 부정확할 수 있습니다(③ 이력의 "전체 재분류"로 채울 수 있습니다).' : ''}</div>` : '';
+  out.innerHTML = `<div class="note"><strong>${esc(R.start)} ~ ${esc(R.end)}</strong> · 데이터 ${fmtNum(R.dataDates.length)}일(매출 ${R.src.pzrev}일 · 판매건수 ${R.src.catqty}일) · 평가 매장 ${fmtNum(tot)}개${R.chains ? ` (양도양수 연결 ${R.chains}건 포함)` : ''} → <strong>SSSG 대상 ${fmtNum(ok)}개 (${tot ? Math.round(ok / tot * 1000) / 10 : 0}%)</strong></div>${miss}<div style="margin:6px 0;">${chips}</div>` +
+    tbTable(['코드', '매장명', '팀', '담당 AC', '판정', '사유', '첫 판매', '마지막 판매', '판매일수', '영업률', '비고'], view.slice(0, 300).map(r => [esc(r.code), esc(r.name), esc(r.team), esc(r.ac), `<span class="pill ${cls[r.cat]}">${r.cat}</span>`, esc(r.why), esc(r.first), esc(r.last), fmtNum(r.days), Math.round(r.rate * 1000) / 10 + '%', esc(r.note)]), 99) + (view.length > 300 ? `<div class="note">앞 300개만 표시 — 전체는 엑셀 다운로드</div>` : '');
+}
+function downloadSssg() {
+  const R = sssgLast; if (!R) { alert('먼저 "운영 확인"을 실행하세요.'); return; }
+  const cnt = {}; R.rows.forEach(r => { cnt[r.cat] = (cnt[r.cat] || 0) + 1; });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['SSSG 기준 매장 운영 확인'], ['기간', `${R.start} ~ ${R.end}`], ['데이터 있는 날', R.dataDates.length], ['데이터 없는 날', R.missing.length], ['평가 매장', R.rows.length], [], ['판정', '매장 수'], ...R.order.filter(c => cnt[c]).map(c => [c, cnt[c]]), [], ['기준', `초반 ${R.head}일 내 첫 판매 / 종료 직전 ${R.tail}일 내 판매 / 연속 무판매 ${R.gapMax}일 초과 시 장기 휴무 / 양도양수 허용 공백 ${R.xferMax}일 / 직영 ${R.noDirect ? '제외' : '포함'}`]]), '요약');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['코드', '매장명', '팀', '담당 AC', '가맹그룹', '판정', '사유', '첫 판매', '마지막 판매', '판매일수', '영업률', '최장 연속 무판매일', '비고'], ...R.rows.map(r => [r.code, r.name, r.team, r.ac, r.group, r.cat, r.why, r.first, r.last, r.days, Math.round(r.rate * 1000) / 1000, r.maxGap, r.note])]), '매장별 판정');
+  if (R.missing.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['데이터 없는 날'], ...R.missing.map(d => [d])]), '데이터 없는 날');
+  XLSX.writeFile(wb, `SSSG_운영확인_${R.start}_${R.end}.xlsx`);
+}
+
+Object.assign(window, { setSiLogMonth, renderStoreInfoMatrix, downloadStoreInfoSnap, runSssgCheck, downloadSssg, sssgFilter, deleteStoreInfoVer, downloadChanMerged, setChanHistMonth, renderChanHistory, saveStoreTransitions, extractPickChange, extractPickClear, extractPickSearch, extractFilterInit,
   closureShowAll, makePizzaTracking, downloadPizzaTracking, renderStoreInfoLog, downloadStoreInfoLog,
   doLogin, doLogout,
   manualAddCode, toggleDay, toggleAddForm, addAnomalyToMaster, updateMasterName,
