@@ -320,7 +320,7 @@
       <div class="drop-zone" id="chanDropZone" style="margin-top:10px;">
         <div class="dz-icon">📊</div>
         <div class="dz-text">매출분석 파일(내점/포장/배달) 여러 개를 여기로 드래그하거나 클릭</div>
-        <div class="dz-hint">원본: 파일명에 내점·포장·배달 중 하나 · 하루치 파일 기준 → "채널합본.csv"로 내려받음 · 이미 만든 채널합본(.csv)을 올리면 행마다 채널 열로 구분해 "채널별 수량 저장"만 합니다</div>
+        <div class="dz-hint">원본: 파일명에 내점·포장·배달 중 하나 · 하루치 파일 기준 → "채널합본.csv"는 처리 후 "합본 다운로드" 버튼을 눌러 내려받음 · 이미 만든 채널합본(.csv)을 올리면 행마다 채널 열로 구분해 "채널별 수량 저장"만 합니다</div>
       </div>
       <input type="file" id="chanFileInput" accept=".xlsx,.xls,.csv" multiple style="display:none;">
       <div id="chanStatus" style="margin-top:8px;"></div>
@@ -3863,6 +3863,8 @@ async function loadDailyIndex() {
 }
 
 // ── ③ 이력: 채널별 수량 저장 이력 (chanqty_dates + 날짜별 chanqty_{날짜})
+let chanMergedLast = null;
+function downloadChanMerged() { if (!chanMergedLast) { alert('내려받을 채널합본이 없습니다. 파일을 다시 처리해주세요.'); return; } triggerDownload(chanMergedLast.blob, chanMergedLast.name); }
 let chanHistMonth = '', chanHistInfo = {}; // 날짜 → {stores, rows, qty, chs:Set}
 async function renderChanHistory(force) {
   const tb = document.getElementById('chanHistTable'); if (!tb) return;
@@ -6735,7 +6737,7 @@ async function handleChannelFiles(files) {
   const chs = [...new Set(outRows.map(r => r[width + 2]))].join('·');
   const dl = [...dates].sort();
   const name = `매출분석_채널합본_${dl.length ? (dl[0] === dl[dl.length - 1] ? dl[0] : dl[0] + '_' + dl[dl.length - 1]) : formatDate(new Date())}_${chs}.csv`;
-  triggerDownload(blob, name);
+  chanMergedLast = { blob, name }; // 자동으로 내려받지 않고, 아래 "합본 다운로드" 버튼을 눌렀을 때만 내려받는다
   const missTop = [...missAll.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
   const aggDates = Object.keys(chanAggByDate).filter(d => Object.keys(chanAggByDate[d]).length).sort();
   const aggChs = d => [...new Set(Object.values(chanAggByDate[d]).map(o => o.ch))].join('·');
@@ -6743,7 +6745,7 @@ async function handleChannelFiles(files) {
   const lacking = aggDates.filter(d => aggChs(d).split('·').length < 3);
   html += aggDates.length ? `<div class="status-line" style="flex-wrap:wrap; margin-top:6px;"><button class="btn btn-primary btn-sm" onclick="saveChannelQty(this)">💾 채널별 수량 저장 (${aggDates.length}일)</button><span>${aggDates.map(d => `${d.slice(5)}(${esc(aggChs(d))})`).join(', ')} — 저장하면 ⑤ 탭 "채널별 매장×일자 분류 수량"으로 뽑을 수 있습니다. 같은 날짜는 올린 채널만 교체됩니다.</span></div>`
     + (lacking.length ? `<div class="note" style="color:#b45309;">⚠ 채널이 3개가 아닌 날짜: ${lacking.map(d => `${d.slice(5)}(${esc(aggChs(d))})`).join(', ')} — 빠진 채널 파일도 함께 올렸는지 확인해주세요(이미 저장된 다른 채널은 유지됩니다).</div>` : '') : '';
-  html += `<div class="status-line" style="flex-wrap:wrap; margin-top:4px;"><span class="pill pill-ok">📥 ${esc(name)}</span><span>합본 ${fmtNum(outRows.length)}행(소계·합계 행 제외) · A·B열 = 매출일자·요일, T열 = 채널(${esc(chs)}), U~Z열 = 기준표 분류${missAll.size ? ` · 기준표에 없는 코드 ${missAll.size}개: ${esc(missTop.map(([k, n]) => `${k}(${n})`).join(', '))}` : ''}</span></div>`;
+  html += `<div class="status-line" style="flex-wrap:wrap; margin-top:4px;"><button class="btn btn-ghost btn-sm" onclick="downloadChanMerged()">📥 합본 다운로드</button><span class="pill pill-ok">${esc(name)}</span><span>합본 ${fmtNum(outRows.length)}행(소계·합계 행 제외) · A·B열 = 매출일자·요일, T열 = 채널(${esc(chs)}), U~Z열 = 기준표 분류${missAll.size ? ` · 기준표에 없는 코드 ${missAll.size}개: ${esc(missTop.map(([k, n]) => `${k}(${n})`).join(', '))}` : ''}</span></div>`;
   st.innerHTML = html;
 }
 
@@ -9192,7 +9194,7 @@ function downloadPizzaTracking() {
   XLSX.writeFile(wb, `피자판매현황_${start}_${end}.xlsx`);
 }
 
-Object.assign(window, { setChanHistMonth, renderChanHistory, saveStoreTransitions, extractPickChange, extractPickClear, extractPickSearch, extractFilterInit,
+Object.assign(window, { downloadChanMerged, setChanHistMonth, renderChanHistory, saveStoreTransitions, extractPickChange, extractPickClear, extractPickSearch, extractFilterInit,
   closureShowAll, makePizzaTracking, downloadPizzaTracking, renderStoreInfoLog, downloadStoreInfoLog,
   doLogin, doLogout,
   manualAddCode, toggleDay, toggleAddForm, addAnomalyToMaster, updateMasterName,
